@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+:root {
+  --background: #080c14;
+  --foreground: #e2e8f0;
+  --panel-bg: #0d131f;
+  --panel-border: #1e293b;
+  --font-mono: var(--font-geist-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  --font-sans: var(--font-geist-sans, ui-sans-serif, system-ui, sans-serif);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  background-image: radial-gradient(rgba(30, 41, 59, 0.25) 1px, transparent 1px);
+  background-size: 24px 24px;
+  min-height: 100vh;
+  margin: 0;
+}
+
+/* Custom industrial scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #080c14;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* Monospace telemetry utility */
+.telemetry-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.025em;
+}
+
+/* Subtle SCADA scanline glow */
+.scada-panel {
+  background-color: #0d1320;
+  border: 1px solid #1e293b;
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.5);
+}
+
+.scada-panel-glow {
+  background-color: #0d1320;
+  border: 1px solid #1e293b;
+  box-shadow: 0 0 15px -3px rgba(16, 185, 129, 0.08);
+}
