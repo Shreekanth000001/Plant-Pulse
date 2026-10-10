@@ -3,6 +3,7 @@ import {
   UnitHistoryResponse,
   DefectRateByHour,
   DefectRateByStage,
+  BackendQueueDepths,
 } from "../types/factory";
 
   export function getErrorMessage(err: unknown, fallback: string): string {
@@ -117,6 +118,25 @@ export async function fetchDefectRateByStage(): Promise<DefectRateByStage[]> {
   if (!res.ok) {
     throw new ApiError(
       `Failed to fetch stage defect rate: ${res.statusText}`,
+      res.status
+    );
+  }
+
+  return res.json();
+}
+
+/**
+ * Fetch current queue sizes between production stages.
+ */
+export async function fetchQueueDepths(): Promise<BackendQueueDepths> {
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(`${baseUrl}/api/queue-depths`, {
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    throw new ApiError(
+      `Failed to fetch queue depths: ${res.statusText}`,
       res.status
     );
   }
