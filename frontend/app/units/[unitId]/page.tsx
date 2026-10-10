@@ -75,11 +75,11 @@ function UnitDetailContent() {
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [searchInput, setSearchInput] = useState(unitId);
+  const [draft, setDraft] = useState<string | null>(null);
+  const searchInput = draft ?? unitId;
 
   useEffect(() => {
     if (!unitId) return;
-    setSearchInput(unitId);
     let isMounted = true;
 
     async function loadData() {
@@ -91,12 +91,13 @@ function UnitDetailContent() {
         if (!isMounted) return;
         setUnit(data);
         setLoading(false);
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (!isMounted) return;
         if (err instanceof ApiError && err.status === 404) {
           setNotFound(true);
         } else {
-          setErrorMessage(err.message || "Failed to load unit history");
+          const message = err instanceof Error ? err.message : "";
+          setErrorMessage(message || "Failed to load unit history");
         }
         setLoading(false);
       }
@@ -112,6 +113,7 @@ function UnitDetailContent() {
     e.preventDefault();
     if (!searchInput.trim()) return;
     router.push(`/units/${encodeURIComponent(searchInput.trim())}`);
+    setDraft(null);
   };
 
   if (loading) {
@@ -147,7 +149,7 @@ function UnitDetailContent() {
             <input
               type="text"
               value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
+              onChange={(e) => setDraft(e.target.value)}
               placeholder="Try unit_000001..."
               className="flex-1 px-3 py-2 bg-slate-950 rounded border border-slate-700 font-mono text-xs text-slate-200 focus:outline-none focus:border-cyan-400"
             />
@@ -231,7 +233,7 @@ function UnitDetailContent() {
           <input
             type="text"
             value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
+            onChange={(e) => setDraft(e.target.value)}
             placeholder="Switch unit ID..."
             className="px-3 py-1.5 bg-slate-950 rounded border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-400 w-40"
           />

@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useEffect, useState, useMemo } from "react";
-import { fetchLatestMachines } from "../lib/api";
-import { MachineStatus, KNOWN_MACHINES } from "../types/factory";
+import { fetchLatestMachines,getErrorMessage } from "../lib/api";
+import { MachineStatus, KNOWN_MACHINES, isTelemetryMessage, Readings, isReadingValue} from "../types/factory";
 import { useFactoryWebSocket } from "../context/WebSocketContext";
 import { MachineCard } from "../components/telemetry/MachineCard";
 import { QueueHandoffIndicator } from "../components/telemetry/QueueHandoffIndicator";
@@ -86,9 +86,9 @@ export default function LiveOverviewPage() {
 
         setMachines(map);
         setLoading(false);
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (!isMounted) return;
-        setError(err.message || "Failed to load initial machine state");
+        setError(getErrorMessage(err, "Failed to load initial machine state"));
         setLoading(false);
       }
     }
@@ -102,11 +102,7 @@ export default function LiveOverviewPage() {
   // 2. Subscribe to WebSocket telemetry updates
   useEffect(() => {
     const unsubscribe = subscribeToTelemetry((msg) => {
-      if (!msg.topic || !msg.topic.endsWith("/telemetry")) {
-        // As per requirements: only telemetry messages update live machine cards;
-        // ignore stage_event/result messages here.
-        return;
-      }
+      if (!isTelemetryMessage(msg)) return;
 
       const parts = msg.topic.split("/");
       if (parts.length < 4) return;
@@ -142,12 +138,12 @@ export default function LiveOverviewPage() {
           "last_result",
         ]);
 
-        const mergedExtra: Record<string, any> = {
+        const mergedExtra: Readings = {
           ...(existing.extra || {}),
         };
 
         for (const [key, value] of Object.entries(payload)) {
-          if (!excluded.has(key)) {
+          if (!excluded.has(key) && isReadingValue(value)) {
             mergedExtra[key] = value;
           }
         }

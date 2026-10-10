@@ -17,25 +17,25 @@ export function MachineCard({ machine }: MachineCardProps) {
   const state = machine.machine_state?.toUpperCase() || "IDLE";
   const isStarved = machine.starved;
 
-  let stateColor = "text-amber-400";
+  // let stateColor = "text-amber-400";
   let stateBorder = "border-amber-500/30";
   let stateBadgeBg = "bg-amber-500/10 text-amber-300";
   let dotColor = "bg-amber-400";
   let panelHighlight = "";
 
   if (state === "FAULT") {
-    stateColor = "text-rose-400";
+    // stateColor = "text-rose-400";
     stateBorder = "border-rose-500/50";
     stateBadgeBg = "bg-rose-500/20 text-rose-300";
     dotColor = "bg-rose-500 animate-ping";
     panelHighlight = "shadow-[0_0_15px_-3px_rgba(244,63,94,0.3)] border-rose-900";
   } else if (state === "RUNNING") {
-    stateColor = "text-emerald-400";
+    // stateColor = "text-emerald-400";
     stateBorder = "border-emerald-500/30";
     stateBadgeBg = "bg-emerald-500/15 text-emerald-300";
     dotColor = "bg-emerald-400 animate-pulse";
   } else if (state === "TESTING") {
-    stateColor = "text-cyan-400";
+    // stateColor = "text-cyan-400";
     stateBorder = "border-cyan-500/30";
     stateBadgeBg = "bg-cyan-500/15 text-cyan-300";
     dotColor = "bg-cyan-400 animate-pulse";

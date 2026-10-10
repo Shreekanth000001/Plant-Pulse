@@ -14,6 +14,7 @@ import {
   TelemetryPayload,
   QCResultPayload,
   QueueHandoffs,
+  StageEventPayload
 } from "../types/factory";
 
 export type ConnectionStatus = "connected" | "reconnecting" | "disconnected";
@@ -62,6 +63,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const subscribersRef = useRef<Set<(message: WebSocketMessage) => void>>(
     new Set()
   );
+  const connectRef = useRef<() => void>(() => {});
 
   // Track active units seen per stage to accurately manage queue transitions
   const activeUnitsSeenRef = useRef<{
@@ -126,9 +128,8 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
 
           // Process queue handoffs and notifications
           if (topic.endsWith("/stage_event")) {
-            const payload = raw.payload;
+            const payload = raw.payload as StageEventPayload;
             const subFacility = payload.sub_facility;
-            const unitId = payload.unit_id;
 
             setHandoffs((prev) => {
               const next = { ...prev };
@@ -211,7 +212,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         );
 
         reconnectTimeoutRef.current = setTimeout(() => {
-          connect();
+          connectRef.current();
         }, delay);
       };
     } catch {
@@ -220,7 +221,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    connect();
+    connectRef.current();
 
     return () => {
       if (reconnectTimeoutRef.current) {

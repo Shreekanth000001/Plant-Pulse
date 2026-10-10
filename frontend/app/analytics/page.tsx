@@ -4,8 +4,10 @@ import React, { useEffect, useState, useMemo } from "react";
 import {
   fetchDefectRateByHour,
   fetchDefectRateByStage,
+  getErrorMessage
 } from "../../lib/api";
 import { DefectRateByHour, DefectRateByStage } from "../../types/factory";
+import { useSyncExternalStore } from "react";
 import {
   ResponsiveContainer,
   BarChart,
@@ -35,10 +37,9 @@ export default function AnalyticsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [chartView, setChartView] = useState<"rate" | "volume">("rate");
-  const [isClient, setIsClient] = useState(false);
+  const isClient = useSyncExternalStore(() => () => {}, () => true, () => false);
 
   useEffect(() => {
-    setIsClient(true);
     let isMounted = true;
 
     async function loadStats() {
@@ -54,9 +55,9 @@ export default function AnalyticsPage() {
         setHourlyData(hourly || []);
         setStageData(stages || []);
         setLoading(false);
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (!isMounted) return;
-        setError(err.message || "Failed to load factory analytics");
+        setError(getErrorMessage(err, "Failed to load initial machine state"));
         setLoading(false);
       }
     }
@@ -263,7 +264,7 @@ export default function AnalyticsPage() {
                           fontFamily: "monospace",
                           fontSize: "12px",
                         }}
-                        formatter={(val: any) => [`${val}%`, "Defect Rate"]}
+                        formatter={(val) => [`${val}%`, "Defect Rate"]}
                         labelFormatter={(label) => `Hour: ${label}`}
                       />
                       <ReferenceLine y={4} stroke="#eab308" strokeDasharray="3 3" label={{ value: "Base 4%", fill: "#ca8a04", fontSize: 10 }} />

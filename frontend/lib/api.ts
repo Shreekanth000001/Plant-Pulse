@@ -5,6 +5,10 @@ import {
   DefectRateByStage,
 } from "../types/factory";
 
+  export function getErrorMessage(err: unknown, fallback: string): string {
+    return err instanceof Error && err.message ? err.message : fallback;
+  }
+
 /**
  * Returns the sanitized base URL for API requests.
  * Strips whitespace and trailing slashes.

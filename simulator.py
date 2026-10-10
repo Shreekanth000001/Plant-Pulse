@@ -20,8 +20,8 @@ import random
 import time
 
 from config import FACILITY
-from units import Unit
 from defect_model import decide_outcome, pick_defect_type
+from units import Unit
 
 TICK_SECONDS = 2
 STAGE_ORDER = ["housing", "casting", "assembly", "qc"]

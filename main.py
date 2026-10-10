@@ -19,7 +19,8 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Annotated
 
 import aiomqtt
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -28,8 +29,13 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database import (
-    init_db, SessionLocal, get_session,
-    TelemetryReading, Unit, StageEvent, QCResult,
+    QCResult,
+    SessionLocal,
+    StageEvent,
+    TelemetryReading,
+    Unit,
+    get_session,
+    init_db,
 )
 
 MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
@@ -39,6 +45,8 @@ RECONNECT_MAX_S = 30
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("factory-backend")
+DbSession = Annotated[Session, Depends(get_session)]
+
 
 class ConnectionManager:
     """Same pattern as the earlier FastAPI/WebSocket prototype — tracks
@@ -64,7 +72,7 @@ class ConnectionManager:
         async def _send(ws: WebSocket) -> None:
             try:
                 await asyncio.wait_for(ws.send_text(message), timeout=2.0)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 self.disconnect(ws)
 
         await asyncio.gather(*(_send(ws) for ws in clients))
@@ -91,7 +99,7 @@ def _store_telemetry(db, sub_facility: str, payload: dict) -> None:
     excluded = COMMON_TELEMETRY_FIELDS | {"last_result", "stage_event"}
     extra = {k: v for k, v in payload.items() if k not in excluded}
     reading = TelemetryReading(
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
         machine_id=payload["machine_id"],
         sub_facility=sub_facility,
         machine_state=payload.get("machine_state"),
@@ -116,7 +124,7 @@ def _store_stage_event(db, payload: dict) -> None:
         db.add(Unit(unit_id=unit_id, status="in_progress"))
 
     def _to_dt(epoch_seconds):
-        return datetime.fromtimestamp(epoch_seconds, tz=timezone.utc) if epoch_seconds else None
+        return datetime.fromtimestamp(epoch_seconds, tz=UTC) if epoch_seconds else None
 
     db.add(StageEvent(
         unit_id=unit_id,
@@ -142,7 +150,7 @@ def _store_qc_result(db, machine_id: str, payload: dict) -> None:
     db.add(QCResult(
         unit_id=unit_id,
         machine_id=machine_id,
-        tested_at=datetime.now(timezone.utc),
+        tested_at=datetime.now(UTC),
         outcome=payload["outcome"],
         probability=payload.get("probability"),
         defect_type=payload.get("defect_type"),
@@ -267,7 +275,7 @@ async def telemetry_ws(ws: WebSocket) -> None:
 
 
 @app.get("/api/machines/latest")
-def latest_machine_status(db: Session = Depends(get_session)) -> list[dict]:
+def latest_machine_status(db: DbSession) -> list[dict]:
     """Most recent telemetry row for every machine — what a dashboard
     would load on first render, before live WebSocket updates take over."""
     subquery = (
@@ -310,7 +318,7 @@ def queue_depths() -> dict:
 
 
 @app.get("/api/units")
-def recent_units(limit: int = 20, db: Session = Depends(get_session)) -> list[dict]:
+def recent_units(db: DbSession, limit: int = 20) -> list[dict]:
     """Most recently created units, newest first — feeds the unit-lookup
     page's 'recent units' list."""
     limit = max(1, min(limit, 100))
@@ -326,7 +334,7 @@ def recent_units(limit: int = 20, db: Session = Depends(get_session)) -> list[di
 
 
 @app.get("/api/units/{unit_id}")
-def unit_history(unit_id: str, db: Session = Depends(get_session)) -> dict:
+def unit_history(db: DbSession, unit_id: str) -> dict:
     """Full traceable journey for one unit — every stage it passed
     through, plus its QC verdict if tested. This is the payoff of the
     whole traceability design: a real answer to 'why did this fail?'"""
@@ -369,7 +377,7 @@ def unit_history(unit_id: str, db: Session = Depends(get_session)) -> dict:
 
 
 @app.get("/api/stats/defect-rate-by-hour")
-def defect_rate_by_hour(db: Session = Depends(get_session)) -> list[dict]:
+def defect_rate_by_hour(db: DbSession) -> list[dict]:
     """Defect rate grouped by hour-of-day — this is the metric that
     makes the shift-change bias in defect_model.py visible in real data."""
     # Pull hour+outcome pairs and aggregate in Python — simpler and more
@@ -396,7 +404,7 @@ def defect_rate_by_hour(db: Session = Depends(get_session)) -> list[dict]:
 
 
 @app.get("/api/stats/defect-rate-by-stage")
-def defect_rate_by_stage(db: Session = Depends(get_session)) -> list[dict]:
+def defect_rate_by_stage(db: DbSession) -> list[dict]:
     """Of all failures, which stage gets attributed most often — points
     at where the process is actually struggling."""
     rows = (

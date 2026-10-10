@@ -6,6 +6,10 @@ export type SubFacilityType = "housing" | "casting" | "assembly" | "qc";
 
 export type MachineState = "RUNNING" | "IDLE" | "FAULT" | "TESTING" | string;
 
+export type ReadingValue = number | string | boolean | null;
+
+export type Readings = Record<string, ReadingValue>;
+
 export interface MachineStatus {
   machine_id: string;
   name?: string;
@@ -18,7 +22,7 @@ export interface MachineStatus {
   vibration_wear_level?: number | null;
   good_count?: number;
   reject_count?: number;
-  extra: Record<string, any>;
+  extra: Readings;
   timestamp?: string | null;
 }
 
@@ -36,7 +40,7 @@ export interface TelemetryPayload {
   reject_count?: number;
   stage_event?: StageEventPayload | null;
   last_result?: QCResultPayload | null;
-  [key: string]: any;
+  [key: string]: ReadingValue | StageEventPayload | QCResultPayload | undefined;
 }
 
 export interface StageEventPayload {
@@ -62,7 +66,22 @@ export interface QCResultPayload {
 
 export interface WebSocketMessage {
   topic: string;
-  payload: TelemetryPayload | StageEventPayload | QCResultPayload | any;
+  payload: TelemetryPayload | StageEventPayload | QCResultPayload;
+}
+
+export function isTelemetryMessage(
+  msg: WebSocketMessage
+): msg is WebSocketMessage & { payload: TelemetryPayload } {
+  return msg.topic.endsWith("/telemetry");
+}
+
+export function isReadingValue(v: unknown): v is ReadingValue {
+  return (
+    v === null ||
+    typeof v === "number" ||
+    typeof v === "string" ||
+    typeof v === "boolean"
+  );
 }
 
 export interface StageHistoryItem {
