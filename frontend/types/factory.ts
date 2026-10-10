@@ -64,15 +64,28 @@ export interface QCResultPayload {
   tested_at?: string | null;
 }
 
+export interface BackendQueueDepths {
+  casting?: number;
+  assembly?: number;
+  qc?: number;
+  [key: string]: number | undefined;
+}
+
 export interface WebSocketMessage {
   topic: string;
-  payload: TelemetryPayload | StageEventPayload | QCResultPayload;
+  payload: TelemetryPayload | StageEventPayload | QCResultPayload | BackendQueueDepths;
 }
 
 export function isTelemetryMessage(
   msg: WebSocketMessage
 ): msg is WebSocketMessage & { payload: TelemetryPayload } {
   return msg.topic.endsWith("/telemetry");
+}
+
+export function isQueueDepthsMessage(
+  msg: WebSocketMessage
+): msg is WebSocketMessage & { payload: BackendQueueDepths } {
+  return msg.topic === "factory/queue_depths";
 }
 
 export function isReadingValue(v: unknown): v is ReadingValue {
@@ -126,6 +139,16 @@ export interface QueueHandoffs {
   housingToCasting: number;
   castingToAssembly: number;
   assemblyToQc: number;
+}
+
+export function mapBackendQueueDepths(
+  data: BackendQueueDepths
+): QueueHandoffs {
+  return {
+    housingToCasting: Number(data.casting ?? 0),
+    castingToAssembly: Number(data.assembly ?? 0),
+    assemblyToQc: Number(data.qc ?? 0),
+  };
 }
 
 export interface MachineConfigMeta {

@@ -8,13 +8,13 @@ import React, {
   useState,
   useCallback,
 } from "react";
-import { getWsUrl } from "../lib/api";
+import { getWsUrl, fetchQueueDepths } from "../lib/api";
 import {
   WebSocketMessage,
-  TelemetryPayload,
   QCResultPayload,
   QueueHandoffs,
-  StageEventPayload
+  BackendQueueDepths,
+  mapBackendQueueDepths,
 } from "../types/factory";
 
 export type ConnectionStatus = "connected" | "reconnecting" | "disconnected";
@@ -63,18 +63,6 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const subscribersRef = useRef<Set<(message: WebSocketMessage) => void>>(
     new Set()
   );
-  const connectRef = useRef<() => void>(() => {});
-
-  // Track active units seen per stage to accurately manage queue transitions
-  const activeUnitsSeenRef = useRef<{
-    casting: Set<string>;
-    assembly: Set<string>;
-    qc: Set<string>;
-  }>({
-    casting: new Set(),
-    assembly: new Set(),
-    qc: new Set(),
-  });
 
   const dismissNotification = useCallback((id: string) => {
     setRecentQcResults((prev) => prev.filter((item) => item.id !== id));
@@ -90,7 +78,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     []
   );
 
-  const connect = useCallback(() => {
+  const connect = useCallback(function tryConnect() {
     if (typeof window === "undefined") return;
 
     // Clear any existing reconnect timer
@@ -108,6 +96,15 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         setStatus("connected");
         setReconnectAttempt(0);
         reconnectDelayRef.current = INITIAL_RECONNECT_DELAY_MS;
+
+        // Refresh queue depths on connection/reconnection
+        fetchQueueDepths()
+          .then((depths) => {
+            setHandoffs(mapBackendQueueDepths(depths));
+          })
+          .catch((err) => {
+            console.warn("Failed to refresh queue depths on connect:", err);
+          });
       };
 
       ws.onmessage = (event) => {
@@ -126,58 +123,10 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
 
           const topic = raw.topic || "";
 
-          // Process queue handoffs and notifications
-          if (topic.endsWith("/stage_event")) {
-            const payload = raw.payload as StageEventPayload;
-            const subFacility = payload.sub_facility;
-
-            setHandoffs((prev) => {
-              const next = { ...prev };
-              if (subFacility === "housing") {
-                next.housingToCasting = Math.min(next.housingToCasting + 1, 25);
-              } else if (subFacility === "casting") {
-                next.castingToAssembly = Math.min(next.castingToAssembly + 1, 25);
-              } else if (subFacility === "assembly") {
-                next.assemblyToQc = Math.min(next.assemblyToQc + 1, 25);
-              }
-              return next;
-            });
-          } else if (topic.endsWith("/telemetry")) {
-            const payload = raw.payload as TelemetryPayload;
-            const currentUnit = payload.current_unit || payload.current_unit_id;
-            const parts = topic.split("/");
-            const subFacility = parts[1];
-
-            if (currentUnit) {
-              if (
-                subFacility === "casting" &&
-                !activeUnitsSeenRef.current.casting.has(currentUnit)
-              ) {
-                activeUnitsSeenRef.current.casting.add(currentUnit);
-                setHandoffs((prev) => ({
-                  ...prev,
-                  housingToCasting: Math.max(0, prev.housingToCasting - 1),
-                }));
-              } else if (
-                subFacility === "assembly" &&
-                !activeUnitsSeenRef.current.assembly.has(currentUnit)
-              ) {
-                activeUnitsSeenRef.current.assembly.add(currentUnit);
-                setHandoffs((prev) => ({
-                  ...prev,
-                  castingToAssembly: Math.max(0, prev.castingToAssembly - 1),
-                }));
-              } else if (
-                subFacility === "qc" &&
-                !activeUnitsSeenRef.current.qc.has(currentUnit)
-              ) {
-                activeUnitsSeenRef.current.qc.add(currentUnit);
-                setHandoffs((prev) => ({
-                  ...prev,
-                  assemblyToQc: Math.max(0, prev.assemblyToQc - 1),
-                }));
-              }
-            }
+          // Real backend queue depths topic
+          if (topic === "factory/queue_depths") {
+            const depths = raw.payload as BackendQueueDepths;
+            setHandoffs(mapBackendQueueDepths(depths));
           } else if (topic.endsWith("/result")) {
             const qcPayload = raw.payload as QCResultPayload;
             const newNotification: QCNotification = {
@@ -212,7 +161,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         );
 
         reconnectTimeoutRef.current = setTimeout(() => {
-          connectRef.current();
+          tryConnect();
         }, delay);
       };
     } catch {
@@ -220,8 +169,28 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // On initial load, fetch initial queue depths from GET /api/queue-depths
   useEffect(() => {
-    connectRef.current();
+    let isMounted = true;
+    async function loadInitialQueueDepths() {
+      try {
+        const depths = await fetchQueueDepths();
+        if (isMounted) {
+          setHandoffs(mapBackendQueueDepths(depths));
+        }
+      } catch (err) {
+        console.warn("Failed to fetch initial queue depths:", err);
+      }
+    }
+
+    loadInitialQueueDepths();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    connect();
 
     return () => {
       if (reconnectTimeoutRef.current) {
