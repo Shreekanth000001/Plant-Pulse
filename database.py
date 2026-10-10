@@ -6,9 +6,18 @@ backend process. Swapping to Postgres later is a one-line change to
 DATABASE_URL, not a rewrite — the models/queries stay the same.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from sqlalchemy import create_engine, Column, String, Float, Integer, DateTime, JSON, Boolean
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    Integer,
+    String,
+    create_engine,
+)
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 DATABASE_URL = "sqlite:///./factory.db"
@@ -19,7 +28,7 @@ Base = declarative_base()
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class TelemetryReading(Base):

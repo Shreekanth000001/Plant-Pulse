@@ -104,7 +104,6 @@ def publish_reading(client: mqtt.Client, reading: dict, sub_facility: str) -> No
 
 
 def main() -> None:
-    global stop_event_set
 
     def handle_shutdown(*_):
         global stop_event_set
