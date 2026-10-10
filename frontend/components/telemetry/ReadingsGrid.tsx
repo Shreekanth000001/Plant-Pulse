@@ -2,9 +2,10 @@
 
 import React from "react";
 import { SetpointGauge } from "./SetpointGauge";
+import type { Readings } from "@/types/factory";
 
 interface ReadingsGridProps {
-  extra: Record<string, any>;
+  extra: Readings;
   subFacility?: string;
 }
 
@@ -41,7 +42,7 @@ function getParamStd(key: string): number {
   return 1.5;
 }
 
-export function ReadingsGrid({ extra, subFacility }: ReadingsGridProps) {
+export function ReadingsGrid({ extra }: ReadingsGridProps) {
   if (!extra || Object.keys(extra).length === 0) {
     return (
       <div className="py-2 text-center text-xs text-slate-500 italic font-mono">
@@ -109,13 +110,13 @@ export function ReadingsGrid({ extra, subFacility }: ReadingsGridProps) {
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 pt-0.5">
           {standalone.map(([key, val]) => {
             const formattedLabel = formatParamName(key);
-            const isNumber = typeof val === "number";
+            const isNumber = typeof val === "number" ;
             const isPass = key.includes("pass") || key.includes("good");
             const isFail = key.includes("fail") || key.includes("reject");
 
             let valColor = "text-slate-200";
             if (isPass) valColor = "text-emerald-400";
-            if (isFail) valColor = val > 0 ? "text-rose-400" : "text-slate-400";
+            if (isFail) valColor = typeof val === "number" && val > 0 ? "text-rose-400" : "text-slate-400";
 
             return (
               <div
