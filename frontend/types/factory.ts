@@ -123,6 +123,12 @@ export interface UnitHistoryResponse {
   qc_result: QCResultItem | null;
 }
 
+export interface RecentUnitItem {
+  unit_id: string;
+  status: "in_progress" | "passed" | "failed" | string;
+  created_at: string | null;
+}
+
 export interface DefectRateByHour {
   hour: string;
   total_tested: number;

@@ -8,13 +8,18 @@ import React, {
   useState,
   useCallback,
 } from "react";
-import { getWsUrl, fetchQueueDepths } from "../lib/api";
+import { getWsUrl, fetchQueueDepths, fetchLatestMachines } from "../lib/api";
 import {
   WebSocketMessage,
   QCResultPayload,
   QueueHandoffs,
   BackendQueueDepths,
   mapBackendQueueDepths,
+  MachineStatus,
+  KNOWN_MACHINES,
+  isTelemetryMessage,
+  Readings,
+  isReadingValue,
 } from "../types/factory";
 
 export type ConnectionStatus = "connected" | "reconnecting" | "disconnected";
@@ -34,6 +39,7 @@ interface WebSocketContextType {
   reconnectAttempt: number;
   lastMessageAt: string | null;
   handoffs: QueueHandoffs;
+  machines: Record<string, MachineStatus>;
   recentQcResults: QCNotification[];
   dismissNotification: (id: string) => void;
   subscribeToTelemetry: (
@@ -46,6 +52,24 @@ const WebSocketContext = createContext<WebSocketContextType | null>(null);
 const MAX_RECONNECT_DELAY_MS = 15000;
 const INITIAL_RECONNECT_DELAY_MS = 1500;
 
+function createDefaultMachines(): Record<string, MachineStatus> {
+  const initial: Record<string, MachineStatus> = {};
+  for (const [id, meta] of Object.entries(KNOWN_MACHINES)) {
+    initial[id] = {
+      machine_id: id,
+      name: meta.name,
+      sub_facility: meta.stage,
+      machine_state: "IDLE",
+      phase: "IDLE",
+      starved: false,
+      good_count: 0,
+      reject_count: 0,
+      extra: {},
+    };
+  }
+  return initial;
+}
+
 export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<ConnectionStatus>("disconnected");
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
@@ -56,6 +80,9 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     castingToAssembly: 0,
     assemblyToQc: 0,
   });
+  const [machines, setMachines] = useState<Record<string, MachineStatus>>(
+    createDefaultMachines
+  );
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -81,7 +108,6 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const connect = useCallback(function tryConnect() {
     if (typeof window === "undefined") return;
 
-    // Clear any existing reconnect timer
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
@@ -97,13 +123,27 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         setReconnectAttempt(0);
         reconnectDelayRef.current = INITIAL_RECONNECT_DELAY_MS;
 
-        // Refresh queue depths on connection/reconnection
+        // Refresh queue depths & machines on connection
         fetchQueueDepths()
           .then((depths) => {
             setHandoffs(mapBackendQueueDepths(depths));
           })
           .catch((err) => {
             console.warn("Failed to refresh queue depths on connect:", err);
+          });
+
+        fetchLatestMachines()
+          .then((data) => {
+            setMachines((prev) => {
+              const updated = { ...prev };
+              for (const m of data) {
+                updated[m.machine_id] = m;
+              }
+              return updated;
+            });
+          })
+          .catch((err) => {
+            console.warn("Failed to refresh machines on connect:", err);
           });
       };
 
@@ -127,6 +167,96 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
           if (topic === "factory/queue_depths") {
             const depths = raw.payload as BackendQueueDepths;
             setHandoffs(mapBackendQueueDepths(depths));
+          } else if (isTelemetryMessage(raw)) {
+            const parts = topic.split("/");
+            if (parts.length >= 4) {
+              const subFacility = parts[1];
+              const machineId = parts[2];
+              const payload = raw.payload || {};
+
+              setMachines((prev) => {
+                const existing = prev[machineId] || {
+                  machine_id: machineId,
+                  sub_facility: subFacility,
+                  name: KNOWN_MACHINES[machineId]?.name || machineId,
+                  machine_state: "IDLE",
+                  starved: false,
+                  extra: {},
+                };
+
+                const excluded = new Set([
+                  "machine_id",
+                  "name",
+                  "machine_state",
+                  "phase",
+                  "starved",
+                  "current_unit",
+                  "current_unit_id",
+                  "vibration",
+                  "vibration_wear_level",
+                  "good_count",
+                  "reject_count",
+                  "stage_event",
+                  "last_result",
+                ]);
+
+                const mergedExtra: Readings = {
+                  ...(existing.extra || {}),
+                };
+
+                for (const [key, value] of Object.entries(payload)) {
+                  if (!excluded.has(key) && isReadingValue(value)) {
+                    mergedExtra[key] = value;
+                  }
+                }
+
+                const currentUnit =
+                  payload.current_unit !== undefined
+                    ? payload.current_unit
+                    : payload.current_unit_id !== undefined
+                    ? payload.current_unit_id
+                    : existing.current_unit_id;
+
+                return {
+                  ...prev,
+                  [machineId]: {
+                    ...existing,
+                    machine_id: machineId,
+                    sub_facility: subFacility,
+                    name: payload.name || existing.name,
+                    machine_state:
+                      payload.machine_state || existing.machine_state || "IDLE",
+                    phase:
+                      payload.phase !== undefined
+                        ? payload.phase
+                        : existing.phase,
+                    starved:
+                      payload.starved !== undefined
+                        ? Boolean(payload.starved)
+                        : existing.starved,
+                    current_unit_id: currentUnit,
+                    vibration:
+                      payload.vibration !== undefined
+                        ? payload.vibration
+                        : existing.vibration,
+                    vibration_wear_level:
+                      payload.vibration_wear_level !== undefined
+                        ? payload.vibration_wear_level
+                        : existing.vibration_wear_level,
+                    good_count:
+                      payload.good_count !== undefined
+                        ? payload.good_count
+                        : existing.good_count,
+                    reject_count:
+                      payload.reject_count !== undefined
+                        ? payload.reject_count
+                        : existing.reject_count,
+                    extra: mergedExtra,
+                    timestamp: new Date().toISOString(),
+                  },
+                };
+              });
+            }
           } else if (topic.endsWith("/result")) {
             const qcPayload = raw.payload as QCResultPayload;
             const newNotification: QCNotification = {
@@ -139,16 +269,17 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
               timestamp: new Date().toLocaleTimeString(),
             };
 
-            setRecentQcResults((prev) => [newNotification, ...prev.slice(0, 4)]);
+            setRecentQcResults((prev) => [
+              newNotification,
+              ...prev.slice(0, 4),
+            ]);
           }
         } catch (e) {
           console.warn("Failed to parse incoming WebSocket message:", e);
         }
       };
 
-      ws.onerror = () => {
-        // ws.onclose will fire right after this to trigger reconnect
-      };
+      ws.onerror = () => {};
 
       ws.onclose = () => {
         setStatus("reconnecting");
@@ -169,21 +300,34 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // On initial load, fetch initial queue depths from GET /api/queue-depths
+  // Initial load
   useEffect(() => {
     let isMounted = true;
-    async function loadInitialQueueDepths() {
+    async function loadInitial() {
       try {
-        const depths = await fetchQueueDepths();
-        if (isMounted) {
+        const [depths, latest] = await Promise.all([
+          fetchQueueDepths().catch(() => null),
+          fetchLatestMachines().catch(() => []),
+        ]);
+        if (!isMounted) return;
+        if (depths) {
           setHandoffs(mapBackendQueueDepths(depths));
         }
+        if (latest && latest.length > 0) {
+          setMachines((prev) => {
+            const updated = { ...prev };
+            for (const m of latest) {
+              updated[m.machine_id] = m;
+            }
+            return updated;
+          });
+        }
       } catch (err) {
-        console.warn("Failed to fetch initial queue depths:", err);
+        console.warn("Failed to fetch initial state:", err);
       }
     }
 
-    loadInitialQueueDepths();
+    loadInitial();
     return () => {
       isMounted = false;
     };
@@ -209,6 +353,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         reconnectAttempt,
         lastMessageAt,
         handoffs,
+        machines,
         recentQcResults,
         dismissNotification,
         subscribeToTelemetry,

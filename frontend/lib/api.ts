@@ -1,6 +1,7 @@
 import {
   MachineStatus,
   UnitHistoryResponse,
+  RecentUnitItem,
   DefectRateByHour,
   DefectRateByStage,
   BackendQueueDepths,
@@ -137,6 +138,25 @@ export async function fetchQueueDepths(): Promise<BackendQueueDepths> {
   if (!res.ok) {
     throw new ApiError(
       `Failed to fetch queue depths: ${res.statusText}`,
+      res.status
+    );
+  }
+
+  return res.json();
+}
+
+/**
+ * Fetch most recently created units from registry.
+ */
+export async function fetchRecentUnits(limit: number = 20): Promise<RecentUnitItem[]> {
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(`${baseUrl}/api/units?limit=${limit}`, {
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    throw new ApiError(
+      `Failed to fetch recent units: ${res.statusText}`,
       res.status
     );
   }
