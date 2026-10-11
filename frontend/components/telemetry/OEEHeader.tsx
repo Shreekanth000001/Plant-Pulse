@@ -55,9 +55,8 @@ export function OEEHeader({ machines }: OEEHeaderProps) {
 
     // Performance: operating efficiency considering vibration wear and starving
     const avgVib = vibrationCount > 0 ? totalVibration / vibrationCount : 2.0;
-    // baseline is 2.0; penalize if vibration elevated
     const vibFactor = Math.max(0.7, Math.min(1.0, 1.0 - (Math.max(0, avgVib - 2.0) * 0.05)));
-    const perf = (running > 0 ? (running / (running + starved * 0.5)) : 0) * 100 * vibFactor;
+    const perf = (running > 0 ? running / (running + starved * 0.5) : 0) * 100 * vibFactor;
 
     // Overall OEE = Availability * Performance * Quality
     const computedOEE = Math.min(100, Math.max(0, (avail * perf * qual) / 10000));
@@ -77,197 +76,266 @@ export function OEEHeader({ machines }: OEEHeaderProps) {
   }, [machineList]);
 
   // Determine OEE status badge
-  let oeeLabel = "HEALTHY";
-  let oeeBadgeColor = "text-emerald-400 bg-emerald-950/60 border-emerald-500/40";
-  let oeeBarColor = "bg-emerald-500";
+  let oeeLabel = "Healthy";
+  let oeeBadgeColor = "text-emerald-700 bg-emerald-50 border-emerald-200";
+  let oeeGradient = "from-emerald-500 to-teal-500";
 
   if (oee >= 85) {
-    oeeLabel = "WORLD CLASS";
-    oeeBadgeColor = "text-cyan-300 bg-cyan-950/70 border-cyan-500/50";
-    oeeBarColor = "bg-cyan-400";
+    oeeLabel = "World Class";
+    oeeBadgeColor = "text-blue-700 bg-blue-50 border-blue-200";
+    oeeGradient = "from-blue-600 via-indigo-600 to-blue-500";
   } else if (oee < 65) {
-    oeeLabel = "ATTENTION REQUIRED";
-    oeeBadgeColor = "text-amber-400 bg-amber-950/70 border-amber-500/50";
-    oeeBarColor = "bg-amber-400";
+    oeeLabel = "Attention Required";
+    oeeBadgeColor = "text-amber-800 bg-amber-50 border-amber-200";
+    oeeGradient = "from-amber-500 to-orange-500";
   }
 
   return (
-    <div className="scada-panel rounded-2xl p-5 lg:p-6 border-slate-800 flex flex-col gap-5 shadow-2xl bg-[#0b1120]/90">
+    <div className="bg-white border border-slate-200/90 rounded-3xl p-6 lg:p-7 flex flex-col gap-6 shadow-xs relative overflow-hidden transition-all duration-300">
       {/* Top Banner: OEE Headline and 3 Pillars */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 pb-4 border-b border-slate-800/80">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 relative z-10">
         {/* Main OEE Metric Card */}
-        <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-4 flex flex-col justify-between">
+        <div className="bg-slate-50/70 border border-slate-200 hover:border-slate-300 hover:bg-white rounded-2xl p-5 flex flex-col justify-between transition-all duration-200 shadow-xs group">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-mono uppercase tracking-wider text-slate-400 font-semibold">
-              Line OEE Overall
-            </span>
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-blue-100/70 border border-blue-200/60 flex items-center justify-center text-blue-700 shadow-xs">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                </svg>
+              </div>
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                Overall Line OEE
+              </span>
+            </div>
             <span
-              className={`text-[10px] font-mono px-2 py-0.5 rounded-full border font-bold ${oeeBadgeColor}`}
+              className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full border ${oeeBadgeColor}`}
             >
               {oeeLabel}
             </span>
           </div>
 
-          <div className="my-2 flex items-baseline gap-2">
-            <span className="text-3xl lg:text-4xl font-extrabold font-mono tracking-tight text-slate-100">
+          <div className="my-3 flex items-baseline gap-2">
+            <span className="text-3xl lg:text-4xl font-bold tracking-tight text-slate-900 font-sans">
               {oee.toFixed(1)}%
             </span>
-            <span className="text-xs text-slate-500 font-mono">
-              / Target: 85.0%
+            <span className="text-xs text-slate-500 font-medium">
+              / 85% Target
             </span>
           </div>
 
           {/* Progress bar */}
-          <div className="w-full bg-slate-900 rounded-full h-2 overflow-hidden border border-slate-800">
+          <div className="w-full bg-slate-200/80 rounded-full h-2 overflow-hidden border border-slate-100">
             <div
-              className={`h-full ${oeeBarColor} transition-all duration-500`}
-              style={{ width: `${oee}%` }}
+              className={`h-full bg-gradient-to-r ${oeeGradient} rounded-full transition-all duration-700`}
+              style={{ width: `${Math.min(100, oee)}%` }}
             />
           </div>
         </div>
 
         {/* Pillar 1: Availability */}
-        <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-4 flex flex-col justify-between">
-          <div className="flex items-center justify-between text-[11px] font-mono">
-            <span className="text-slate-400 uppercase font-semibold">
-              Availability
-            </span>
-            <span className="text-emerald-400 font-bold">
+        <div className="bg-slate-50/70 border border-slate-200 hover:border-slate-300 hover:bg-white rounded-2xl p-5 flex flex-col justify-between transition-all duration-200 shadow-xs">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-emerald-100/70 border border-emerald-200/60 flex items-center justify-center text-emerald-700 shadow-xs">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                Availability
+              </span>
+            </div>
+            <span className="text-xs font-bold text-emerald-700 font-mono">
               {availability.toFixed(1)}%
             </span>
           </div>
 
-          <div className="my-2">
-            <div className="text-xl font-bold font-mono text-slate-100">
-              {runningCount} / {machineList.length} Active
+          <div className="my-3">
+            <div className="text-lg font-bold text-slate-900">
+              {runningCount} / {machineList.length} Operational
             </div>
-            <div className="text-[11px] text-slate-400 font-mono mt-0.5 flex items-center gap-2">
-              <span className={starvedCount > 0 ? "text-amber-400" : "text-slate-500"}>
+            <div className="text-xs text-slate-500 mt-1 flex items-center gap-2">
+              <span className={starvedCount > 0 ? "text-amber-700 font-medium" : "text-slate-500"}>
                 {starvedCount} Starved
               </span>
-              <span>•</span>
-              <span className={faultCount > 0 ? "text-rose-400 font-bold" : "text-slate-500"}>
+              <span className="text-slate-300">•</span>
+              <span className={faultCount > 0 ? "text-rose-600 font-medium" : "text-slate-500"}>
                 {faultCount} Faults
               </span>
             </div>
           </div>
 
-          <div className="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden border border-slate-800">
+          <div className="w-full bg-slate-200/80 rounded-full h-2 overflow-hidden border border-slate-100">
             <div
-              className="h-full bg-emerald-400 transition-all duration-500"
-              style={{ width: `${availability}%` }}
+              className="h-full bg-gradient-to-r from-emerald-500 to-teal-500 rounded-full transition-all duration-700"
+              style={{ width: `${Math.min(100, availability)}%` }}
             />
           </div>
         </div>
 
         {/* Pillar 2: Performance */}
-        <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-4 flex flex-col justify-between">
-          <div className="flex items-center justify-between text-[11px] font-mono">
-            <span className="text-slate-400 uppercase font-semibold">
-              Performance
-            </span>
-            <span className="text-cyan-400 font-bold">
+        <div className="bg-slate-50/70 border border-slate-200 hover:border-slate-300 hover:bg-white rounded-2xl p-5 flex flex-col justify-between transition-all duration-200 shadow-xs">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-sky-100/70 border border-sky-200/60 flex items-center justify-center text-sky-700 shadow-xs">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  Performance
+                </span>
+                <span
+                  className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200 cursor-help"
+                  title="Proxy estimate: operating cycle pacing factored by mechanical vibration wear"
+                >
+                  EST.
+                </span>
+              </div>
+            </div>
+            <span className="text-xs font-bold text-sky-700 font-mono">
               {performance.toFixed(1)}%
             </span>
           </div>
 
-          <div className="my-2">
-            <div className="text-xl font-bold font-mono text-slate-100">
-              Nominal Speed
+          <div className="my-3">
+            <div className="text-lg font-bold text-slate-900">
+              Nominal Pacing
             </div>
-            <div className="text-[11px] text-slate-400 font-mono mt-0.5">
-              Cycle pacing synchrony & mechanical health
+            <div className="text-xs text-slate-500 mt-1">
+              Cycle synchrony & motor wear factor
             </div>
           </div>
 
-          <div className="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden border border-slate-800">
+          <div className="w-full bg-slate-200/80 rounded-full h-2 overflow-hidden border border-slate-100">
             <div
-              className="h-full bg-cyan-400 transition-all duration-500"
-              style={{ width: `${performance}%` }}
+              className="h-full bg-gradient-to-r from-sky-500 to-blue-600 rounded-full transition-all duration-700"
+              style={{ width: `${Math.min(100, performance)}%` }}
             />
           </div>
         </div>
 
         {/* Pillar 3: Quality */}
-        <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-4 flex flex-col justify-between">
-          <div className="flex items-center justify-between text-[11px] font-mono">
-            <span className="text-slate-400 uppercase font-semibold">
-              Quality Yield
-            </span>
-            <span className="text-indigo-400 font-bold">
+        <div className="bg-slate-50/70 border border-slate-200 hover:border-slate-300 hover:bg-white rounded-2xl p-5 flex flex-col justify-between transition-all duration-200 shadow-xs">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-indigo-100/70 border border-indigo-200/60 flex items-center justify-center text-indigo-700 shadow-xs">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                </svg>
+              </div>
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                Quality Yield
+              </span>
+            </div>
+            <span className="text-xs font-bold text-indigo-700 font-mono">
               {quality.toFixed(1)}%
             </span>
           </div>
 
-          <div className="my-2">
-            <div className="text-xl font-bold font-mono text-slate-100">
+          <div className="my-3">
+            <div className="text-lg font-bold text-slate-900">
               {totalGood} Units Good
             </div>
-            <div className="text-[11px] text-slate-400 font-mono mt-0.5">
-              <span className={totalReject > 0 ? "text-rose-400" : "text-slate-500"}>
-                {totalReject} Defect Flagged
+            <div className="text-xs text-slate-500 mt-1">
+              <span className={totalReject > 0 ? "text-rose-600 font-medium" : "text-slate-500"}>
+                {totalReject} Flagged
               </span>{" "}
               ({totalProduced > 0 ? ((totalReject / totalProduced) * 100).toFixed(1) : 0}% scrap)
             </div>
           </div>
 
-          <div className="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden border border-slate-800">
+          <div className="w-full bg-slate-200/80 rounded-full h-2 overflow-hidden border border-slate-100">
             <div
-              className="h-full bg-indigo-400 transition-all duration-500"
-              style={{ width: `${quality}%` }}
+              className="h-full bg-gradient-to-r from-indigo-500 to-purple-600 rounded-full transition-all duration-700"
+              style={{ width: `${Math.min(100, quality)}%` }}
             />
           </div>
         </div>
       </div>
 
-      {/* Evocon Signature Shift Production Rhythm Strip */}
-      <div className="flex flex-col gap-2">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs font-mono text-slate-400 gap-1">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="font-semibold text-slate-200 uppercase">
-              Production Shift Activity Timeline (Evocon Shift View)
+      {/* Live Line Operating Rhythm & Status Distribution (Data-Driven) */}
+      <div className="bg-slate-50/70 border border-slate-200 rounded-2xl p-5 flex flex-col gap-3 relative z-10 shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs text-slate-700 gap-2">
+          <div className="flex items-center gap-2.5">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+            </span>
+            <span className="font-semibold text-slate-900 tracking-tight">
+              Line Operating Rhythm
+            </span>
+            <span className="text-xs text-slate-500">
+              (Live Station State Distribution)
             </span>
           </div>
-          <div className="flex items-center gap-4 text-[11px]">
-            <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500" />
-              Productive Running
+
+          {/* Interactive Legend Pills with Real Live Counts */}
+          <div className="flex items-center gap-3 text-xs font-mono">
+            <span className="flex items-center gap-1.5 text-slate-700">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
+              <span>Running ({runningCount})</span>
             </span>
-            <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-sm bg-amber-400" />
-              Micro-Stop / Starved
+            <span className="flex items-center gap-1.5 text-slate-700">
+              <span className="w-2.5 h-2.5 rounded-full bg-amber-400" />
+              <span>Starved ({starvedCount})</span>
             </span>
-            <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-sm bg-rose-500" />
-              Downtime / Fault
+            <span className="flex items-center gap-1.5 text-slate-700">
+              <span className="w-2.5 h-2.5 rounded-full bg-rose-500" />
+              <span>Faults ({faultCount})</span>
             </span>
+            {machineList.length - runningCount - starvedCount - faultCount > 0 && (
+              <span className="flex items-center gap-1.5 text-slate-700">
+                <span className="w-2.5 h-2.5 rounded-full bg-slate-300" />
+                <span>Idle ({machineList.length - runningCount - starvedCount - faultCount})</span>
+              </span>
+            )}
           </div>
         </div>
 
-        {/* Multi-segment visual timeline strip */}
-        <div className="relative w-full h-4 bg-slate-950 rounded-lg overflow-hidden border border-slate-800 flex shadow-inner">
-          {/* Segment blocks representing chronological shift history */}
-          <div style={{ width: "24%" }} className="h-full bg-emerald-500 hover:opacity-90 transition-opacity" title="Shift Start: Normal Run (08:00 - 10:00)" />
-          <div style={{ width: "4%" }} className="h-full bg-amber-400" title="Buffer Wait / Stage Sync (10:00 - 10:20)" />
-          <div style={{ width: "32%" }} className="h-full bg-emerald-500" title="Steady High-Speed Output (10:20 - 13:00)" />
-          <div style={{ width: "3%" }} className="h-full bg-amber-400" title="Shift Change Handover Window (14:00)" />
-          <div style={{ width: "22%" }} className="h-full bg-emerald-500" title="Active Production Run (14:15 - 16:00)" />
-          <div
-            style={{ width: "15%" }}
-            className={`h-full ${
-              faultCount > 0 ? "bg-rose-500 animate-pulse" : starvedCount > 0 ? "bg-amber-400" : "bg-emerald-400"
-            }`}
-            title="Current Real-time Production Status"
-          />
+        {/* Real-time segmented distribution strip based on live telemetry */}
+        <div className="relative w-full h-3.5 bg-slate-200 rounded-xl overflow-hidden border border-slate-300/60 flex shadow-inner">
+          {runningCount > 0 && (
+            <div
+              style={{ width: `${(runningCount / (machineList.length || 1)) * 100}%` }}
+              className="h-full bg-emerald-500 hover:brightness-105 transition-all duration-500"
+              title={`Running: ${runningCount} stations (${((runningCount / (machineList.length || 1)) * 100).toFixed(0)}%)`}
+            />
+          )}
+          {starvedCount > 0 && (
+            <div
+              style={{ width: `${(starvedCount / (machineList.length || 1)) * 100}%` }}
+              className="h-full bg-amber-400 hover:brightness-105 transition-all duration-500"
+              title={`Starved / Micro-stops: ${starvedCount} stations (${((starvedCount / (machineList.length || 1)) * 100).toFixed(0)}%)`}
+            />
+          )}
+          {faultCount > 0 && (
+            <div
+              style={{ width: `${(faultCount / (machineList.length || 1)) * 100}%` }}
+              className="h-full bg-rose-500 animate-pulse hover:brightness-105 transition-all duration-500"
+              title={`Active Downtime / Faults: ${faultCount} stations (${((faultCount / (machineList.length || 1)) * 100).toFixed(0)}%)`}
+            />
+          )}
+          {machineList.length - runningCount - starvedCount - faultCount > 0 && (
+            <div
+              style={{
+                width: `${
+                  ((machineList.length - runningCount - starvedCount - faultCount) /
+                    (machineList.length || 1)) *
+                  100
+                }%`,
+              }}
+              className="h-full bg-slate-300 hover:brightness-105 transition-all duration-500"
+              title={`Idle: ${machineList.length - runningCount - starvedCount - faultCount} stations`}
+            />
+          )}
         </div>
 
-        <div className="flex items-center justify-between text-[10px] font-mono text-slate-500 px-1">
-          <span>08:00 (Shift In)</span>
-          <span>10:00</span>
-          <span>12:00 (Mid-Shift)</span>
-          <span className="text-amber-400/90 font-semibold">14:00 (Handover Spike)</span>
-          <span>16:00 (Current)</span>
+        <div className="flex items-center justify-between text-[11px] text-slate-500 px-0.5 font-mono">
+          <span>0%</span>
+          <span>Line Operational Balance ({runningCount} of {machineList.length} Active)</span>
+          <span>100%</span>
         </div>
       </div>
     </div>

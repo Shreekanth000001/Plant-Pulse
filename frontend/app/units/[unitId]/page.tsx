@@ -158,7 +158,7 @@ function UnitDetailContent() {
           setUnit(data);
         })
         .catch(() => {
-          // If still in-flight and 404, keep existing synthetic record
+          // If still in-flight, keep existing record
         });
     }, 3500);
 
@@ -175,9 +175,9 @@ function UnitDetailContent() {
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[50vh] gap-3 font-mono">
-        <div className="w-8 h-8 rounded-full border-2 border-cyan-500 border-t-transparent animate-spin" />
-        <div className="text-xs text-slate-400">
-          RECONSTRUCTING TRACEABILITY TIMELINE FOR {unitId}...
+        <div className="w-8 h-8 rounded-full border-2 border-blue-600 border-t-transparent animate-spin" />
+        <div className="text-xs text-slate-600 font-medium">
+          Reconstructing traceability genealogy for {unitId}...
         </div>
       </div>
     );
@@ -186,39 +186,43 @@ function UnitDetailContent() {
   if (notFound && !activeMachine) {
     return (
       <div className="max-w-2xl mx-auto my-8 flex flex-col gap-6">
-        <div className="scada-panel rounded-xl p-8 border-rose-900/60 bg-rose-950/20 text-center flex flex-col items-center gap-4">
-          <div className="w-12 h-12 rounded-full bg-rose-950 border border-rose-500/50 flex items-center justify-center text-rose-400 text-xl font-mono">
+        <div className="bg-white rounded-3xl p-8 md:p-10 border-2 border-rose-300 text-center flex flex-col items-center gap-4 shadow-sm">
+          <div className="w-14 h-14 rounded-2xl bg-rose-50 border-2 border-rose-200 flex items-center justify-center text-rose-700 text-2xl font-bold">
             !
           </div>
           <div>
-            <h1 className="text-lg font-bold font-mono text-rose-300 uppercase tracking-wide">
+            <h1 className="text-xl font-bold text-slate-900 tracking-tight">
               Unit Not Found
             </h1>
-            <p className="text-sm text-slate-400 mt-1 max-w-md">
-              No manufacturing history or active telemetry records exist for unit serial{" "}
-              <code className="text-rose-400 font-mono font-semibold">{unitId}</code>.
+            <p className="text-xs md:text-sm text-slate-600 mt-1 max-w-md font-medium">
+              No manufacturing history or active floor telemetry records exist for serial{" "}
+              <code className="text-rose-700 font-mono font-bold bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200">{unitId}</code>.
             </p>
           </div>
 
           {/* Search box to retry */}
-          <form onSubmit={handleSearchSubmit} className="flex gap-2 w-full max-w-sm mt-2">
+          <form onSubmit={handleSearchSubmit} className="flex gap-2 w-full max-w-sm mt-3">
+            <label htmlFor="notfound-unit-search" className="sr-only">
+              Search Unit Serial Number
+            </label>
             <input
+              id="notfound-unit-search"
               type="text"
               value={searchInput}
               onChange={(e) => setDraft(e.target.value)}
               placeholder="Search serial number..."
-              className="flex-1 px-3 py-2 bg-slate-950 rounded border border-slate-700 font-mono text-xs text-slate-200 focus:outline-none focus:border-cyan-400"
+              className="flex-1 px-4 py-2.5 bg-white rounded-xl border-2 border-slate-300 font-mono text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-100 shadow-xs"
             />
             <button
               type="submit"
-              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-mono rounded border border-slate-600 cursor-pointer"
+              className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-xl transition-colors cursor-pointer shadow-xs"
             >
               Lookup
             </button>
           </form>
 
-          <div className="pt-4 border-t border-slate-800 w-full flex items-center justify-center gap-4 text-xs font-mono">
-            <Link href="/units" className="text-cyan-400 hover:underline">
+          <div className="pt-4 border-t border-slate-200 w-full flex items-center justify-center gap-4 text-xs">
+            <Link href="/units" className="text-blue-600 hover:underline font-bold">
               ← Return to Units Directory
             </Link>
           </div>
@@ -229,10 +233,10 @@ function UnitDetailContent() {
 
   if (errorMessage && !unit && !activeMachine) {
     return (
-      <div className="max-w-2xl mx-auto my-8 p-6 scada-panel rounded-xl border-amber-900/60 text-amber-300 font-mono text-xs flex flex-col gap-4">
+      <div className="max-w-2xl mx-auto my-8 p-6 bg-white rounded-3xl border-2 border-amber-300 text-amber-950 text-xs flex flex-col gap-4 shadow-sm font-medium">
         <div>Error loading unit: {errorMessage || "Unknown error"}</div>
-        <Link href="/units" className="text-cyan-400 hover:underline">
-          ← Return to Unit Directory
+        <Link href="/units" className="text-blue-600 hover:underline font-bold">
+          ← Return to Units Directory
         </Link>
       </div>
     );
@@ -261,53 +265,66 @@ function UnitDetailContent() {
   return (
     <div className="max-w-4xl mx-auto flex flex-col gap-6">
       {/* Unit Header Card */}
-      <div className="scada-panel rounded-xl p-5 border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
+      <div className="bg-white rounded-3xl p-6 border border-slate-300 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm">
+        <div className="flex items-center gap-4">
           <Link
             href="/units"
-            className="p-2 rounded bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700 font-mono text-xs"
+            className="w-10 h-10 rounded-xl bg-slate-100 border border-slate-300 text-slate-700 hover:text-slate-900 hover:bg-slate-200 flex items-center justify-center text-sm font-bold transition-all shadow-2xs"
             title="Back to lookup directory"
           >
             ←
           </Link>
           <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl font-bold font-mono text-slate-100 tracking-tight">
+            <div className="flex items-center gap-3">
+              <h1 className="text-xl md:text-2xl font-bold font-mono text-slate-900 tracking-tight">
                 {displayUnit.unit_id}
               </h1>
               <span
-                className={`text-xs font-mono font-bold px-2 py-0.5 rounded uppercase border ${
+                className={`text-xs font-bold px-3 py-1 rounded-full border capitalize ${
                   isPassed
-                    ? "bg-emerald-950/70 text-emerald-300 border-emerald-500/40"
+                    ? "bg-emerald-50 text-emerald-800 border-emerald-300"
                     : isFailed
-                    ? "bg-rose-950/70 text-rose-300 border-rose-500/50"
-                    : "bg-cyan-950/70 text-cyan-300 border-cyan-500/40 animate-pulse"
+                    ? "bg-rose-50 text-rose-800 border-rose-300"
+                    : "bg-blue-50 text-blue-800 border-blue-300 animate-pulse"
                 }`}
               >
-                {isInProgress ? "IN PRODUCTION" : displayUnit.status.toUpperCase()}
+                {isInProgress ? "In Production" : displayUnit.status}
               </span>
             </div>
-            <div className="text-xs text-slate-400 font-mono mt-1">
+            <div className="text-xs text-slate-600 font-medium mt-1">
               Started / Registered:{" "}
-              {displayUnit.created_at
-                ? new Date(displayUnit.created_at).toLocaleString()
-                : "Active Stream"}
+              <strong className="text-slate-800">
+                {displayUnit.created_at
+                  ? new Date(displayUnit.created_at).toLocaleString()
+                  : "Active floor stream"}
+              </strong>
             </div>
+
+            {isInProgress && (
+              <div className="flex items-center gap-1.5 text-[11px] text-blue-700 font-mono mt-1.5 bg-blue-50/80 border border-blue-200/80 px-2.5 py-0.5 rounded-full w-fit">
+                <span className="w-1.5 h-1.5 rounded-full bg-blue-600 animate-pulse" />
+                <span>Live floor polling active (updates every 3.5s)</span>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Search switcher */}
+        {/* Quick serial switcher */}
         <form onSubmit={handleSearchSubmit} className="flex items-center gap-2">
+          <label htmlFor="quick-unit-search" className="sr-only">
+            Switch Unit Serial ID
+          </label>
           <input
+            id="quick-unit-search"
             type="text"
             value={searchInput}
             onChange={(e) => setDraft(e.target.value)}
             placeholder="Switch unit ID..."
-            className="px-3 py-1.5 bg-slate-950 rounded border border-slate-700 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-400 w-44"
+            className="px-3.5 py-2 bg-white rounded-xl border-2 border-slate-300 text-xs font-mono text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-100 w-44 shadow-2xs"
           />
           <button
             type="submit"
-            className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-mono border border-slate-700 cursor-pointer"
+            className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold transition-colors cursor-pointer shadow-xs"
           >
             Go
           </button>
@@ -317,16 +334,16 @@ function UnitDetailContent() {
       {/* Visual Timeline / Journey */}
       <div className="flex flex-col gap-4">
         <div className="flex items-center justify-between px-1">
-          <h2 className="text-xs font-bold font-mono uppercase tracking-wider text-slate-400">
+          <h2 className="text-sm font-bold text-slate-900 tracking-tight">
             Manufacturing Line Journey (Stages 1 ➔ 4)
           </h2>
-          <span className="text-xs font-mono text-slate-500">
+          <span className="text-xs text-slate-700 font-semibold">
             {displayUnit.stages.length} of 4 Stages Logged
           </span>
         </div>
 
         {/* 4-Stage Canonical Pipeline Stepper */}
-        <div className="relative pl-6 md:pl-8 flex flex-col gap-6 before:content-[''] before:absolute before:left-3 md:before:left-4 before:top-4 before:bottom-4 before:w-[2px] before:bg-slate-800">
+        <div className="relative pl-7 md:pl-9 flex flex-col gap-6 before:content-[''] before:absolute before:left-3.5 md:before:left-4 before:top-5 before:bottom-5 before:w-[3px] before:bg-slate-300">
           {PIPELINE_STAGES.map((stageConfig, stageIndex) => {
             const recordedStage = stageMap.get(stageConfig.id);
             const isCurrentlyOnMachine =
@@ -371,101 +388,101 @@ function UnitDetailContent() {
             return (
               <div
                 key={stageConfig.id}
-                className={`relative scada-panel rounded-xl p-4 lg:p-5 border transition-all ${
+                className={`relative rounded-2xl p-5 lg:p-6 border-2 transition-all duration-300 ${
                   isAttributedRootCause
-                    ? "border-rose-600/80 bg-rose-950/20 shadow-[0_0_25px_rgba(225,29,72,0.25)]"
+                    ? "border-rose-400 bg-rose-50/70 shadow-sm ring-2 ring-rose-200"
                     : stageState === "in_flight"
-                    ? "border-cyan-500/60 bg-cyan-950/20 shadow-[0_0_20px_rgba(6,182,212,0.2)]"
+                    ? "border-blue-400 bg-blue-50/60 shadow-sm ring-2 ring-blue-200"
                     : stageState === "completed"
                     ? isHighAnomaly
-                      ? "border-amber-500/50 bg-slate-900/60"
-                      : "border-slate-800"
+                      ? "border-amber-400 bg-amber-50/50 shadow-sm"
+                      : "border-slate-300 bg-white shadow-xs"
                     : stageState === "queued"
-                    ? "border-amber-500/30 bg-amber-950/10"
-                    : "border-slate-800/40 opacity-70 bg-slate-950/40"
+                    ? "border-amber-300 bg-amber-50/40"
+                    : "border-slate-200 bg-slate-50/80 opacity-80"
                 }`}
               >
                 {/* Timeline Step Dot */}
                 <div
-                  className={`absolute -left-[31px] md:-left-[39px] top-5 w-6 h-6 rounded-full border-2 flex items-center justify-center text-[10px] font-mono font-bold ${
+                  className={`absolute -left-[35px] md:-left-[43px] top-6 w-8 h-8 rounded-full border-2 flex items-center justify-center text-xs font-bold shadow-xs ${
                     isAttributedRootCause
-                      ? "bg-rose-950 border-rose-500 text-rose-300 animate-pulse"
+                      ? "bg-rose-100 border-rose-500 text-rose-800 animate-pulse"
                       : stageState === "in_flight"
-                      ? "bg-cyan-950 border-cyan-400 text-cyan-300 animate-pulse"
+                      ? "bg-blue-100 border-blue-600 text-blue-800 animate-pulse"
                       : stageState === "completed"
                       ? isHighAnomaly
-                        ? "bg-amber-950 border-amber-500 text-amber-300"
-                        : "bg-slate-950 border-cyan-500 text-cyan-300"
+                        ? "bg-amber-100 border-amber-500 text-amber-900"
+                        : "bg-emerald-100 border-emerald-600 text-emerald-800"
                       : stageState === "queued"
-                      ? "bg-slate-950 border-amber-500 text-amber-400"
-                      : "bg-slate-950 border-slate-700 text-slate-500"
+                      ? "bg-amber-50 border-amber-400 text-amber-800"
+                      : "bg-slate-100 border-slate-400 text-slate-600"
                   }`}
                 >
                   {stageConfig.stepNumber}
                 </div>
 
                 {/* Stage Header */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-800 gap-2">
-                  <div className="flex items-center gap-2.5">
-                    <span className="text-lg p-1.5 rounded bg-slate-900 border border-slate-800">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3.5 border-b border-slate-200 gap-2">
+                  <div className="flex items-center gap-3">
+                    <span className="text-xl p-2 rounded-xl bg-slate-100 border border-slate-300 shadow-2xs">
                       {stageConfig.icon}
                     </span>
                     <div>
                       <div className="flex items-center gap-2">
-                        <h3 className="text-sm font-bold font-mono text-slate-100 uppercase">
+                        <h3 className="text-sm font-bold text-slate-900">
                           {stageConfig.label}
                         </h3>
                         {machineName && (
-                          <span className="text-xs font-mono text-cyan-400 font-medium">
+                          <span className="text-xs font-mono text-blue-700 font-bold">
                             ({machineName})
                           </span>
                         )}
                       </div>
-                      <p className="text-[11px] text-slate-400">
+                      <p className="text-xs text-slate-600 font-medium mt-0.5">
                         {stageConfig.description}
                       </p>
                     </div>
                   </div>
 
                   {/* Stage Status Pill */}
-                  <div className="flex items-center gap-2 font-mono text-xs">
+                  <div className="flex items-center gap-2 text-xs">
                     {isAttributedRootCause && (
-                      <span className="px-2 py-0.5 rounded bg-rose-950 text-rose-300 border border-rose-500/70 font-bold uppercase animate-pulse">
+                      <span className="px-3 py-1 rounded-full bg-rose-100 text-rose-800 border border-rose-300 font-bold uppercase animate-pulse">
                         ⚠️ Root Cause Stage
                       </span>
                     )}
 
                     {stageState === "completed" && (
                       <span
-                        className={`px-2 py-0.5 rounded uppercase border font-semibold ${
+                        className={`px-3 py-1 rounded-full border text-xs font-bold capitalize ${
                           stageConfig.id === "qc" && isFailed
-                            ? "bg-rose-950/60 text-rose-400 border-rose-500/40"
-                            : "bg-emerald-950/60 text-emerald-400 border-emerald-500/30"
+                            ? "bg-rose-100 text-rose-800 border-rose-300"
+                            : "bg-emerald-50 text-emerald-800 border-emerald-300"
                         }`}
                       >
                         {stageConfig.id === "qc"
-                          ? qc?.outcome?.toUpperCase() || "COMPLETED"
-                          : recordedStage?.outcome || "COMPLETED"}
+                          ? qc?.outcome || "Completed"
+                          : recordedStage?.outcome || "Completed"}
                       </span>
                     )}
 
                     {stageState === "in_flight" && (
-                      <span className="px-2 py-0.5 rounded uppercase border font-semibold bg-cyan-950/70 text-cyan-300 border-cyan-500/50 flex items-center gap-1.5 animate-pulse">
-                        <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
-                        PROCESSING NOW
+                      <span className="px-3 py-1 rounded-full border border-blue-300 text-xs font-bold bg-blue-50 text-blue-800 flex items-center gap-1.5 animate-pulse">
+                        <span className="w-1.5 h-1.5 rounded-full bg-blue-600" />
+                        Processing Now
                       </span>
                     )}
 
                     {stageState === "queued" && (
-                      <span className="px-2 py-0.5 rounded uppercase border font-semibold bg-amber-950/60 text-amber-300 border-amber-500/40 flex items-center gap-1.5">
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                        QUEUED IN BUFFER
+                      <span className="px-3 py-1 rounded-full border border-amber-300 text-xs font-bold bg-amber-50 text-amber-900 flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                        Queued in Buffer
                       </span>
                     )}
 
                     {stageState === "pending" && (
-                      <span className="px-2 py-0.5 rounded uppercase border font-semibold bg-slate-900 text-slate-500 border-slate-800">
-                        PENDING UPSTREAM
+                      <span className="px-3 py-1 rounded-full border border-slate-300 text-xs font-semibold bg-slate-100 text-slate-600">
+                        Pending Upstream
                       </span>
                     )}
                   </div>
@@ -474,12 +491,12 @@ function UnitDetailContent() {
                 {/* Render Completed Stage Details */}
                 {stageState === "completed" && recordedStage && (
                   <>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 my-3 p-2.5 rounded bg-slate-950/70 border border-slate-800/80 text-xs font-mono">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 my-3 p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs">
                       <div>
-                        <span className="text-slate-500 text-[10px] block uppercase">
+                        <span className="text-slate-600 text-[10px] block font-bold uppercase tracking-wider">
                           Entered Station
                         </span>
-                        <span className="text-slate-300">
+                        <span className="text-slate-900 font-mono font-bold mt-0.5 block">
                           {recordedStage.entered_at
                             ? new Date(recordedStage.entered_at).toLocaleTimeString()
                             : "--"}
@@ -487,15 +504,15 @@ function UnitDetailContent() {
                       </div>
 
                       <div>
-                        <span className="text-slate-500 text-[10px] block uppercase">
+                        <span className="text-slate-600 text-[10px] block font-bold uppercase tracking-wider">
                           Exited Station (Duration)
                         </span>
-                        <span className="text-slate-300">
+                        <span className="text-slate-900 font-mono font-bold mt-0.5 block">
                           {recordedStage.exited_at
                             ? new Date(recordedStage.exited_at).toLocaleTimeString()
                             : "--"}
                           {durationStr && (
-                            <span className="text-cyan-400 ml-1.5 font-semibold">
+                            <span className="text-blue-700 ml-1.5 font-bold">
                               ({durationStr})
                             </span>
                           )}
@@ -504,27 +521,27 @@ function UnitDetailContent() {
 
                       <div>
                         <div className="flex items-center justify-between">
-                          <span className="text-slate-500 text-[10px] uppercase">
+                          <span className="text-slate-600 text-[10px] font-bold uppercase tracking-wider">
                             Anomaly Score
                           </span>
                           {isHighAnomaly && (
-                            <span className="text-[9px] px-1 py-0.2 rounded bg-amber-950 text-amber-400 border border-amber-500/40 font-bold">
-                              WARNING &gt; 2.0
+                            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-900 border border-amber-300 font-bold">
+                              Warning &gt; 2.0
                             </span>
                           )}
                         </div>
-                        <div className="flex items-center gap-2 mt-0.5">
+                        <div className="flex items-center gap-2 mt-1">
                           <span
-                            className={`text-sm font-bold ${
-                              isHighAnomaly ? "text-amber-400" : "text-emerald-400"
+                            className={`font-mono text-sm font-bold ${
+                              isHighAnomaly ? "text-amber-900" : "text-emerald-800"
                             }`}
                           >
                             {recordedStage.anomaly_score.toFixed(3)}
                           </span>
-                          <div className="h-1.5 flex-1 bg-slate-900 rounded-full overflow-hidden border border-slate-800">
+                          <div className="h-2 flex-1 bg-slate-200 rounded-full overflow-hidden border border-slate-300/60">
                             <div
-                              className={`h-full ${
-                                isHighAnomaly ? "bg-amber-400" : "bg-emerald-400"
+                              className={`h-full rounded-full ${
+                                isHighAnomaly ? "bg-amber-500" : "bg-emerald-600"
                               }`}
                               style={{
                                 width: `${Math.min(
@@ -539,7 +556,7 @@ function UnitDetailContent() {
                     </div>
 
                     <div>
-                      <div className="text-[10px] font-mono text-slate-500 uppercase tracking-wider mb-2">
+                      <div className="text-xs font-bold text-slate-800 mb-2">
                         Process Sensor Readings At Moment of Completion
                       </div>
                       {recordedStage.readings &&
@@ -552,15 +569,15 @@ function UnitDetailContent() {
                               return (
                                 <div
                                   key={key}
-                                  className="bg-slate-900/80 border border-slate-800 rounded p-2 flex flex-col justify-between"
+                                  className="bg-slate-50 border border-slate-300 rounded-xl p-2.5 flex flex-col justify-between shadow-2xs"
                                 >
-                                  <span className="text-[10px] text-slate-400 truncate">
+                                  <span className="text-[11px] text-slate-700 truncate font-semibold">
                                     {label}
                                   </span>
-                                  <span className="font-mono text-xs font-semibold text-slate-200 mt-1">
+                                  <span className="font-mono text-xs font-bold text-slate-900 mt-1">
                                     {isNum ? Number(val).toFixed(2) : String(val)}
                                     {unit && (
-                                      <span className="text-slate-500 ml-0.5">
+                                      <span className="text-slate-600 font-semibold ml-0.5">
                                         {unit}
                                       </span>
                                     )}
@@ -571,7 +588,7 @@ function UnitDetailContent() {
                           )}
                         </div>
                       ) : (
-                        <div className="text-xs text-slate-500 italic font-mono">
+                        <div className="text-xs text-slate-500 italic">
                           No snapshot sensor data recorded.
                         </div>
                       )}
@@ -581,28 +598,28 @@ function UnitDetailContent() {
 
                 {/* Render In-Flight Live State */}
                 {stageState === "in_flight" && activeMachine && (
-                  <div className="mt-3 p-3.5 rounded-lg bg-cyan-950/30 border border-cyan-500/40 flex flex-col gap-3">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs font-mono gap-2">
+                  <div className="mt-3 p-4 rounded-xl bg-blue-50 border-2 border-blue-300 flex flex-col gap-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs gap-2">
                       <div className="flex items-center gap-2">
-                        <span className="text-cyan-300 font-bold">
+                        <span className="text-blue-950 font-bold">
                           Station: {machineName}
                         </span>
                         {activeMachine.phase && (
-                          <span className="px-2 py-0.5 rounded bg-cyan-900/60 text-cyan-200 border border-cyan-500/50 font-bold uppercase text-[10px]">
-                            Phase: {activeMachine.phase}
+                          <span className="px-2.5 py-0.5 rounded-full bg-white text-blue-800 border border-blue-300 font-bold text-[11px] capitalize">
+                            Phase: {activeMachine.phase.toLowerCase()}
                           </span>
                         )}
                       </div>
-                      <span className="text-slate-400 text-[11px]">
-                        State:{" "}
+                      <span className="text-slate-700 font-medium">
+                        Operating State:{" "}
                         <strong
                           className={
                             activeMachine.starved
-                              ? "text-amber-400"
-                              : "text-emerald-400"
+                              ? "text-amber-900 font-bold"
+                              : "text-emerald-800 font-bold"
                           }
                         >
-                          {activeMachine.starved ? "STARVED" : activeMachine.machine_state}
+                          {activeMachine.starved ? "Starved" : activeMachine.machine_state}
                         </strong>
                       </span>
                     </div>
@@ -611,7 +628,7 @@ function UnitDetailContent() {
                     {activeMachine.extra &&
                       Object.keys(activeMachine.extra).length > 0 && (
                         <div>
-                          <div className="text-[10px] font-mono text-cyan-400 uppercase tracking-wider mb-2">
+                          <div className="text-xs font-bold text-blue-950 mb-2">
                             Live Telemetry Readings (Streaming from Station Bus)
                           </div>
                           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -622,17 +639,17 @@ function UnitDetailContent() {
                                 return (
                                   <div
                                     key={key}
-                                    className="bg-slate-900/90 border border-cyan-900/60 rounded p-2 flex flex-col justify-between"
+                                    className="bg-white border border-blue-300 rounded-xl p-2.5 flex flex-col justify-between shadow-2xs"
                                   >
-                                    <span className="text-[10px] text-slate-400 truncate">
+                                    <span className="text-[11px] text-slate-700 truncate font-semibold">
                                       {label}
                                     </span>
-                                    <span className="font-mono text-xs font-semibold text-cyan-300 mt-1">
+                                    <span className="font-mono text-xs font-bold text-slate-900 mt-1">
                                       {isNum
                                         ? Number(val).toFixed(2)
                                         : String(val)}
                                       {unit && (
-                                        <span className="text-slate-500 ml-0.5">
+                                        <span className="text-slate-600 font-semibold ml-0.5">
                                           {unit}
                                         </span>
                                       )}
@@ -649,84 +666,84 @@ function UnitDetailContent() {
 
                 {/* Render Queued State */}
                 {stageState === "queued" && (
-                  <div className="my-2 p-3 rounded bg-amber-950/20 border border-dashed border-amber-500/30 text-xs font-mono text-amber-300 flex items-center justify-between">
+                  <div className="my-2 p-3.5 rounded-xl bg-amber-50 border-2 border-amber-300 text-xs text-amber-950 flex items-center justify-between font-semibold">
                     <span>
                       ⏳ Unit is buffered in transfer queue, awaiting pickup by next available station.
                     </span>
-                    <span className="text-[10px] text-slate-500">
-                      Buffer Queue Wait
+                    <span className="text-xs text-slate-600 font-bold">
+                      Buffer Queue
                     </span>
                   </div>
                 )}
 
                 {/* Render Pending State */}
                 {stageState === "pending" && (
-                  <div className="my-2 p-2.5 text-xs font-mono text-slate-500 italic">
+                  <div className="my-2 p-2.5 text-xs text-slate-500 font-medium italic">
                     Awaiting completion of upstream manufacturing stages.
                   </div>
                 )}
 
                 {/* Special Section for Stage 4: QC Verdict */}
                 {stageConfig.id === "qc" && qc && (
-                  <div className="mt-4 pt-4 border-t border-slate-800 flex flex-col gap-3">
+                  <div className="mt-4 pt-4 border-t border-slate-200 flex flex-col gap-3">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <span
-                          className={`text-lg font-bold font-mono ${
-                            isPassed ? "text-emerald-400" : "text-rose-400"
+                          className={`text-base font-bold ${
+                            isPassed ? "text-emerald-800" : "text-rose-800"
                           }`}
                         >
-                          {isPassed ? "✓ QC INSPECTION PASSED" : "✗ QC INSPECTION FAILED"}
+                          {isPassed ? "✓ QC Inspection Passed" : "✗ QC Inspection Flagged"}
                         </span>
                       </div>
-                      <span className="text-xs font-mono text-slate-400">
+                      <span className="text-xs text-slate-600 font-medium">
                         {qc.tested_at ? new Date(qc.tested_at).toLocaleTimeString() : ""}
                       </span>
                     </div>
 
                     {isFailed && (
-                      <div className="p-4 rounded-lg bg-rose-950/50 border border-rose-500/60 flex flex-col gap-3">
+                      <div className="p-4.5 rounded-2xl bg-rose-50 border-2 border-rose-300 flex flex-col gap-3.5">
                         <div className="flex items-center justify-between">
-                          <div className="text-rose-400 font-mono font-bold text-sm flex items-center gap-2">
-                            <span>UNIT FLAGGED FOR DEFECT</span>
+                          <div className="text-rose-900 font-bold text-sm">
+                            Unit Flagged for Defect
                           </div>
-                          <div className="font-mono text-xs text-rose-300">
+                          <div className="font-mono text-xs text-rose-800 font-bold">
                             P(defect) = {(qc.probability * 100).toFixed(1)}%
                           </div>
                         </div>
 
                         {/* Operator Diagnostic Statement (as explicitly required) */}
-                        <div className="p-3 rounded bg-slate-950 border border-rose-900 text-xs font-mono text-rose-200">
-                          <div className="text-slate-400 text-[10px] uppercase font-bold tracking-wider mb-1">
+                        <div className="p-3.5 rounded-xl bg-white border-2 border-rose-300 text-xs text-slate-900 shadow-2xs">
+                          <div className="text-slate-600 text-[10px] uppercase font-bold tracking-wider mb-1">
                             QC Diagnostics Summary:
                           </div>
-                          <p className="leading-relaxed">
+                          <p className="leading-relaxed font-medium">
                             This unit failed due to{" "}
-                            <strong className="text-rose-400 underline underline-offset-2">
+                            <strong className="text-rose-800 font-bold underline underline-offset-2">
                               {qc.defect_type || "DETECTED_ANOMALY"}
                             </strong>
                             , most likely caused by anomalous readings at the{" "}
-                            <strong className="text-amber-300 underline underline-offset-2">
+                            <strong className="text-amber-900 font-bold underline underline-offset-2">
                               {qc.attributed_stage || "upstream"}
                             </strong>{" "}
                             stage.
                           </p>
                         </div>
 
-                        <div className="grid grid-cols-2 gap-3 text-xs font-mono pt-1">
+                        <div className="grid grid-cols-2 gap-3 text-xs pt-1">
                           <div>
-                            <span className="text-slate-400 text-[10px] block uppercase">
+                            <span className="text-slate-600 text-[11px] block font-bold">
                               Identified Defect Type
                             </span>
-                            <span className="text-rose-300 font-bold">
+                            <span className="text-rose-800 font-bold font-mono mt-0.5 block">
                               {qc.defect_type}
                             </span>
                           </div>
                           <div>
-                            <span className="text-slate-400 text-[10px] block uppercase">
+                            <span className="text-slate-600 text-[11px] block font-bold">
                               Root Cause Stage Attribution
                             </span>
-                            <span className="text-amber-300 font-bold uppercase">
+                            <span className="text-amber-900 font-bold uppercase font-mono mt-0.5 block">
                               {qc.attributed_stage}
                             </span>
                           </div>
@@ -749,9 +766,9 @@ export default function UnitDetailPage() {
     <Suspense
       fallback={
         <div className="flex flex-col items-center justify-center min-h-[50vh] gap-3 font-mono">
-          <div className="w-8 h-8 rounded-full border-2 border-cyan-500 border-t-transparent animate-spin" />
-          <div className="text-xs text-slate-400">
-            LOADING TRACEABILITY MODULE...
+          <div className="w-8 h-8 rounded-full border-2 border-blue-600 border-t-transparent animate-spin" />
+          <div className="text-xs text-slate-600 font-medium">
+            Loading traceability module...
           </div>
         </div>
       }
