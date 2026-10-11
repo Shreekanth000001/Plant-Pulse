@@ -7,9 +7,10 @@ import { ReadingsGrid } from "./ReadingsGrid";
 
 interface MachineCardProps {
   machine: MachineStatus;
+  onInspect?: () => void;
 }
 
-export function MachineCard({ machine }: MachineCardProps) {
+export function MachineCard({ machine, onInspect }: MachineCardProps) {
   const machineMeta = KNOWN_MACHINES[machine.machine_id];
   const displayName = machine.name || machineMeta?.name || machine.machine_id;
 
@@ -17,33 +18,36 @@ export function MachineCard({ machine }: MachineCardProps) {
   const state = machine.machine_state?.toUpperCase() || "IDLE";
   const isStarved = machine.starved;
 
-  let stateBorder = "border-amber-500/30";
-  let stateBadgeBg = "bg-amber-500/10 text-amber-300";
+  let stateBorder = "border-amber-200";
+  let stateBadgeBg = "bg-amber-50 text-amber-800 font-semibold";
   let dotColor = "bg-amber-400";
+  let accentBarGradient = "from-amber-400 to-amber-500";
   let panelHighlight = "";
-  let accentBarColor = "bg-amber-400";
 
   if (state === "FAULT") {
-    stateBorder = "border-rose-500/50";
-    stateBadgeBg = "bg-rose-500/20 text-rose-300";
+    stateBorder = "border-rose-200";
+    stateBadgeBg = "bg-rose-50 text-rose-700 font-semibold";
     dotColor = "bg-rose-500 animate-ping";
-    panelHighlight = "shadow-[0_0_15px_-3px_rgba(244,63,94,0.3)] border-rose-900";
-    accentBarColor = "bg-rose-500";
+    panelHighlight = "shadow-sm border-rose-300 ring-1 ring-rose-200";
+    accentBarGradient = "from-rose-500 to-rose-600";
   } else if (state === "RUNNING") {
-    stateBorder = "border-emerald-500/30";
-    stateBadgeBg = "bg-emerald-500/15 text-emerald-300";
-    dotColor = "bg-emerald-400 animate-pulse";
-    accentBarColor = "bg-emerald-400";
+    stateBorder = "border-emerald-200";
+    stateBadgeBg = "bg-emerald-50 text-emerald-700 font-semibold";
+    dotColor = "bg-emerald-500";
+    accentBarGradient = "from-emerald-500 to-teal-500";
   } else if (state === "TESTING") {
-    stateBorder = "border-cyan-500/30";
-    stateBadgeBg = "bg-cyan-500/15 text-cyan-300";
-    dotColor = "bg-cyan-400 animate-pulse";
-    accentBarColor = "bg-cyan-400";
+    stateBorder = "border-blue-200";
+    stateBadgeBg = "bg-blue-50 text-blue-700 font-semibold";
+    dotColor = "bg-blue-600 animate-pulse";
+    accentBarGradient = "from-blue-600 to-indigo-600";
   } else if (isStarved) {
-    stateBadgeBg = "bg-amber-950/60 text-amber-300 border border-amber-500/40";
-    accentBarColor = "bg-amber-400 animate-pulse";
+    stateBadgeBg = "bg-amber-50 text-amber-800 border-amber-200 font-semibold";
+    accentBarGradient = "from-amber-400 to-amber-500 animate-pulse";
   } else {
-    accentBarColor = "bg-slate-700";
+    stateBorder = "border-slate-200";
+    stateBadgeBg = "bg-slate-100 text-slate-600 font-medium";
+    dotColor = "bg-slate-400";
+    accentBarGradient = "from-slate-300 to-slate-400";
   }
 
   // Vibration thresholds
@@ -63,35 +67,34 @@ export function MachineCard({ machine }: MachineCardProps) {
 
   return (
     <div
-      className={`scada-panel rounded-lg p-3.5 flex flex-col justify-between transition-all duration-200 hover:border-slate-700 relative overflow-hidden ${panelHighlight}`}
+      className={`bg-white border border-slate-200/90 rounded-2xl p-4.5 flex flex-col justify-between transition-all duration-200 hover:border-slate-300 hover:-translate-y-0.5 hover:shadow-md relative overflow-hidden shadow-xs group ${panelHighlight}`}
     >
-      {/* Evocon-inspired top status accent line */}
-      <div className={`absolute top-0 left-0 right-0 h-1 ${accentBarColor}`} />
+      {/* Top Status Gradient Accent Bar */}
+      <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${accentBarGradient}`} />
 
-      {/* Top Header: ID, Name, State Badge */}
-      <div className="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-800 pt-1">
+      {/* Header: ID Pill, Station Name, Status Pill */}
+      <div className="flex items-start justify-between gap-2 pb-3 border-b border-slate-100 pt-1">
         <div>
           <div className="flex items-center gap-2">
-            <span className="font-mono text-[11px] font-bold text-slate-400 tracking-wider">
+            <span className="font-mono text-[11px] font-bold text-slate-700 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-lg tracking-wider">
               {machine.machine_id.toUpperCase()}
             </span>
-            <span className="text-slate-600">•</span>
-            <h3 className="text-xs font-semibold text-slate-200 tracking-tight truncate max-w-[170px]">
+            <h3 className="text-sm font-semibold text-slate-900 tracking-tight truncate max-w-[170px]">
               {displayName}
             </h3>
           </div>
 
-          {/* Phase and starved tag */}
-          <div className="flex items-center gap-1.5 mt-1">
+          {/* Phase and starved chips */}
+          <div className="flex items-center gap-1.5 mt-1.5">
             {machine.phase && (
-              <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-slate-800/80 text-slate-300 border border-slate-700/60">
-                PHASE: {machine.phase}
+              <span className="text-[11px] font-medium px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200">
+                Phase: <span className="font-semibold text-slate-900 capitalize">{machine.phase.toLowerCase()}</span>
               </span>
             )}
             {isStarved && (
-              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-600/50 flex items-center gap-1 animate-pulse">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                STARVED
+              <span className="text-[11px] font-medium px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200 flex items-center gap-1.5 animate-pulse font-semibold">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                Starved
               </span>
             )}
           </div>
@@ -99,55 +102,55 @@ export function MachineCard({ machine }: MachineCardProps) {
 
         {/* State Pill */}
         <div
-          className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[11px] font-mono font-medium ${stateBadgeBg} ${stateBorder}`}
+          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-semibold ${stateBadgeBg} ${stateBorder}`}
         >
           <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
-          <span>{state}</span>
+          <span className="capitalize">{state.toLowerCase()}</span>
         </div>
       </div>
 
       {/* Primary Telemetry Metrics Row */}
-      <div className="grid grid-cols-2 gap-2 my-2.5 py-2 px-2.5 bg-slate-950/60 rounded border border-slate-800/80">
-        {/* Current Unit */}
+      <div className="grid grid-cols-2 gap-2 my-3 py-2.5 px-3 bg-slate-50 rounded-xl border border-slate-100">
+        {/* Active Unit */}
         <div>
-          <div className="text-[10px] text-slate-500 uppercase font-mono">
+          <div className="text-[11px] text-slate-500 font-semibold">
             Active Unit
           </div>
           {currentUnit ? (
             <Link
               href={`/units/${encodeURIComponent(currentUnit)}`}
-              className="inline-flex items-center gap-1 font-mono text-xs font-medium text-cyan-400 hover:text-cyan-300 hover:underline mt-0.5 transition-colors truncate max-w-full"
+              className="inline-flex items-center gap-1 font-mono text-xs font-bold text-blue-600 hover:text-blue-800 hover:underline mt-1 transition-colors truncate max-w-full"
             >
               <span className="truncate">{currentUnit}</span>
-              <svg className="w-3 h-3 opacity-70 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg className="w-3 h-3 opacity-80 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
               </svg>
             </Link>
           ) : (
-            <div className="font-mono text-xs text-slate-600 mt-0.5 italic">
-              [EMPTY]
+            <div className="text-xs text-slate-400 mt-1 italic font-sans">
+              Awaiting unit
             </div>
           )}
         </div>
 
-        {/* Vibration / Wear (if present for machine) */}
+        {/* Vibration / Motor Health */}
         {vibration !== null ? (
           <div>
-            <div className="flex items-center justify-between text-[10px] text-slate-500 uppercase font-mono">
+            <div className="flex items-center justify-between text-[11px] text-slate-500 font-semibold">
               <span>Vibration</span>
-              <span className={isVibrationFault ? "text-rose-400 font-bold" : isVibrationHigh ? "text-amber-400" : "text-slate-400"}>
+              <span className={`font-mono text-xs font-bold ${isVibrationFault ? "text-rose-600" : isVibrationHigh ? "text-amber-700" : "text-emerald-700"}`}>
                 {vibration.toFixed(2)} mm/s
               </span>
             </div>
-            {/* Mini Vibration Meter */}
-            <div className="relative w-full h-1.5 bg-slate-900 rounded-full overflow-hidden mt-1.5 border border-slate-800">
+            {/* Smooth Progress Meter */}
+            <div className="relative w-full h-1.5 bg-slate-200 rounded-full overflow-hidden mt-1.5 border border-slate-100">
               <div
-                className={`h-full transition-all duration-300 ${
+                className={`h-full rounded-full transition-all duration-300 ${
                   isVibrationFault
                     ? "bg-rose-500"
                     : isVibrationHigh
                     ? "bg-amber-400"
-                    : "bg-emerald-400"
+                    : "bg-emerald-500"
                 }`}
                 style={{
                   width: `${Math.min(100, (vibration / vibrationFaultThreshold) * 100)}%`,
@@ -157,37 +160,54 @@ export function MachineCard({ machine }: MachineCardProps) {
           </div>
         ) : (
           <div>
-            <div className="text-[10px] text-slate-500 uppercase font-mono">
-              Throughput
+            <div className="text-[11px] text-slate-500 font-semibold">
+              Output Volume
             </div>
-            <div className="font-mono text-xs text-slate-300 mt-0.5">
+            <div className="text-xs font-bold text-slate-900 mt-1 font-mono">
               {totalProduced} units
             </div>
           </div>
         )}
       </div>
 
-      {/* Dynamic Process Readings from `extra` */}
+      {/* Dynamic Process Readings */}
       <div className="my-1">
         <ReadingsGrid extra={machine.extra || {}} subFacility={machine.sub_facility} />
       </div>
 
-      {/* Production Counter Footer */}
-      <div className="pt-2.5 mt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px] font-mono text-slate-400">
+      {/* Production Counter Footer & Inspect Action */}
+      <div className="pt-3 mt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
         <div className="flex items-center gap-3">
-          <span title="Units passed or processed cleanly">
-            GOOD: <strong className="text-emerald-400">{good}</strong>
+          <span className="flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+            <span>Good:</span>
+            <strong className="text-slate-900 font-mono font-semibold">{good}</strong>
           </span>
-          <span title="Units flagged or rejected">
-            REJ: <strong className={reject > 0 ? "text-rose-400" : "text-slate-500"}>{reject}</strong>
+          <span className="flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+            <span>Rej:</span>
+            <strong className={reject > 0 ? "text-rose-600 font-mono font-bold" : "text-slate-500 font-mono"}>{reject}</strong>
           </span>
         </div>
 
-        {totalProduced > 0 && (
-          <span className="text-[10px] text-slate-500">
-            SCRAP: <span className={Number(rejectRate) > 5 ? "text-amber-400" : "text-slate-400"}>{rejectRate}%</span>
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          {totalProduced > 0 && (
+            <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${Number(rejectRate) > 5 ? "bg-amber-50 text-amber-800 border-amber-200" : "bg-slate-100 text-slate-600 border-slate-200"}`}>
+              {rejectRate}%
+            </span>
+          )}
+
+          {onInspect && (
+            <button
+              onClick={onInspect}
+              className="text-[11px] font-medium px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 hover:text-slate-900 border border-slate-200 transition-all flex items-center gap-1 cursor-pointer"
+              title="Open Station Inspector"
+            >
+              <span>Inspect</span>
+              <span>→</span>
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

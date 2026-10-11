@@ -87,6 +87,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectDelayRef = useRef(INITIAL_RECONNECT_DELAY_MS);
+  const isCleanedUpRef = useRef(false);
   const subscribersRef = useRef<Set<(message: WebSocketMessage) => void>>(
     new Set()
   );
@@ -259,8 +260,9 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
             }
           } else if (topic.endsWith("/result")) {
             const qcPayload = raw.payload as QCResultPayload;
+            const uniqueSuffix = Math.random().toString(36).substring(2, 8);
             const newNotification: QCNotification = {
-              id: `${qcPayload.unit_id}-${Date.now()}`,
+              id: `${qcPayload.unit_id}-${Date.now()}-${uniqueSuffix}`,
               unit_id: qcPayload.unit_id,
               outcome: qcPayload.outcome,
               defect_type: qcPayload.defect_type,
@@ -269,10 +271,13 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
               timestamp: new Date().toLocaleTimeString(),
             };
 
-            setRecentQcResults((prev) => [
-              newNotification,
-              ...prev.slice(0, 4),
-            ]);
+            setRecentQcResults((prev) => {
+              // Deduplicate: avoid duplicate active toasts for the same unit
+              if (prev.some((item) => item.unit_id === qcPayload.unit_id)) {
+                return prev;
+              }
+              return [newNotification, ...prev.slice(0, 4)];
+            });
           }
         } catch (e) {
           console.warn("Failed to parse incoming WebSocket message:", e);
@@ -282,6 +287,9 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
       ws.onerror = () => {};
 
       ws.onclose = () => {
+        // Do not attempt to reconnect if socket was intentionally closed during component unmount
+        if (isCleanedUpRef.current) return;
+
         setStatus("reconnecting");
         setReconnectAttempt((prev) => prev + 1);
 
@@ -292,7 +300,9 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         );
 
         reconnectTimeoutRef.current = setTimeout(() => {
-          tryConnect();
+          if (!isCleanedUpRef.current) {
+            tryConnect();
+          }
         }, delay);
       };
     } catch {
@@ -334,14 +344,21 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    isCleanedUpRef.current = false;
     connect();
 
     return () => {
+      isCleanedUpRef.current = true;
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
       }
       if (wsRef.current) {
+        wsRef.current.onclose = null;
+        wsRef.current.onerror = null;
+        wsRef.current.onmessage = null;
         wsRef.current.close();
+        wsRef.current = null;
       }
     };
   }, [connect]);

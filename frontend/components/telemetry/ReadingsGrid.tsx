@@ -45,7 +45,7 @@ function getParamStd(key: string): number {
 export function ReadingsGrid({ extra }: ReadingsGridProps) {
   if (!extra || Object.keys(extra).length === 0) {
     return (
-      <div className="py-2 text-center text-xs text-slate-500 italic font-mono">
+      <div className="py-2 text-center text-xs text-slate-400 italic font-mono">
         No active process readings
       </div>
     );
@@ -110,27 +110,27 @@ export function ReadingsGrid({ extra }: ReadingsGridProps) {
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 pt-0.5">
           {standalone.map(([key, val]) => {
             const formattedLabel = formatParamName(key);
-            const isNumber = typeof val === "number" ;
+            const isNumber = typeof val === "number";
             const isPass = key.includes("pass") || key.includes("good");
             const isFail = key.includes("fail") || key.includes("reject");
 
-            let valColor = "text-slate-200";
-            if (isPass) valColor = "text-emerald-400";
-            if (isFail) valColor = typeof val === "number" && val > 0 ? "text-rose-400" : "text-slate-400";
+            let valColor = "text-slate-900";
+            if (isPass) valColor = "text-emerald-700 font-bold";
+            if (isFail) valColor = typeof val === "number" && val > 0 ? "text-rose-600 font-bold" : "text-slate-500";
 
             return (
               <div
                 key={key}
-                className="bg-slate-900/60 border border-slate-800/80 rounded p-1.5 flex flex-col justify-between"
+                className="bg-slate-50 border border-slate-200/80 rounded-lg p-1.5 flex flex-col justify-between shadow-2xs"
               >
-                <span className="text-[10px] text-slate-500 uppercase tracking-wider truncate">
+                <span className="text-[10px] text-slate-500 uppercase tracking-wider truncate font-semibold">
                   {formattedLabel}
                 </span>
                 <span
-                  className={`font-mono text-xs font-semibold tracking-tight ${valColor}`}
+                  className={`font-mono text-xs font-bold tracking-tight ${valColor}`}
                 >
                   {isNumber ? (val % 1 !== 0 ? val.toFixed(2) : val) : String(val)}
-                  {isNumber && !key.includes("count") ? getParamUnit(key) : ""}
+                  {isNumber && !key.includes("count") ? ` ${getParamUnit(key)}` : ""}
                 </span>
               </div>
             );

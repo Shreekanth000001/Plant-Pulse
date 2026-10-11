@@ -11,38 +11,42 @@ function ToastItem({
   item: QCNotification;
   onDismiss: (id: string) => void;
 }) {
+  const isPass = item.outcome === "pass";
+
   useEffect(() => {
+    // Keep failure alerts visible for 15s to allow reading root cause attribution; 6s for passes
+    const displayDuration = isPass ? 6000 : 15000;
     const timer = setTimeout(() => {
       onDismiss(item.id);
-    }, 6000);
+    }, displayDuration);
     return () => clearTimeout(timer);
-  }, [item.id, onDismiss]);
-
-  const isPass = item.outcome === "pass";
+  }, [item.id, isPass, onDismiss]);
 
   return (
     <div
-      className={`scada-panel rounded-lg p-3 w-80 shadow-2xl border transition-all animate-in slide-in-from-top duration-200 ${
+      role={isPass ? "status" : "alert"}
+      aria-live={isPass ? "polite" : "assertive"}
+      className={`rounded-2xl p-3.5 w-80 shadow-xl border transition-all animate-in slide-in-from-top duration-200 ${
         isPass
-          ? "border-emerald-500/40 bg-slate-950/95"
-          : "border-rose-500/60 bg-rose-950/90 text-rose-100"
+          ? "border-emerald-200 bg-white text-slate-900"
+          : "border-rose-300 bg-rose-50 text-rose-950"
       }`}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-1.5">
           <span
             className={`w-2 h-2 rounded-full ${
-              isPass ? "bg-emerald-400" : "bg-rose-500 animate-ping"
+              isPass ? "bg-emerald-500" : "bg-rose-600 animate-ping"
             }`}
           />
-          <span className="font-mono text-xs font-bold uppercase tracking-wider text-slate-300">
+          <span className="font-mono text-xs font-bold uppercase tracking-wider text-slate-600">
             QC Test Event
           </span>
         </div>
 
         <button
           onClick={() => onDismiss(item.id)}
-          className="text-slate-400 hover:text-slate-200 text-xs p-0.5"
+          className="text-slate-400 hover:text-slate-600 text-xs p-0.5 cursor-pointer"
           aria-label="Dismiss notification"
         >
           ✕
@@ -52,7 +56,7 @@ function ToastItem({
       <div className="mt-2 flex items-baseline justify-between font-mono">
         <Link
           href={`/units/${item.unit_id}`}
-          className="text-xs font-semibold text-cyan-400 hover:underline flex items-center gap-1"
+          className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-1"
         >
           {item.unit_id}
           <svg className="w-3 h-3 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -61,8 +65,8 @@ function ToastItem({
         </Link>
 
         <span
-          className={`px-1.5 py-0.2 rounded text-[11px] font-bold uppercase ${
-            isPass ? "text-emerald-400" : "text-rose-400 font-extrabold"
+          className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase border ${
+            isPass ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-rose-100 text-rose-700 border-rose-300"
           }`}
         >
           {item.outcome.toUpperCase()}
@@ -70,17 +74,17 @@ function ToastItem({
       </div>
 
       {!isPass && item.defect_type && (
-        <div className="mt-1 text-[11px] text-rose-200">
-          <span className="font-mono text-rose-400 font-medium">Defect:</span> {item.defect_type}
+        <div className="mt-1 text-[11px] text-rose-900 font-medium">
+          <span className="font-mono text-rose-700 font-bold">Defect:</span> {item.defect_type}
           {item.attributed_stage && (
-            <span className="block text-[10px] text-rose-300/80 font-mono">
-              Stage: {item.attributed_stage}
+            <span className="block text-[10px] text-rose-700 font-mono mt-0.5">
+              Attributed Stage: {item.attributed_stage}
             </span>
           )}
         </div>
       )}
 
-      <div className="mt-1.5 text-[9px] font-mono text-slate-500 text-right">
+      <div className="mt-1.5 text-[9px] font-mono text-slate-400 text-right">
         {item.timestamp}
       </div>
     </div>
@@ -93,9 +97,13 @@ export function QCAlertToastContainer() {
   if (recentQcResults.length === 0) return null;
 
   return (
-    <div className="fixed top-16 right-4 z-50 flex flex-col gap-2 pointer-events-auto max-h-[calc(100vh-5rem)] overflow-hidden">
-      {recentQcResults.map((item) => (
-        <ToastItem key={item.id} item={item} onDismiss={dismissNotification} />
+    <div
+      role="region"
+      aria-label="Quality Control Real-Time Alerts"
+      className="fixed top-16 right-4 z-50 flex flex-col gap-2 pointer-events-auto max-h-[calc(100vh-5rem)] overflow-hidden"
+    >
+      {recentQcResults.map((item, idx) => (
+        <ToastItem key={`${item.id}-${idx}`} item={item} onDismiss={dismissNotification} />
       ))}
     </div>
   );

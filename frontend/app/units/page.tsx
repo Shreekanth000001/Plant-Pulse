@@ -7,11 +7,40 @@ import { fetchRecentUnits, getErrorMessage } from "../../lib/api";
 import { RecentUnitItem, KNOWN_MACHINES } from "../../types/factory";
 import { useFactoryWebSocket } from "../../context/WebSocketContext";
 
-const STAGE_LABELS: Record<string, { label: string; icon: string }> = {
-  housing: { label: "1. Housing (Molding)", icon: "🏗️" },
-  casting: { label: "2. Membrane Casting", icon: "🎞️" },
-  assembly: { label: "3. Assembly", icon: "⚙️" },
-  qc: { label: "4. QC Testing", icon: "🔬" },
+const STAGE_LABELS: Record<string, { label: string; icon: React.ReactNode }> = {
+  housing: {
+    label: "1. Housing Sub-Facility",
+    icon: (
+      <svg className="w-3.5 h-3.5 text-slate-700 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+      </svg>
+    ),
+  },
+  casting: {
+    label: "2. Membrane Casting",
+    icon: (
+      <svg className="w-3.5 h-3.5 text-slate-700 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 4v16M17 4v16M3 8h18M3 16h18" />
+      </svg>
+    ),
+  },
+  assembly: {
+    label: "3. Assembly Station",
+    icon: (
+      <svg className="w-3.5 h-3.5 text-slate-700 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+      </svg>
+    ),
+  },
+  qc: {
+    label: "4. Quality Control",
+    icon: (
+      <svg className="w-3.5 h-3.5 text-slate-700 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+      </svg>
+    ),
+  },
 };
 
 export default function UnitsIndexPage() {
@@ -95,89 +124,101 @@ export default function UnitsIndexPage() {
   };
 
   return (
-    <div className="max-w-5xl mx-auto flex flex-col gap-6 py-4">
-      {/* Search Header Hero */}
-      <div className="scada-panel rounded-xl p-6 md:p-8 flex flex-col gap-4 border-slate-800">
-        <div className="flex items-center gap-3">
-          <div className="p-3 rounded-lg bg-cyan-950/60 border border-cyan-500/40 text-cyan-400 text-2xl font-mono">
-            🔍
+    <div className="max-w-5xl mx-auto flex flex-col gap-7 py-2">
+      {/* Search Header Hero (Snow & Evocon Clean Style) */}
+      <div className="bg-white rounded-3xl p-7 md:p-9 flex flex-col gap-5 border border-slate-300 shadow-sm relative overflow-hidden">
+        <div className="flex items-center gap-4 relative z-10">
+          <div className="w-12 h-12 rounded-2xl bg-blue-50 border-2 border-blue-200 text-blue-700 flex items-center justify-center shadow-xs">
+            <svg className="w-6 h-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
           </div>
           <div>
-            <h1 className="text-xl md:text-2xl font-bold font-mono text-slate-100 uppercase tracking-wide">
-              Unit Traceability & Quality Lookup
+            <h1 className="text-xl md:text-2xl font-bold tracking-tight text-slate-900">
+              Unit Traceability & Quality Genealogy
             </h1>
-            <p className="text-sm text-slate-400 mt-1">
-              Query complete end-to-end manufacturing genealogies, process sensor snapshots, anomaly scores, and root-cause QC defect attribution.
+            <p className="text-xs md:text-sm text-slate-600 font-medium mt-1 max-w-2xl">
+              Query complete end-to-end manufacturing journey, sensor snapshots, anomaly scores, and root-cause QC defect attribution.
             </p>
           </div>
         </div>
 
         {/* Search Input Box */}
-        <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-2 mt-4">
+        <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-3 mt-2 relative z-10">
           <div className="relative flex-1">
+            <label htmlFor="main-unit-search" className="sr-only">
+              Enter Unit Serial Number
+            </label>
             <input
+              id="main-unit-search"
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               placeholder="Enter Unit Serial Number (e.g. unit_1011164456_000001)..."
-              className="w-full px-4 py-3 bg-slate-950 rounded-lg border border-slate-700 font-mono text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 text-sm"
-              autoFocus
+              className="w-full px-5 py-3.5 bg-white rounded-2xl border-2 border-slate-300 font-mono text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-100 text-sm transition-all shadow-xs"
             />
           </div>
           <button
             type="submit"
-            className="px-6 py-3 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-mono font-bold text-sm transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-[0_0_15px_rgba(6,182,212,0.3)]"
+            className="px-7 py-3.5 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm hover:scale-[1.01]"
           >
-            <span>TRACE UNIT</span>
+            <span>Trace Unit</span>
             <span>➔</span>
           </button>
         </form>
       </div>
 
       {/* Section 1: Active In-Flight Units on Factory Floor */}
-      <div className="scada-panel rounded-xl p-6 border-slate-800 flex flex-col gap-4">
-        <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-          <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse" />
-            <h2 className="text-sm font-bold font-mono text-cyan-300 uppercase tracking-wider">
+      <div className="bg-white rounded-3xl p-6 md:p-7 border border-slate-300 flex flex-col gap-4 shadow-sm">
+        <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+          <div className="flex items-center gap-2.5">
+            <span className="relative flex h-2.5 w-2.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-500 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-600" />
+            </span>
+            <h2 className="text-base font-bold text-slate-900 tracking-tight">
               Active In-Flight Units (Live Stations)
             </h2>
           </div>
-          <span className="text-xs font-mono text-slate-400">
+          <span className="text-xs font-semibold text-slate-700 px-3 py-1 rounded-full bg-slate-100 border border-slate-300">
             {activeInFlightUnits.length} in production right now
           </span>
         </div>
 
         {activeInFlightUnits.length > 0 ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
             {activeInFlightUnits.map((u) => {
               const stageInfo = STAGE_LABELS[u.subFacility] || {
                 label: u.subFacility,
-                icon: "📦",
+                icon: (
+                  <svg className="w-3.5 h-3.5 text-slate-700 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                  </svg>
+                ),
               };
               return (
                 <Link
                   key={u.unitId}
                   href={`/units/${encodeURIComponent(u.unitId)}`}
-                  className="bg-slate-950/80 border border-cyan-500/30 hover:border-cyan-400 rounded-lg p-3.5 flex flex-col justify-between group transition-all shadow-[0_0_12px_rgba(6,182,212,0.1)]"
+                  className="bg-white rounded-2xl p-4.5 flex flex-col justify-between group transition-all duration-200 border-2 border-slate-200 hover:border-blue-500 hover:-translate-y-0.5 hover:shadow-md"
                 >
                   <div className="flex items-start justify-between gap-2">
-                    <span className="font-mono text-sm font-bold text-cyan-300 group-hover:text-cyan-200 truncate">
+                    <span className="font-mono text-sm font-bold text-blue-600 group-hover:text-blue-800 truncate">
                       {u.unitId}
                     </span>
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded uppercase border bg-cyan-950/60 text-cyan-300 border-cyan-500/40 animate-pulse whitespace-nowrap">
-                      IN-FLIGHT
+                    <span className="text-[10px] font-semibold px-2.5 py-0.5 rounded-full border border-blue-300 bg-blue-50 text-blue-700 animate-pulse whitespace-nowrap">
+                      In-Flight
                     </span>
                   </div>
 
-                  <div className="mt-2.5 flex flex-col gap-1 text-xs font-mono">
-                    <div className="flex items-center gap-1.5 text-slate-200">
+                  <div className="mt-3 flex flex-col gap-1.5 text-xs">
+                    <div className="flex items-center gap-2 text-slate-900 font-semibold">
                       <span>{stageInfo.icon}</span>
-                      <span className="font-semibold">{stageInfo.label}</span>
+                      <span>{stageInfo.label}</span>
                     </div>
-                    <div className="flex items-center justify-between text-[11px] text-slate-400">
+                    <div className="flex items-center justify-between text-slate-600 text-xs font-medium">
                       <span className="truncate">{u.machineName}</span>
-                      <span className="text-cyan-400 font-medium">
+                      <span className="text-blue-600 font-bold font-mono">
                         {u.phase ? `[${u.phase}]` : u.machineState}
                       </span>
                     </div>
@@ -187,23 +228,21 @@ export default function UnitsIndexPage() {
             })}
           </div>
         ) : (
-          <div className="p-6 text-center text-xs font-mono text-slate-500 bg-slate-950/40 rounded-lg border border-slate-800/60">
+          <div className="p-8 text-center text-xs text-slate-600 bg-slate-50 rounded-2xl border border-slate-300 font-medium">
             All stations currently idling or between work cycles. Awaiting next stage cycle.
           </div>
         )}
       </div>
 
       {/* Section 2: Recent Manufactured Units (Database Registry) */}
-      <div className="scada-panel rounded-xl p-6 border-slate-800 flex flex-col gap-4">
-        <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-          <div className="flex items-center gap-2">
-            <h2 className="text-sm font-bold font-mono text-slate-300 uppercase tracking-wider">
-              Recent Manufactured Units Registry
-            </h2>
-          </div>
+      <div className="bg-white rounded-3xl p-6 md:p-7 border border-slate-300 flex flex-col gap-4 shadow-sm">
+        <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+          <h2 className="text-base font-bold text-slate-900 tracking-tight">
+            Recent Manufactured Units Registry
+          </h2>
           <button
             onClick={refreshRecent}
-            className="text-xs font-mono text-slate-400 hover:text-cyan-300 px-2.5 py-1 rounded bg-slate-900 border border-slate-800 hover:border-slate-700 transition-colors flex items-center gap-1 cursor-pointer"
+            className="text-xs text-slate-700 hover:text-slate-900 px-3 py-1.5 rounded-xl bg-white border border-slate-300 hover:border-slate-400 transition-all flex items-center gap-1.5 cursor-pointer font-semibold shadow-xs"
           >
             <span>↻</span>
             <span>Refresh</span>
@@ -211,55 +250,55 @@ export default function UnitsIndexPage() {
         </div>
 
         {error && (
-          <div className="p-3 rounded bg-amber-950/50 border border-amber-600/40 text-amber-300 font-mono text-xs">
+          <div className="p-3.5 rounded-2xl bg-amber-50 border border-amber-300 text-amber-950 text-xs font-semibold">
             {error}
           </div>
         )}
 
         {loading && recentUnits.length === 0 ? (
-          <div className="flex items-center justify-center py-10 gap-2 font-mono text-xs text-slate-400">
-            <div className="w-5 h-5 rounded-full border-2 border-cyan-500 border-t-transparent animate-spin" />
+          <div className="flex items-center justify-center py-12 gap-2 text-xs text-slate-600 font-medium">
+            <div className="w-5 h-5 rounded-full border-2 border-blue-600 border-t-transparent animate-spin" />
             <span>Loading registered units from database...</span>
           </div>
         ) : recentUnits.length > 0 ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-            {recentUnits.map((u) => {
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3.5">
+            {recentUnits.map((u, idx) => {
               const isPassed = u.status === "passed";
               const isFailed = u.status === "failed";
               const isInProgress = u.status === "in_progress";
 
               return (
                 <Link
-                  key={u.unit_id}
+                  key={`${u.unit_id}-${idx}`}
                   href={`/units/${encodeURIComponent(u.unit_id)}`}
-                  className="bg-slate-950/70 border border-slate-800 hover:border-cyan-500/50 rounded-lg p-3.5 flex flex-col justify-between group transition-all"
+                  className="bg-white rounded-2xl p-4.5 flex flex-col justify-between group transition-all duration-200 border-2 border-slate-200 hover:border-slate-400 hover:-translate-y-0.5 shadow-xs"
                 >
                   <div className="flex items-center justify-between">
-                    <span className="font-mono text-sm font-semibold text-slate-200 group-hover:text-cyan-300 truncate">
+                    <span className="font-mono text-sm font-bold text-slate-900 group-hover:text-blue-600 truncate">
                       {u.unit_id}
                     </span>
                     <span
-                      className={`text-[10px] font-mono px-1.5 py-0.5 rounded uppercase border whitespace-nowrap ${
+                      className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border whitespace-nowrap capitalize ${
                         isPassed
-                          ? "bg-emerald-950/60 text-emerald-400 border-emerald-500/30"
+                          ? "bg-emerald-50 text-emerald-800 border-emerald-300"
                           : isFailed
-                          ? "bg-rose-950/60 text-rose-400 border-rose-500/30"
+                          ? "bg-rose-50 text-rose-800 border-rose-300"
                           : isInProgress
-                          ? "bg-cyan-950/60 text-cyan-300 border-cyan-500/30"
-                          : "bg-slate-800 text-slate-400 border-slate-700"
+                          ? "bg-blue-50 text-blue-800 border-blue-300"
+                          : "bg-slate-100 text-slate-700 border-slate-300"
                       }`}
                     >
                       {u.status}
                     </span>
                   </div>
 
-                  <div className="mt-3 flex items-center justify-between text-xs text-slate-400 font-mono">
-                    <span className="text-[11px] text-slate-500">
+                  <div className="mt-3 flex items-center justify-between text-xs text-slate-600 font-medium">
+                    <span>
                       {u.created_at
                         ? new Date(u.created_at).toLocaleTimeString()
                         : "Registered"}
                     </span>
-                    <span className="text-cyan-400/80 group-hover:text-cyan-300 text-[11px]">
+                    <span className="text-blue-600 group-hover:text-blue-800 font-bold">
                       View Journey →
                     </span>
                   </div>
@@ -268,7 +307,7 @@ export default function UnitsIndexPage() {
             })}
           </div>
         ) : (
-          <div className="p-8 text-center text-xs font-mono text-slate-500 bg-slate-950/40 rounded-lg border border-slate-800/60">
+          <div className="p-8 text-center text-xs text-slate-600 bg-slate-50 rounded-2xl border border-slate-300 font-medium">
             No completed units recorded in database yet. Units are recorded as they progress through production.
           </div>
         )}
