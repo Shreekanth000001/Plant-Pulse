@@ -17,30 +17,33 @@ export function MachineCard({ machine }: MachineCardProps) {
   const state = machine.machine_state?.toUpperCase() || "IDLE";
   const isStarved = machine.starved;
 
-  // let stateColor = "text-amber-400";
   let stateBorder = "border-amber-500/30";
   let stateBadgeBg = "bg-amber-500/10 text-amber-300";
   let dotColor = "bg-amber-400";
   let panelHighlight = "";
+  let accentBarColor = "bg-amber-400";
 
   if (state === "FAULT") {
-    // stateColor = "text-rose-400";
     stateBorder = "border-rose-500/50";
     stateBadgeBg = "bg-rose-500/20 text-rose-300";
     dotColor = "bg-rose-500 animate-ping";
     panelHighlight = "shadow-[0_0_15px_-3px_rgba(244,63,94,0.3)] border-rose-900";
+    accentBarColor = "bg-rose-500";
   } else if (state === "RUNNING") {
-    // stateColor = "text-emerald-400";
     stateBorder = "border-emerald-500/30";
     stateBadgeBg = "bg-emerald-500/15 text-emerald-300";
     dotColor = "bg-emerald-400 animate-pulse";
+    accentBarColor = "bg-emerald-400";
   } else if (state === "TESTING") {
-    // stateColor = "text-cyan-400";
     stateBorder = "border-cyan-500/30";
     stateBadgeBg = "bg-cyan-500/15 text-cyan-300";
     dotColor = "bg-cyan-400 animate-pulse";
+    accentBarColor = "bg-cyan-400";
   } else if (isStarved) {
     stateBadgeBg = "bg-amber-950/60 text-amber-300 border border-amber-500/40";
+    accentBarColor = "bg-amber-400 animate-pulse";
+  } else {
+    accentBarColor = "bg-slate-700";
   }
 
   // Vibration thresholds
@@ -60,10 +63,13 @@ export function MachineCard({ machine }: MachineCardProps) {
 
   return (
     <div
-      className={`scada-panel rounded-lg p-3.5 flex flex-col justify-between transition-all duration-200 hover:border-slate-700 ${panelHighlight}`}
+      className={`scada-panel rounded-lg p-3.5 flex flex-col justify-between transition-all duration-200 hover:border-slate-700 relative overflow-hidden ${panelHighlight}`}
     >
+      {/* Evocon-inspired top status accent line */}
+      <div className={`absolute top-0 left-0 right-0 h-1 ${accentBarColor}`} />
+
       {/* Top Header: ID, Name, State Badge */}
-      <div className="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-800">
+      <div className="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-800 pt-1">
         <div>
           <div className="flex items-center gap-2">
             <span className="font-mono text-[11px] font-bold text-slate-400 tracking-wider">
@@ -109,11 +115,11 @@ export function MachineCard({ machine }: MachineCardProps) {
           </div>
           {currentUnit ? (
             <Link
-              href={`/units/${currentUnit}`}
-              className="inline-flex items-center gap-1 font-mono text-xs font-medium text-cyan-400 hover:text-cyan-300 hover:underline mt-0.5 transition-colors"
+              href={`/units/${encodeURIComponent(currentUnit)}`}
+              className="inline-flex items-center gap-1 font-mono text-xs font-medium text-cyan-400 hover:text-cyan-300 hover:underline mt-0.5 transition-colors truncate max-w-full"
             >
-              <span>{currentUnit}</span>
-              <svg className="w-3 h-3 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <span className="truncate">{currentUnit}</span>
+              <svg className="w-3 h-3 opacity-70 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
               </svg>
             </Link>
@@ -179,7 +185,7 @@ export function MachineCard({ machine }: MachineCardProps) {
 
         {totalProduced > 0 && (
           <span className="text-[10px] text-slate-500">
-            REJ: <span className={Number(rejectRate) > 5 ? "text-amber-400" : "text-slate-400"}>{rejectRate}%</span>
+            SCRAP: <span className={Number(rejectRate) > 5 ? "text-amber-400" : "text-slate-400"}>{rejectRate}%</span>
           </span>
         )}
       </div>
