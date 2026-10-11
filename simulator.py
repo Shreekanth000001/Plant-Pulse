@@ -44,11 +44,13 @@ class MachineSim:
     pushes the finished Unit into output_queue when done."""
 
     def __init__(self, machine_id, name, sub_facility, readings, phases,
-                 vibration_fault_threshold, input_queue, output_queue):
+                 vibration_fault_threshold,cycle_time_mean, cycle_time_std, input_queue, output_queue):
         self.machine_id = machine_id
         self.name = name
         self.sub_facility = sub_facility
         self.readings = readings
+        self.cycle_time_mean = cycle_time_mean
+        self.cycle_time_std = cycle_time_std
         self.vibration_fault_threshold = vibration_fault_threshold
 
         self.input_queue = input_queue    # None for Housing (infinite raw material)
@@ -57,6 +59,8 @@ class MachineSim:
         self.phases = phases
         self.phase_index = 0
         self.phase_elapsed = 0.0
+        self._working_phase_count = sum(1 for p in phases if p != "IDLE")
+
         self.phase_duration = self._roll_phase_duration()
 
         self.machine_state = "IDLE"       # IDLE / RUNNING / FAULT
@@ -75,8 +79,8 @@ class MachineSim:
         return self.phases[self.phase_index]
 
     def _roll_phase_duration(self) -> float:
-        cycle_time = max(random.gauss(75.0, 4.0), 10.0)
-        return cycle_time / len(self.phases)
+        cycle_time = max(random.gauss(self.cycle_time_mean, self.cycle_time_std), 10.0)
+        return cycle_time / self._working_phase_count
 
     def _try_start_cycle(self) -> bool:
         """Attempt to claim a unit and leave IDLE. Returns False (stays
@@ -352,6 +356,8 @@ class Line:
                         readings=_extract_readings(m),
                         phases=sf["phases"],
                         vibration_fault_threshold=m["vibration_fault_threshold"],
+                        cycle_time_mean=m["cycle_time_mean"],
+                        cycle_time_std=m["cycle_time_std"],
                         input_queue=input_queue,
                         output_queue=output_queue,
                     )
