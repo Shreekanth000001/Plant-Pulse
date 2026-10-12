@@ -4,7 +4,6 @@ import pytest
 
 from defect_model import (
     SHIFT_CHANGE_BIAS,
-    _shift_change_bias,
     compute_defect_probability,
 )
 
@@ -24,8 +23,10 @@ def test_probability_never_exceeds_cap():
 
 def test_shift_change_bias():
 
-    shift_value = _shift_change_bias(current_hour=6)
-    quiet_value = _shift_change_bias(current_hour=12)
+    unit = make_unit([0])
+
+    shift_value = compute_defect_probability(unit, current_hour=6)
+    quiet_value = compute_defect_probability(unit, current_hour=12)
 
     result = shift_value - quiet_value
 
