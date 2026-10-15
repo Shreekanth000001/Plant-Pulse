@@ -117,17 +117,57 @@ start empty.
 
 ## Design decisions
 
-> **TODO (you write this section, at least four decisions).** For each one use this shape:
+## Design decisions
 
-1.To limit the sub facilities to 4 so it does has enough complexity and yet not overwhelm with data
-2.Use MQTT for publishing and listening so many clients can access the data at the same time.
-3.Choose a modern UI/UX design appropriate for engineers
-4.
+### 1. Queues between stages
 
+**Problem:** Stages depend on each other. Casting cannot start until Housing has produced a unit, and each stage runs at a different speed.
 
-> **Problem** (what needed solving) / **Choice** (what you did) / **Alternative I rejected, and why** / **Tradeoff** (what it costs).
-> Candidates: MQTT instead of HTTP polling; queues between stages; units that carry their own history;
-> SQLite instead of Postgres; keeping aggregation in the API instead of the dashboard.
+**Choice:** Casting, Assembly, and QC each take units from a queue. A machine only starts a cycle when it can take a unit. With an empty queue it stays idle and is marked *starved*. Housing has unlimited raw material, so it always runs.
+
+**Alternative rejected:** Letting every machine run on its own and make its own units. It is simpler, but no machine would ever wait for input, so a bottleneck could never appear.
+
+**Tradeoff:** The queues have no size limit. Housing is faster than Casting, so the queue in front of Casting grows without bound (see Known limitations).
+
+### 2. Units carry their own history
+
+**Problem:** A pass or fail result does not say why a unit failed. To explain a failure I need to know which machines handled the unit and how they were behaving at the time.
+
+**Choice:** Every unit is an object with an ID and a history. When a machine finishes a unit, it records the machine, the timestamps, its readings, and an anomaly score (how far the readings were from their setpoints). Each machine also publishes this as a `stage_event` message, and the API stores it, so the full journey of any unit is available at `GET /api/units/{id}`.
+
+**Alternative rejected:** Storing only the QC verdict and matching it to machine telemetry by time. It is less to build, but it can only say what the plant was doing around that moment, not what happened to that specific unit.
+
+**Tradeoff:** More data to publish and store, and every stage has to report. A failure is attributed to the stage with the worst anomaly score, which is a heuristic and not proof of the cause.
+
+### 3. Defect probability depends on shift changes, weather, and the unit's own readings
+
+**Problem:** A flat random defect rate gives data with nothing to analyze. The factory floor is climate-controlled, so time of day alone is not a believable cause.
+
+**Choice:** A unit's defect probability is a base rate plus a shift-change bias, a weather bias, and a bias from the unit's own anomaly scores, capped at 95%.
+
+**Alternative rejected:** A flat rate, or a rate that depends only on the hour of the day.
+
+**Tradeoff:** The patterns in the data exist because I built them in, so the analytics shows effects I put there. The weather term is a placeholder (0) until a live data source is connected.
+
+### 4. A separate QC station tests every unit
+
+**Problem:** Production machines can flag their own work, but the plant needs one place that gives the final verdict on a unit.
+
+**Choice:** One QC machine takes finished units from a queue, tests them, and records pass or fail, plus the defect type and the stage blamed. It acts as the ground truth that the analytics compares everything against.
+
+**Alternative rejected:** Letting each stage discard defective units itself. The line would be simpler, but nothing downstream could learn from a unit thrown away early.
+
+**Tradeoff:** A single QC station is one more place where units wait, and attributing a failure back to one stage is a heuristic.
+
+### 5. MQTT between the simulator and the API
+
+**Problem:** The simulator produces readings continuously, and several consumers (the database and the dashboard) need them without the producer knowing about each one.
+
+**Choice:** Machines publish to MQTT topics. The API subscribes, stores each message, and forwards it to dashboards over a WebSocket. Adding another consumer needs no change to the simulator.
+
+**Alternative rejected:** The simulator calling an HTTP endpoint every 2 seconds. It is simpler to run, but it ties the producer to the API and to every consumer behind it.
+
+**Tradeoff:** One more service to run (the broker), and delivery guarantees to understand. The code publishes with QoS 1.
 
 ## Testing and CI
 
