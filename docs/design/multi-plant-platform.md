@@ -62,7 +62,7 @@ The following files from the PlantPulse repository were audited to construct thi
 
 > [!WARNING]
 > ### Concern 2: Simulator Disk Storage Exhaustion on Resource-Constrained Host
-> **The Problem:** The demo simulator produces continuous high-frequency telemetry. Running it 24/7 on a single small VM does not primarily stress the CPU, but it rapidly exhausts disk space with unneeded synthetic telemetry rows (over 1.3 million rows / ~110 MB per day).  
+> **The Problem:** The demo simulator produces continuous high-frequency telemetry. Running it 24/7 on a single small VM does not primarily stress the CPU, but it rapidly exhausts disk space with unneeded synthetic telemetry rows (over 1.3 million rows / ~447 MB per day (339 bytes per row, measured in bench/sqlite_bench.py)).  
 > **Mitigation:** The simulator operates strictly on-demand. FastAPI emits heartbeat messages (`plants/{plant_id}/control/heartbeat`) every 5 seconds only while active WebSocket viewers are connected to the demo plant. The simulator shuts down its publishing loop when no heartbeats are received for 30 seconds.
 
 > [!NOTE]
@@ -523,7 +523,7 @@ CREATE INDEX idx_qc_results_time ON qc_results(plant_id, tested_at DESC);
 
 ### 3.3 Daily Row Volume & Storage Calculations
 
-Because metrics are stored as narrow rows (one row per signal per message), we calculate the concrete daily row ingestion volume and disk footprint for both reference facilities:
+Measured on the developer machine with an in-process script and no event loop; a cloud VM disk will behave differently. Because metrics are stored as narrow rows (one row per signal per message), we calculate the concrete daily row ingestion volume and disk footprint for both reference facilities:
 
 #### Plant A: 8040 Membrane Manufacturing Demo Plant
 - **Facility Layout:** 11 machines across 4 areas:
@@ -539,9 +539,9 @@ Because metrics are stored as narrow rows (one row per signal per message), we c
 - **Daily Volume with Watchdog Enabled:**
   Assuming the demo plant is viewed for approximately 2 hours per day across various user sessions:
   $$\text{Rows/day (2h runtime)} = 16 \times 7,200 = 115,200\text{ rows/day}$$
-- **Storage Footprint:** Each narrow SQLite row occupies $\approx 80\text{ bytes}$ (including B-tree indexing).
+- **Storage Footprint:** Each narrow SQLite row occupies $\approx 339\text{ bytes}$ (including B-tree indexing).
   - 2 hours/day active: $\approx 9.2\text{ MB/day}$.
-  - 24 hours/day continuous: $\approx 110\text{ MB/day}$.
+  - 24 hours/day continuous: $\approx 447\text{ MB/day}$.
 
 #### Plant B: Municipal Water Booster Pump Station
 - **Facility Layout:** 3 pumps in a single area (`pump_house`):
@@ -553,10 +553,15 @@ Because metrics are stored as narrow rows (one row per signal per message), we c
 - **Narrow Ingestion Rate:** $9 \div 5 = 1.8\text{ rows/second}$.
 - **Daily Volume (Always-On 24/7):**
   $$\text{Rows/day} = 1.8 \times 60 \times 60 \times 24 = 155,520\text{ rows/day} \approx 155\text{k rows/day}$$
-- **Storage Footprint:** $155,520 \times 80\text{ bytes} \approx 12.4\text{ MB/day} \approx 372\text{ MB/month}$.
+- **Storage Footprint:** $155,520 \times 339\text{ bytes} \approx 50\text{ MB/day} \approx 1.5\text{ GB/month}$.
 
 #### Combined 30-Day Retention Footprint
-Under the v1 data retention policy (`RETENTION_DAYS=30`), Plant B will stabilize at approximately $4.66\text{ million rows}$ and $\approx 375\text{ MB}$ of disk space. Even with the demo simulator running continuously, total database size remains well under $4\text{ GB}$, comfortably inside the storage limits of a single small VM ($20\text{--}50\text{ GB}$ disk).
+Under the v1 retention policy (`RETENTION_DAYS=30`), using the measured 339 bytes per row (all four indexes included, `bench/sqlite_bench.py`):
+- Plant B (always on): about 4.67M rows, about 1.5 GB.
+- Demo plant, on demand (about 2 h/day): about 3.5M rows, about 1.1 GB.
+- Demo plant, running continuously: about 41.5M rows, about 13 GB.
+Expected total with the on-demand demo: about 2.6 GB. With the demo running continuously: about 14.6 GB, which fits a 20 GB disk with little margin for the OS, images, and the write-ahead log. This is why on-demand simulation is required, not optional.
+Caveat: 339 bytes/row was measured on the demo plant's identifiers (developer machine, in-process script). Plant B's row size will differ with its code lengths.
 
 ### 3.4 Schema Migration Plan (Alembic)
 
@@ -750,6 +755,15 @@ All inbound payloads must adhere to the **PlantPulse Ingestion Envelope v1**:
   - Duplicate deliveries with the same `message_id` are cleanly acknowledged at the MQTT broker but silently ignored by the database.
   - `stage_events` and `qc_results` enforce `UNIQUE(plant_id, message_id)` with identical insert-or-ignore behavior.
   - *No in-memory cache is used or relied upon for deduplication.*
+
+#### 4.5.1 Crash and Shutdown Behavior
+
+- **Loss window.** Rows in the in-memory queue and in the batch being written are lost if the API process dies without warning (SIGKILL, out-of-memory kill, power loss). The window is the flush interval (500 ms) plus whatever is queued.
+- **Delivery semantics.** The broker is acknowledged when the message is received, not when it is committed, so lost rows are not redelivered. Delivery from broker to database is at-most-once. For v1 this is accepted for telemetry: it leaves a gap of under a second in a continuous signal.
+- **Graceful shutdown.** On SIGTERM the API stops accepting new messages, drains the queue, commits the final batch, and closes the database. Timeout: 5 seconds.
+- **Bounded queue.** The queue holds at most 10,000 items. When it is full, new messages are dropped and counted in `ingest_dropped_total`, with one rate-limited warning in the log.
+- **Duplicates are safe.** If a device resends a message after a crash, the UNIQUE constraint with insert-or-ignore discards the duplicate.
+- **Open decision.** Alarm and state-change events may need a stronger guarantee than telemetry. Decide before PR 7.
 
 ### 4.6 Device Authentication & Topic ACLs
 
@@ -1366,7 +1380,7 @@ sequenceDiagram
 3. **Planned Fast-Forward Warm-up:**
    - In a planned future release, warm-up will run with a simulated accelerated clock: generating past stage events and publishing them with historic `device_timestamp`s before going live, allowing pre-populated queues and historical graphs on initial connection.
 4. **Data Growth Prevention:**
-   - Shutting down the simulator after 30 seconds of inactivity prevents unconstrained SQLite database growth on the host VM, saving over $1.38\text{ million}$ rows / $110\text{ MB}$ per day of synthetic records.
+   - Shutting down the simulator after 30 seconds of inactivity prevents unconstrained SQLite database growth on the host VM, saving over $1.38\text{ million}$ rows / $447\text{ MB}$ per day of synthetic records.
 
 ---
 
@@ -1564,7 +1578,7 @@ gantt
 - **Rejected Alternatives:**
   - *Wide table with one column per sensor:* Requires schema migrations (`ALTER TABLE`) every time a customer adds a new sensor.
   - *In-memory LRU deduplication cache:* In-memory caches lose state upon server restart, allowing duplicate message processing.
-- **Tradeoff:** Narrow rows result in higher row counts (~1.38M rows/day for the demo plant), but row storage is compact (~80 bytes), indexes are narrow, and zero DDL migrations are needed when new signals are declared.
+- **Tradeoff:** Narrow rows result in higher row counts (~1.38M rows/day for the demo plant) and about 339 bytes per row measured with all four indexes (~447 MB/day). The unique index on a 36-character message_id is a likely contributor; not yet confirmed.
 
 #### Decision 3: Store-and-Forward Late-Data Window with Scheduled Daily Retention
 - **Problem:** Edge industrial gateways frequently experience network dropouts and buffer data locally. An aggressive clock-skew rejection drops valid buffered data, while unconstrained storage exhausts disk space.
