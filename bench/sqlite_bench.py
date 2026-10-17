@@ -210,9 +210,7 @@ def seed_parents(conn: sqlite3.Connection) -> None:
       - signals(plant_id, machine_code, signal_code) references machines(plant_id, machine_code)
     """
     # 1. Plants: 1 plant
-    plants_data = [
-        ("plant_01", "Demo Manufacturing Facility", "UTC", None)
-    ]
+    plants_data = [("plant_01", "Demo Manufacturing Facility", "UTC", None)]
     conn.executemany(
         "INSERT INTO plants (id, name, timezone, viewer_token_hash) VALUES (?, ?, ?, ?)",
         plants_data,
@@ -262,22 +260,42 @@ def seed_parents(conn: sqlite3.Connection) -> None:
 
     # Housing (2 signals per machine)
     for m in ["hm_01", "hm_02", "hm_03", "hm_04"]:
-        signals_data.append(("plant_01", m, "sig_01", "Mold Temperature", "°C", "float", False, 1))
-        signals_data.append(("plant_01", m, "sig_02", "Motor Vibration", "mm/s", "float", False, 2))
+        signals_data.append(
+            ("plant_01", m, "sig_01", "Mold Temperature", "°C", "float", False, 1)
+        )
+        signals_data.append(
+            ("plant_01", m, "sig_02", "Motor Vibration", "mm/s", "float", False, 2)
+        )
 
     # Casting (5 signals per machine)
     for m in ["cs_01", "cs_02", "cs_03"]:
-        signals_data.append(("plant_01", m, "sig_01", "Extrusion Temperature", "°C", "float", False, 1))
-        signals_data.append(("plant_01", m, "sig_02", "Polymer Viscosity", "cP", "float", False, 2))
-        signals_data.append(("plant_01", m, "sig_03", "Casting Speed", "m/min", "float", False, 3))
-        signals_data.append(("plant_01", m, "sig_04", "Roll Pressure", "bar", "float", False, 4))
-        signals_data.append(("plant_01", m, "sig_05", "Casting Vibration", "mm/s", "float", False, 5))
+        signals_data.append(
+            ("plant_01", m, "sig_01", "Extrusion Temperature", "°C", "float", False, 1)
+        )
+        signals_data.append(
+            ("plant_01", m, "sig_02", "Polymer Viscosity", "cP", "float", False, 2)
+        )
+        signals_data.append(
+            ("plant_01", m, "sig_03", "Casting Speed", "m/min", "float", False, 3)
+        )
+        signals_data.append(
+            ("plant_01", m, "sig_04", "Roll Pressure", "bar", "float", False, 4)
+        )
+        signals_data.append(
+            ("plant_01", m, "sig_05", "Casting Vibration", "mm/s", "float", False, 5)
+        )
 
     # Assembly (3 signals per machine)
     for m in ["am_01", "am_02", "am_03"]:
-        signals_data.append(("plant_01", m, "sig_01", "Torque", "N*m", "float", False, 1))
-        signals_data.append(("plant_01", m, "sig_02", "Seal Pressure", "bar", "float", False, 2))
-        signals_data.append(("plant_01", m, "sig_03", "Motor Vibration", "mm/s", "float", False, 3))
+        signals_data.append(
+            ("plant_01", m, "sig_01", "Torque", "N*m", "float", False, 1)
+        )
+        signals_data.append(
+            ("plant_01", m, "sig_02", "Seal Pressure", "bar", "float", False, 2)
+        )
+        signals_data.append(
+            ("plant_01", m, "sig_03", "Motor Vibration", "mm/s", "float", False, 3)
+        )
 
     # QC: qc_01 has 0 signals
 
@@ -307,17 +325,20 @@ size_empty_schema = os.path.getsize("bench.db")
 # One row per signal; random float value_num
 # Expect 43,200 ticks * 32 signals = 1,382,400 rows
 print("Generating 1,382,400 telemetry rows in memory (before starting timer)...")
-base_time = datetime.datetime(2026, 10, 15, 0, 0, 0, tzinfo=datetime.timezone.utc)
+base_time = datetime.datetime(2026, 10, 15, 0, 0, 0, tzinfo=datetime.UTC)
 
 machine_signals = {
     m: ["sig_01", "sig_02"] for m in ["hm_01", "hm_02", "hm_03", "hm_04"]
 }
-machine_signals.update({
-    m: ["sig_01", "sig_02", "sig_03", "sig_04", "sig_05"] for m in ["cs_01", "cs_02", "cs_03"]
-})
-machine_signals.update({
-    m: ["sig_01", "sig_02", "sig_03"] for m in ["am_01", "am_02", "am_03"]
-})
+machine_signals.update(
+    {
+        m: ["sig_01", "sig_02", "sig_03", "sig_04", "sig_05"]
+        for m in ["cs_01", "cs_02", "cs_03"]
+    }
+)
+machine_signals.update(
+    {m: ["sig_01", "sig_02", "sig_03"] for m in ["am_01", "am_02", "am_03"]}
+)
 # Note: qc_01 has 0 signals and therefore generates 0 rows per tick
 
 rows = []
@@ -350,7 +371,7 @@ VALUES (?, ?, ?, ?, ?, ?)
 t0 = time.perf_counter()
 cursor = conn.cursor()
 for i in range(0, len(rows), batch_size):
-    batch = rows[i:i + batch_size]
+    batch = rows[i : i + batch_size]
     cursor.executemany(insert_sql, batch)
     conn.commit()
 t1 = time.perf_counter()
@@ -359,7 +380,9 @@ insert_duration = t1 - t0
 insert_rows_per_sec = len(rows) / insert_duration
 
 total_count = conn.execute("SELECT COUNT(*) FROM telemetry_values").fetchone()[0]
-print(f"Inserted {total_count:,} rows in {insert_duration:.2f} s ({insert_rows_per_sec:,.2f} rows/s)")
+print(
+    f"Inserted {total_count:,} rows in {insert_duration:.2f} s ({insert_rows_per_sec:,.2f} rows/s)"
+)
 print(f"SELECT COUNT(*) = {total_count:,}")
 
 
@@ -372,7 +395,9 @@ size_after = os.path.getsize("bench.db")
 file_size_mb = size_after / (1024 * 1024)
 bytes_per_row = (size_after - size_empty_schema) / total_count
 
-print(f"Empty schema size: {size_empty_schema:,} bytes ({size_empty_schema / 1024:.2f} KB)")
+print(
+    f"Empty schema size: {size_empty_schema:,} bytes ({size_empty_schema / 1024:.2f} KB)"
+)
 print(f"Database size after checkpoint: {size_after:,} bytes ({file_size_mb:.2f} MB)")
 print(f"Storage cost: {bytes_per_row:.2f} bytes/row")
 
@@ -400,7 +425,7 @@ WHERE plant_id = ?
 print("EXPLAIN QUERY PLAN:")
 explain_cursor = conn.execute(
     "EXPLAIN QUERY PLAN " + query_sql,
-    ("plant_01", target_machine, target_signal, last_hour_start_ts)
+    ("plant_01", target_machine, target_signal, last_hour_start_ts),
 )
 explain_plan_lines = []
 for eqp_row in explain_cursor.fetchall():
@@ -414,38 +439,47 @@ avg_result = None
 for _ in range(5):
     qt0 = time.perf_counter()
     cursor = conn.execute(
-        query_sql,
-        ("plant_01", target_machine, target_signal, last_hour_start_ts)
+        query_sql, ("plant_01", target_machine, target_signal, last_hour_start_ts)
     )
     avg_result = cursor.fetchone()[0]
     qt1 = time.perf_counter()
     query_times.append(qt1 - qt0)
 
 median_query_time = statistics.median(query_times)
-print(f"Query 5 runs latencies: {[f'{t*1000:.3f} ms' for t in query_times]}")
-print(f"Median query latency: {median_query_time * 1000:.3f} ms ({median_query_time:.6f} s)")
-print(f"Average value_num for {target_machine}.{target_signal} (last hour): {avg_result:.4f}")
+print(f"Query 5 runs latencies: {[f'{t * 1000:.3f} ms' for t in query_times]}")
+print(
+    f"Median query latency: {median_query_time * 1000:.3f} ms ({median_query_time:.6f} s)"
+)
+print(
+    f"Average value_num for {target_machine}.{target_signal} (last hour): {avg_result:.4f}"
+)
 
 
 # ============================================================================
 # Step 6: Idempotency Re-insert (First 20,000 rows with INSERT OR IGNORE)
 # ============================================================================
 print("\n--- Step 6: Idempotency Re-insert Test ---")
-count_before_reinsert = conn.execute("SELECT COUNT(*) FROM telemetry_values").fetchone()[0]
+count_before_reinsert = conn.execute(
+    "SELECT COUNT(*) FROM telemetry_values"
+).fetchone()[0]
 
 reinsert_batch = rows[:20000]
 rt0 = time.perf_counter()
 for i in range(0, len(reinsert_batch), batch_size):
-    batch = reinsert_batch[i:i + batch_size]
+    batch = reinsert_batch[i : i + batch_size]
     cursor.executemany(insert_sql, batch)
     conn.commit()
 rt1 = time.perf_counter()
 reinsert_duration = rt1 - rt0
 
-count_after_reinsert = conn.execute("SELECT COUNT(*) FROM telemetry_values").fetchone()[0]
+count_after_reinsert = conn.execute("SELECT COUNT(*) FROM telemetry_values").fetchone()[
+    0
+]
 print(f"Count before re-insert: {count_before_reinsert:,}")
 print(f"Count after re-insert:  {count_after_reinsert:,}")
-print(f"Re-insert time for 20,000 rows: {reinsert_duration:.4f} s ({len(reinsert_batch) / reinsert_duration:,.2f} rows/s)")
+print(
+    f"Re-insert time for 20,000 rows: {reinsert_duration:.4f} s ({len(reinsert_batch) / reinsert_duration:,.2f} rows/s)"
+)
 
 
 # ============================================================================
@@ -460,7 +494,14 @@ try:
         (plant_id, machine_code, signal_code, device_timestamp, message_id, value_num)
         VALUES (?, ?, ?, ?, ?, ?)
         """,
-        ("plant_01", "hm_01", "nonexistent_signal_999", "2026-10-15T00:00:00+00:00", str(uuid.uuid4()), 42.0),
+        (
+            "plant_01",
+            "hm_01",
+            "nonexistent_signal_999",
+            "2026-10-15T00:00:00+00:00",
+            str(uuid.uuid4()),
+            42.0,
+        ),
     )
     conn.commit()
     print("UNEXPECTED: Insert with nonexistent signal_code succeeded!")
@@ -481,7 +522,10 @@ summary_metrics = [
     ("Simulated Dataset Duration", "24 hours (43,200 ticks @ 2s)"),
     ("Hierarchy Seeded", "1 plant, 4 areas, 11 machines, 32 signals"),
     ("Total Telemetry Rows Generated", f"{len(rows):,} rows"),
-    ("Empty Schema Size (after seeding)", f"{size_empty_schema / 1024:.2f} KB ({size_empty_schema:,} bytes)"),
+    (
+        "Empty Schema Size (after seeding)",
+        f"{size_empty_schema / 1024:.2f} KB ({size_empty_schema:,} bytes)",
+    ),
     ("Bulk Insert Duration (batches of 500)", f"{insert_duration:.2f} seconds"),
     ("Bulk Insert Throughput", f"{insert_rows_per_sec:,.2f} rows/s"),
     ("Total Rows in DB (SELECT COUNT(*))", f"{total_count:,} rows"),
@@ -493,7 +537,10 @@ summary_metrics = [
     ("Count Before Re-insert", f"{count_before_reinsert:,}"),
     ("Count After Re-insert", f"{count_after_reinsert:,} (0 duplicates added)"),
     ("Re-insert Duration", f"{reinsert_duration:.4f} seconds"),
-    ("FK Constraint Violation Caught", f"{type(caught_exception).__name__}: {caught_exception}"),
+    (
+        "FK Constraint Violation Caught",
+        f"{type(caught_exception).__name__}: {caught_exception}",
+    ),
 ]
 for metric, val in summary_metrics:
     print(f"{metric:<46} | {val:<31}")
