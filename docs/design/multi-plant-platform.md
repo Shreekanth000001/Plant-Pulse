@@ -759,7 +759,7 @@ All inbound payloads must adhere to the **PlantPulse Ingestion Envelope v1**:
 #### 4.5.1 Crash and Shutdown Behavior
 
 - **Loss window.** Rows in the in-memory queue and in the batch being written are lost if the API process dies without warning (SIGKILL, out-of-memory kill, power loss). The window is the flush interval (500 ms) plus whatever is queued.
-- **Delivery semantics.** The broker is acknowledged when the message is received, not when it is committed, so lost rows are not redelivered. Delivery from broker to database is at-most-once. For v1 this is accepted for telemetry: it leaves a gap of under a second in a continuous signal.
+- **Delivery semantics.** Publisher-to-broker and broker-to-API use MQTT QoS 1 (at-least-once). Inside the API, a message goes into an in-memory queue, and the client library acknowledges it to the broker. Whether that acknowledgement happens before or after the database commit is to be verified in PR 4 against aiomqtt 2.5.1 and paho-mqtt 2.1.0. Until then, treat delivery from broker to database as at-most-once. For v1 this is accepted for telemetry: it leaves a gap of under a second in a continuous signal.
 - **Graceful shutdown.** On SIGTERM the API stops accepting new messages, drains the queue, commits the final batch, and closes the database. Timeout: 5 seconds.
 - **Bounded queue.** The queue holds at most 10,000 items. When it is full, new messages are dropped and counted in `ingest_dropped_total`, with one rate-limited warning in the log.
 - **Duplicates are safe.** If a device resends a message after a crash, the UNIQUE constraint with insert-or-ignore discards the duplicate.
