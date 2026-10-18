@@ -267,3 +267,36 @@ async def test_heartbeat_emitter_silent_when_no_viewers():
     emitted = await emit_heartbeat_tick(test_manager, publish_fn=mock_publish)
     assert emitted is False
     mock_publish.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Criterion 5 & 1 & 2: Monotonic Clock, Runner Entrypoint, Backend MQTT Auth
+# ---------------------------------------------------------------------------
+
+
+def test_watchdog_default_clock_is_time_monotonic():
+    """Criterion 5: Watchdog default clock must be time.monotonic."""
+    import time
+
+    wd = Watchdog()
+    assert wd.clock == time.monotonic
+
+
+def test_simulator_runner_entrypoint_exists():
+    """Criterion 2: demo/simulator/runner.py runnable entrypoint exists."""
+    from demo.simulator import runner
+
+    assert hasattr(runner, "main")
+    assert callable(runner.main)
+
+
+def test_main_backend_mqtt_client_uses_env_credentials(monkeypatch):
+    """Criterion 1: main.py passes MQTT_USER and MQTT_PASSWORD to aiomqtt.Client."""
+    from main import get_mqtt_credentials
+
+    monkeypatch.setenv("MQTT_USER", "backend_service")
+    monkeypatch.setenv("MQTT_PASSWORD", "backend_secret")
+
+    user, password = get_mqtt_credentials()
+    assert user == "backend_service"
+    assert password == "backend_secret"

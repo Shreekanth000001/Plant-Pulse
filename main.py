@@ -50,8 +50,15 @@ from topic_router import TopicRouter
 
 MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
+MQTT_USER = os.getenv("MQTT_USER")
+MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
 MQTT_TOPIC = "factory/#"
 RECONNECT_MAX_S = 30
+
+
+def get_mqtt_credentials() -> tuple[str | None, str | None]:
+    return os.getenv("MQTT_USER", MQTT_USER), os.getenv("MQTT_PASSWORD", MQTT_PASSWORD)
+
 
 PLATFORM_DB_PATH = os.getenv("PLATFORM_DB_PATH", "platform.db")
 PLANTS_DIR = Path(os.getenv("PLANTS_DIR", Path(__file__).resolve().parent / "plants"))
@@ -398,7 +405,13 @@ async def mqtt_listener() -> None:
     delay = 1
     while True:
         try:
-            async with aiomqtt.Client(hostname=MQTT_HOST, port=MQTT_PORT) as client:
+            username, password = get_mqtt_credentials()
+            async with aiomqtt.Client(
+                hostname=MQTT_HOST,
+                port=MQTT_PORT,
+                username=username,
+                password=password,
+            ) as client:
                 active_mqtt_client = client
                 await client.subscribe("plants/#", qos=1)
                 await client.subscribe(MQTT_TOPIC, qos=1)

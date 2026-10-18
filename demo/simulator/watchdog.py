@@ -20,7 +20,7 @@ class Watchdog:
         self,
         timeout_seconds: float = 30.0,
         max_runtime_seconds: float = 7200.0,
-        clock: Callable[[], float] = time.time,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.timeout_seconds = timeout_seconds
         self.max_runtime_seconds = max_runtime_seconds
