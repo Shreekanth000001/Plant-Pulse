@@ -4,6 +4,9 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import create_engine
+
+import database
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ALEMBIC_INI = REPO_ROOT / "alembic.ini"
@@ -230,3 +233,78 @@ def test_migration_downgrade_and_reupgrade(tmp_path):
     tables_reupgrade = {row[0] for row in cursor.fetchall()}
     assert tables_reupgrade >= EXPECTED_TABLES
     conn.close()
+
+
+def test_alembic_and_legacy_init_db_coexist_on_separate_files(tmp_path, monkeypatch):
+    """Acceptance criterion: alembic migration (new multi-plant schema) and legacy init_db()
+    can run against separate database files without schema collisions.
+    """
+    platform_db = tmp_path / "platform.db"
+    legacy_db = tmp_path / "factory.db"
+
+    # 1. Run alembic upgrade head against platform_db
+    run_alembic_upgrade(platform_db)
+    assert platform_db.exists()
+
+    # 2. Run legacy init_db() against legacy_db
+    legacy_engine = create_engine(
+        f"sqlite:///{legacy_db}", connect_args={"check_same_thread": False}
+    )
+    monkeypatch.setattr(database, "engine", legacy_engine)
+    database.init_db()
+    assert legacy_db.exists()
+
+    # 3. Check platform_db schema
+    conn_platform = sqlite3.connect(platform_db)
+    cur_platform = conn_platform.cursor()
+    cur_platform.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    )
+    platform_tables = {row[0] for row in cur_platform.fetchall()}
+    assert platform_tables >= EXPECTED_TABLES
+
+    # Check that platform 'units' table has plant_id column
+    cur_platform.execute("PRAGMA table_info(units)")
+    platform_unit_cols = {row[1] for row in cur_platform.fetchall()}
+    assert "plant_id" in platform_unit_cols
+    assert "unit_id" in platform_unit_cols
+
+    # Check that platform 'stage_events' table has plant_id and machine_code
+    cur_platform.execute("PRAGMA table_info(stage_events)")
+    platform_stage_cols = {row[1] for row in cur_platform.fetchall()}
+    assert "plant_id" in platform_stage_cols
+    assert "machine_code" in platform_stage_cols
+
+    conn_platform.close()
+
+    # 4. Check legacy_db schema
+    conn_legacy = sqlite3.connect(legacy_db)
+    cur_legacy = conn_legacy.cursor()
+    cur_legacy.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    )
+    legacy_tables = {row[0] for row in cur_legacy.fetchall()}
+    assert {"telemetry_readings", "units", "stage_events", "qc_results"}.issubset(
+        legacy_tables
+    )
+
+    # Check that legacy 'units' table does NOT have plant_id column
+    cur_legacy.execute("PRAGMA table_info(units)")
+    legacy_unit_cols = {row[1] for row in cur_legacy.fetchall()}
+    assert "plant_id" not in legacy_unit_cols
+    assert "unit_id" in legacy_unit_cols
+
+    # Check that legacy 'stage_events' table has machine_id (not machine_code) and NO plant_id
+    cur_legacy.execute("PRAGMA table_info(stage_events)")
+    legacy_stage_cols = {row[1] for row in cur_legacy.fetchall()}
+    assert "plant_id" not in legacy_stage_cols
+    assert "machine_id" in legacy_stage_cols
+
+    conn_legacy.close()
+
+
+def test_alembic_default_url_is_platform_db():
+    """Acceptance criterion: alembic.ini defaults to sqlite:///./platform.db."""
+    alembic_cfg = Config(str(ALEMBIC_INI))
+    url = alembic_cfg.get_main_option("sqlalchemy.url")
+    assert url == "sqlite:///./platform.db"
