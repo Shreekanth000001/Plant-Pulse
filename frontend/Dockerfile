@@ -9,7 +9,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 # Copy application sources
-COPY tsconfig.json next.config.ts next-env.d.ts eslint.config.mjs ./
+COPY tsconfig.json next.config.ts eslint.config.mjs ./
 COPY public ./public
 COPY types ./types
 COPY lib ./lib
