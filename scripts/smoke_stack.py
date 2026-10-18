@@ -23,7 +23,9 @@ import urllib.request
 import websockets
 
 
-def check_http_endpoint(url: str, description: str, timeout: float = 5.0) -> dict | list:
+def check_http_endpoint(
+    url: str, description: str, timeout: float = 5.0
+) -> dict | list:
     """Perform a synchronous GET request and return parsed JSON."""
     req = urllib.request.Request(url, headers={"User-Agent": "PlantPulse-SmokeTest"})
     with urllib.request.urlopen(req, timeout=timeout) as response:
@@ -33,7 +35,9 @@ def check_http_endpoint(url: str, description: str, timeout: float = 5.0) -> dic
         return json.loads(data)
 
 
-async def run_smoke_test(api_url: str, ws_url: str, timeout_seconds: float = 90.0) -> None:
+async def run_smoke_test(
+    api_url: str, ws_url: str, timeout_seconds: float = 90.0
+) -> None:
     print(f"[smoke] Checking health at {api_url}/health ...")
     health = check_http_endpoint(f"{api_url}/health", "Health endpoint")
     if health.get("status") != "ok":
@@ -43,7 +47,9 @@ async def run_smoke_test(api_url: str, ws_url: str, timeout_seconds: float = 90.
     print(f"[smoke] Checking plant list at {api_url}/api/plants ...")
     plants = check_http_endpoint(f"{api_url}/api/plants", "Plants endpoint")
     if not isinstance(plants, list) or len(plants) != 2:
-        raise RuntimeError(f"Expected 2 plants from /api/plants, got {len(plants) if isinstance(plants, list) else plants}")
+        raise RuntimeError(
+            f"Expected 2 plants from /api/plants, got {len(plants) if isinstance(plants, list) else plants}"
+        )
     plant_ids = {p.get("plant_id") for p in plants}
     expected_ids = {"plant_demo_membrane", "plant_water_district_9"}
     if plant_ids != expected_ids:
@@ -52,7 +58,9 @@ async def run_smoke_test(api_url: str, ws_url: str, timeout_seconds: float = 90.
 
     print(f"[smoke] Opening WebSocket connection to {ws_url} to activate heartbeats...")
     async with websockets.connect(ws_url) as ws:
-        print("[smoke] WebSocket connected! Waiting for simulator to wake and publish telemetry...")
+        print(
+            "[smoke] WebSocket connected! Waiting for simulator to wake and publish telemetry..."
+        )
         deadline = time.time() + timeout_seconds
         received_frames = 0
         populated_machines = []
@@ -72,13 +80,21 @@ async def run_smoke_test(api_url: str, ws_url: str, timeout_seconds: float = 90.
             latest_url = f"{api_url}/api/plants/plant_demo_membrane/machines/latest"
             while time.time() < deadline:
                 try:
-                    machines = check_http_endpoint(latest_url, "Latest machines endpoint")
+                    machines = check_http_endpoint(
+                        latest_url, "Latest machines endpoint"
+                    )
                     if isinstance(machines, list) and len(machines) > 0:
                         with_signals = [
-                            m for m in machines
+                            m
+                            for m in machines
                             if m.get("signals") and len(m["signals"]) > 0
                         ]
-                        if with_signals:
+                        non_idle = [
+                            m
+                            for m in with_signals
+                            if m.get("state") not in (None, "IDLE", "OFFLINE")
+                        ]
+                        if with_signals and non_idle:
                             populated_machines = with_signals
                             break
                 except Exception as err:  # noqa: BLE001
@@ -86,17 +102,25 @@ async def run_smoke_test(api_url: str, ws_url: str, timeout_seconds: float = 90.
 
                 await asyncio.sleep(2.0)
                 elapsed = int(time.time() - (deadline - timeout_seconds))
-                print(f"[smoke] Waiting for telemetry values... ({elapsed}s elapsed, {received_frames} ws frames)")
+                print(
+                    f"[smoke] Waiting for telemetry values and active machine state... ({elapsed}s elapsed, {received_frames} ws frames)"
+                )
 
             if not populated_machines:
                 raise TimeoutError(
-                    f"Timed out after {timeout_seconds}s waiting for /machines/latest to return non-empty signal values."
+                    f"Timed out after {timeout_seconds}s waiting for /machines/latest to return active signals with at least one non-IDLE machine."
                 )
 
-            print(f"[smoke] SUCCESS! Found {len(populated_machines)} machine(s) with active signals:")
+            print(
+                f"[smoke] SUCCESS! Found {len(populated_machines)} machine(s) with active signals:"
+            )
             for m in populated_machines[:3]:
-                sig_summary = {k: v.get("value") for k, v in list(m.get("signals", {}).items())[:3]}
-                print(f"  - Machine '{m.get('machine_code')}' ({m.get('state')}): signals={sig_summary}")
+                sig_summary = {
+                    k: v.get("value") for k, v in list(m.get("signals", {}).items())[:3]
+                }
+                print(
+                    f"  - Machine '{m.get('machine_code')}' ({m.get('state')}): signals={sig_summary}"
+                )
 
         finally:
             listener_task.cancel()
@@ -105,13 +129,30 @@ async def run_smoke_test(api_url: str, ws_url: str, timeout_seconds: float = 90.
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="PlantPulse stack smoke test")
-    parser.add_argument("--api-url", default="http://localhost:8000", help="Base URL of FastAPI service")
-    parser.add_argument("--ws-url", default="ws://localhost:8000/ws/plant_demo_membrane/telemetry", help="WebSocket URL for demo plant")
-    parser.add_argument("--timeout", type=float, default=90.0, help="Max seconds to wait for telemetry to appear")
+    parser.add_argument(
+        "--api-url", default="http://localhost:8000", help="Base URL of FastAPI service"
+    )
+    parser.add_argument(
+        "--ws-url",
+        default="ws://localhost:8000/ws/plant_demo_membrane/telemetry",
+        help="WebSocket URL for demo plant",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=90.0,
+        help="Max seconds to wait for telemetry to appear",
+    )
     args = parser.parse_args()
 
     try:
-        asyncio.run(run_smoke_test(api_url=args.api_url.rstrip("/"), ws_url=args.ws_url, timeout_seconds=args.timeout))
+        asyncio.run(
+            run_smoke_test(
+                api_url=args.api_url.rstrip("/"),
+                ws_url=args.ws_url,
+                timeout_seconds=args.timeout,
+            )
+        )
     except Exception as exc:  # noqa: BLE001
         print(f"[smoke] FAILED: {exc}", file=sys.stderr)
         sys.exit(1)

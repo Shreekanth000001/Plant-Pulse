@@ -346,3 +346,148 @@ async def test_topic_router_ingest_integration(test_db):
     ).fetchone()[0]
     conn.close()
     assert count == 3
+
+
+@pytest.mark.anyio
+async def test_machine_state_upsert_newer_timestamp_only(test_db):
+    """Condition 1: Upsert machine_states only when device_timestamp is newer than stored last_seen_at.
+    A late store-and-forward message must not overwrite newer state."""
+    plants = load_plants(PLANTS_DIR)
+    engine = IngestEngine(test_db, plants=plants)
+
+    t_new = datetime(2026, 10, 18, 12, 10, 0, tzinfo=UTC)
+    t_old = datetime(2026, 10, 18, 12, 5, 0, tzinfo=UTC)
+
+    # 1. Send newer state message: FAULT at 12:10
+    payload_new = {
+        "schema_version": "1.0",
+        "message_id": "msg-new-001",
+        "plant_id": "plant_demo_membrane",
+        "asset_id": "hm_01",
+        "device_timestamp": t_new.isoformat(),
+        "payload_type": "state_change",
+        "payload": {"status": "FAULT", "sub_status": "COOLING"},
+    }
+    await engine.handle_state(payload_new, "plant_demo_membrane", "hm_01")
+    await engine.flush()
+
+    conn = sqlite3.connect(test_db)
+    row = conn.execute(
+        "SELECT state, sub_state, last_seen_at FROM machine_states WHERE plant_id=? AND machine_code=?",
+        ("plant_demo_membrane", "hm_01"),
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row[0] == "FAULT"
+    assert row[1] == "COOLING"
+    assert row[2] == t_new.isoformat()
+
+    # 2. Send older late message: IDLE at 12:05
+    payload_old = {
+        "schema_version": "1.0",
+        "message_id": "msg-old-002",
+        "plant_id": "plant_demo_membrane",
+        "asset_id": "hm_01",
+        "device_timestamp": t_old.isoformat(),
+        "payload_type": "state_change",
+        "payload": {"status": "IDLE", "sub_status": None},
+    }
+    await engine.handle_state(payload_old, "plant_demo_membrane", "hm_01")
+    await engine.flush()
+
+    conn = sqlite3.connect(test_db)
+    row = conn.execute(
+        "SELECT state, sub_state, last_seen_at FROM machine_states WHERE plant_id=? AND machine_code=?",
+        ("plant_demo_membrane", "hm_01"),
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    # Must NOT be overwritten by older message
+    assert row[0] == "FAULT"
+    assert row[1] == "COOLING"
+    assert row[2] == t_new.isoformat()
+
+
+@pytest.mark.anyio
+async def test_unknown_status_stored_and_logs_warning_without_failing_batch(
+    test_db, caplog
+):
+    """Condition 5: Unknown status values: store them, log a warning, never fail the batch."""
+    import logging
+
+    plants = load_plants(PLANTS_DIR)
+    engine = IngestEngine(test_db, plants=plants)
+
+    payload = {
+        "schema_version": "1.0",
+        "message_id": "msg-unknown-001",
+        "plant_id": "plant_demo_membrane",
+        "asset_id": "hm_01",
+        "device_timestamp": datetime.now(UTC).isoformat(),
+        "payload_type": "state_change",
+        "payload": {"status": "CALIBRATING_OPTICS", "sub_status": "FINE_TUNING"},
+    }
+
+    records: list[logging.LogRecord] = []
+
+    class CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = CaptureHandler()
+    ingest_logger = logging.getLogger("ingest-engine")
+    ingest_logger.addHandler(handler)
+    try:
+        accepted = await engine.handle_state(payload, "plant_demo_membrane", "hm_01")
+        assert accepted is True
+        await engine.flush()
+    finally:
+        ingest_logger.removeHandler(handler)
+
+    # Warning logged
+    assert any("CALIBRATING_OPTICS" in r.getMessage() for r in records)
+
+    # State still stored
+    conn = sqlite3.connect(test_db)
+    row = conn.execute(
+        "SELECT state, sub_state FROM machine_states WHERE plant_id=? AND machine_code=?",
+        ("plant_demo_membrane", "hm_01"),
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row[0] == "CALIBRATING_OPTICS"
+    assert row[1] == "FINE_TUNING"
+
+
+@pytest.mark.anyio
+async def test_state_upsert_in_same_transaction_as_telemetry_batch(test_db):
+    """Condition 2: Write the state upsert in the same transaction as the telemetry batch."""
+    plants = load_plants(PLANTS_DIR)
+    engine = IngestEngine(test_db, plants=plants)
+
+    payload = make_valid_payload(
+        message_id="msg-tx-001",
+        plant_id="plant_demo_membrane",
+        asset_id="hm_01",
+    )
+    # Telemetry has status "RUNNING"
+    accepted = await engine.handle_telemetry(payload, "plant_demo_membrane", "hm_01")
+    assert accepted is True
+
+    # Flush commits both
+    await engine.flush()
+
+    conn = sqlite3.connect(test_db)
+    telemetry_count = conn.execute(
+        "SELECT COUNT(*) FROM telemetry_values WHERE message_id=?",
+        ("msg-tx-001",),
+    ).fetchone()[0]
+    state_row = conn.execute(
+        "SELECT state FROM machine_states WHERE plant_id=? AND machine_code=?",
+        ("plant_demo_membrane", "hm_01"),
+    ).fetchone()
+    conn.close()
+
+    assert telemetry_count > 0
+    assert state_row is not None
+    assert state_row[0] == "RUNNING"

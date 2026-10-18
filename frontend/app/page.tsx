@@ -106,7 +106,7 @@ export default function LiveOverviewPage() {
               name: found.name,
               area_code: area.area_code,
               sub_facility: area.area_code,
-              machine_state: "IDLE",
+              machine_state: "OFFLINE",
               starved: false,
               extra: {},
             };
@@ -344,7 +344,7 @@ export default function LiveOverviewPage() {
                   name: mDef.name,
                   area_code: area.area_code,
                   sub_facility: area.area_code,
-                  machine_state: "IDLE",
+                  machine_state: "OFFLINE",
                   starved: false,
                   extra: {},
                 }

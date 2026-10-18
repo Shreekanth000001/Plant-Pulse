@@ -234,7 +234,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
                 name: m.name,
                 area_code: area.area_code,
                 sub_facility: area.area_code,
-                machine_state: snap?.state || "IDLE",
+                machine_state: snap?.state || "OFFLINE",
                 phase: snap?.sub_state || null,
                 starved: false,
                 good_count: 0,
@@ -335,6 +335,16 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
                   ...prev,
                   [machineCode]: {
                     ...existing,
+                    machine_state:
+                      (payload.status as string) ||
+                      (payload.state as string) ||
+                      existing.machine_state,
+                    phase:
+                      (payload.sub_status as string) !== undefined
+                        ? (payload.sub_status as string)
+                        : (payload.phase as string) !== undefined
+                        ? (payload.phase as string)
+                        : existing.phase,
                     vibration: vib,
                     extra: mergedExtra,
                     timestamp: new Date().toISOString(),
@@ -347,8 +357,11 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
               const parts = topic.split("/");
               const machineCode = parts[3];
               const payload = (raw.payload || {}) as Record<string, unknown>;
-              const state = (payload.state as string) || "IDLE";
-              const subState = payload.sub_state as string | undefined;
+              const state =
+                (payload.state as string) ||
+                (payload.status as string) ||
+                "OFFLINE";
+              const subState = (payload.sub_status as string) || (payload.sub_state as string);
 
               setMachines((prev) => {
                 const existing = prev[machineCode];

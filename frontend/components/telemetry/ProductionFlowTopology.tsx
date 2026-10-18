@@ -158,11 +158,11 @@ export function ProductionFlowTopology({
                     {stage.machineIds.map((machineId) => {
                       const m = machines[machineId];
                       const displayName = m?.name || machineId;
-                      const state = m?.machine_state?.toUpperCase() || "IDLE";
+                      const state = m?.machine_state?.toUpperCase() || "OFFLINE";
                       const isStarved = m?.starved;
                       const hasUnit = Boolean(m?.current_unit_id);
 
-                      let dotBg = "bg-amber-400";
+                      let dotBg = "bg-slate-300";
                       let borderStyle = "border-slate-200/80";
 
                       if (state === "FAULT") {
@@ -171,7 +171,7 @@ export function ProductionFlowTopology({
                       } else if (state === "RUNNING" || state === "TESTING") {
                         dotBg = "bg-emerald-500";
                         borderStyle = "border-emerald-200 bg-emerald-50/30";
-                      } else if (isStarved) {
+                      } else if (state === "IDLE" || isStarved) {
                         dotBg = "bg-amber-400";
                         borderStyle = "border-amber-200 bg-amber-50/30";
                       }
