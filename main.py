@@ -383,23 +383,52 @@ async def mqtt_listener() -> None:
             delay = min(delay * 2, RECONNECT_MAX_S)
 
 
+def init_platform_db(db_path: Path | str = PLATFORM_DB_PATH) -> None:
+    """Ensure platform database schema exists via Alembic migrations."""
+    db_file = Path(db_path)
+    if db_file.exists():
+        try:
+            conn = sqlite3.connect(str(db_file))
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='machines';"
+            )
+            has_table = cursor.fetchone() is not None
+            conn.close()
+            if has_table:
+                return
+        except sqlite3.Error:
+            pass
+
+    from alembic import command
+    from alembic.config import Config
+
+    repo_root = Path(__file__).resolve().parent
+    ini_path = repo_root / "alembic.ini"
+    if ini_path.exists():
+        alembic_cfg = Config(str(ini_path))
+        alembic_cfg.set_main_option("script_location", str(repo_root / "migrations"))
+        alembic_cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_file.resolve()}")
+        command.upgrade(alembic_cfg, "head")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global ingest_engine
     init_db()
+    init_platform_db(PLATFORM_DB_PATH)
 
     if PLANTS_DIR.exists():
         loaded = load_plants(PLANTS_DIR)
         plants_registry.clear()
         plants_registry.update(loaded)
 
-        if Path(PLATFORM_DB_PATH).exists():
-            conn = sqlite3.connect(PLATFORM_DB_PATH)
-            try:
-                conn.execute("PRAGMA foreign_keys=ON;")
-                sync_plant_definitions(conn, plants_registry)
-            finally:
-                conn.close()
+        conn = sqlite3.connect(PLATFORM_DB_PATH)
+        try:
+            conn.execute("PRAGMA foreign_keys=ON;")
+            sync_plant_definitions(conn, plants_registry)
+        finally:
+            conn.close()
 
     ingest_engine = IngestEngine(db_path=PLATFORM_DB_PATH, plants=plants_registry)
     await ingest_engine.start()
@@ -461,18 +490,21 @@ def get_latest_plant_machines(plant_id: str) -> list[dict]:
     conn = sqlite3.connect(PLATFORM_DB_PATH)
     conn.row_factory = sqlite3.Row
     try:
-        machines_rows = conn.execute(
-            """
-            SELECT m.machine_code, m.area_code, m.name, m.machine_type, m.display_order,
-                   s.state, s.sub_state, s.last_seen_at
-            FROM machines m
-            LEFT JOIN machine_states s
-              ON m.plant_id = s.plant_id AND m.machine_code = s.machine_code
-            WHERE m.plant_id = ?
-            ORDER BY m.display_order
-            """,
-            (plant_id,),
-        ).fetchall()
+        try:
+            machines_rows = conn.execute(
+                """
+                SELECT m.machine_code, m.area_code, m.name, m.machine_type, m.display_order,
+                       s.state, s.sub_state, s.last_seen_at
+                FROM machines m
+                LEFT JOIN machine_states s
+                  ON m.plant_id = s.plant_id AND m.machine_code = s.machine_code
+                WHERE m.plant_id = ?
+                ORDER BY m.display_order
+                """,
+                (plant_id,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
 
         telemetry_rows = conn.execute(
             """

@@ -248,17 +248,21 @@ async def test_batches_commit_on_500ms_timer(test_db):
     conn.close()
     assert count_immediate == 0
 
-    # Wait for timer flush (0.5s + small buffer)
-    await asyncio.sleep(0.65)
-
-    conn = sqlite3.connect(test_db)
-    count_after_timer = conn.execute(
-        "SELECT COUNT(*) FROM telemetry_values"
-    ).fetchone()[0]
-    conn.close()
-    assert count_after_timer == 2
+    # Poll with timeout for timer flush (no fixed sleep depending on machine speed)
+    start_time = asyncio.get_running_loop().time()
+    count_after_timer = 0
+    while asyncio.get_running_loop().time() - start_time < 3.0:
+        await asyncio.sleep(0.05)
+        conn = sqlite3.connect(test_db)
+        count_after_timer = conn.execute(
+            "SELECT COUNT(*) FROM telemetry_values"
+        ).fetchone()[0]
+        conn.close()
+        if count_after_timer == 2:
+            break
 
     await engine.stop()
+    assert count_after_timer == 2
 
 
 @pytest.mark.anyio

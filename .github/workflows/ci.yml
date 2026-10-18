@@ -25,6 +25,9 @@ jobs:
           python-version: "3.12"   # match `python --version` on your machine
           cache: pip
 
+      - name: Install Mosquitto
+        run: sudo apt-get update && sudo apt-get install -y mosquitto
+
       - name: Install dependencies
         run: pip install -r requirements.txt ruff
 
