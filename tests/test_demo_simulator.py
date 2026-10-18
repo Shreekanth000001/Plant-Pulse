@@ -300,3 +300,104 @@ def test_main_backend_mqtt_client_uses_env_credentials(monkeypatch):
     user, password = get_mqtt_credentials()
     assert user == "backend_service"
     assert password == "backend_secret"
+
+
+# ---------------------------------------------------------------------------
+# Simulator Fault Recovery, Unit Preservation & 2-Hour Continuous Run Tests
+# ---------------------------------------------------------------------------
+
+
+def test_unit_not_lost_or_stranded_on_fault_and_repair():
+    """Condition 2: An in-progress unit is returned to front of input queue upon repair and not lost."""
+    clock = SimulatedClock(1000.0)
+    sim = DemoSimulator(plant_id="plant_demo_membrane", clock=clock.time, seed=42)
+
+    # Find a casting machine and stage a known unit in its input queue
+    casting_m = next(m for m in sim.line.machines if m.sub_facility == "casting")
+    from demo.simulator.units import Unit
+
+    staged_unit = Unit()
+    staged_unit_id = staged_unit.unit_id
+    sim.line.queues["casting"].insert(0, staged_unit)
+
+    # Run tick so casting machine picks up this unit
+    sim.tick()
+    assert casting_m.current_unit is not None
+    assert casting_m.current_unit.unit_id == staged_unit_id
+
+    # Induce a fault on this machine
+    casting_m.vibration = casting_m.vibration_fault_threshold + 0.1
+    casting_m.machine_state = "FAULT"
+    casting_m.repair_elapsed = 0.0
+
+    # Advance clock past repair delay (90s = 45 ticks)
+    for _ in range(45):
+        clock.advance(2.0)
+        sim.tick()
+
+    # Machine should now be repaired, state returns to IDLE, vibration reset
+    assert casting_m.machine_state == "IDLE"
+    assert casting_m.vibration <= 2.0
+
+    # The in-progress unit must be returned to front of the casting queue, not lost or stranded
+    assert len(sim.line.queues["casting"]) > 0
+    assert sim.line.queues["casting"][0].unit_id == staged_unit_id
+    assert casting_m.current_unit is None
+
+
+def test_simulated_two_hours_production_and_fault_recovery():
+    """Condition 4: Over simulated 2 hours with fake clock and fixed seed:
+    - Every stage has at least one non-faulted machine at the end.
+    - Completed units grow in each 15-minute window after the first 10 minutes.
+    """
+    clock = SimulatedClock(0.0)
+    sim = DemoSimulator(plant_id="plant_demo_membrane", clock=clock.time, seed=42)
+
+    total_ticks = 7200 // 2  # 3600 ticks of 2s = 7200s (2 hours)
+    start_10m_tick = 600 // 2
+    window_ticks = 900 // 2  # 15 minutes = 900s
+
+    qc_prev = 0
+    window_growths = []
+
+    for tick in range(1, total_ticks + 1):
+        clock.advance(2.0)
+        sim.tick()
+
+        if tick == start_10m_tick:
+            qc_prev = sum(q.tested_count for q in sim.line.qc_stations)
+        elif tick > start_10m_tick and (tick - start_10m_tick) % window_ticks == 0:
+            qc_curr = sum(q.tested_count for q in sim.line.qc_stations)
+            growth = qc_curr - qc_prev
+            window_growths.append(growth)
+            qc_prev = qc_curr
+
+    # Assert completed units grew in each 15-minute window after the first 10 minutes
+    assert len(window_growths) == 7  # 25m, 40m, 55m, 70m, 85m, 100m, 115m
+    for i, growth in enumerate(window_growths):
+        assert growth > 0, f"Window {i + 1} had zero unit growth ({growth})"
+
+    # Assert every stage has at least one non-faulted machine at the end
+    stages = ["housing", "casting", "assembly", "qc"]
+    for stage in stages:
+        if stage == "qc":
+            healthy = [q for q in sim.line.qc_stations if q.machine_state != "FAULT"]
+        else:
+            healthy = [
+                m
+                for m in sim.line.machines
+                if m.sub_facility == stage and m.machine_state != "FAULT"
+            ]
+        assert len(healthy) >= 1, (
+            f"Stage {stage} has no healthy machines at end of 2h run"
+        )
+
+
+def test_repair_delay_and_drift_scale_env_vars(monkeypatch):
+    """Condition 5: Environment variables SIMULATOR_REPAIR_DELAY_SECONDS and SIMULATOR_DRIFT_SCALE."""
+    monkeypatch.setenv("SIMULATOR_REPAIR_DELAY_SECONDS", "45.0")
+    monkeypatch.setenv("SIMULATOR_DRIFT_SCALE", "0.05")
+
+    sim = DemoSimulator(plant_id="plant_demo_membrane")
+    assert sim.repair_delay_seconds == 45.0
+    assert sim.drift_scale == 0.05

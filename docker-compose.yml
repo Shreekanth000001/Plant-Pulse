@@ -82,6 +82,8 @@ services:
       MQTT_PASSWORD: ${MQTT_PASSWORD:-demo_membrane_secure_token_123}
       MQTT_CLIENT_ID: ${MQTT_CLIENT_ID:-client_demo_membrane_sim}
       PLANT_ID: plant_demo_membrane
+      SIMULATOR_REPAIR_DELAY_SECONDS: ${SIMULATOR_REPAIR_DELAY_SECONDS:-90}
+      SIMULATOR_DRIFT_SCALE: ${SIMULATOR_DRIFT_SCALE:-0.1}
     restart: unless-stopped
 
   dashboard:
