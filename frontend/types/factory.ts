@@ -2,18 +2,83 @@
  * PlantPulse Industrial Telemetry Types
  */
 
-export type SubFacilityType = "housing" | "casting" | "assembly" | "qc";
-
 export type MachineState = "RUNNING" | "IDLE" | "FAULT" | "TESTING" | string;
 
 export type ReadingValue = number | string | boolean | null;
 
 export type Readings = Record<string, ReadingValue>;
 
+export interface SignalDefinition {
+  signal_code: string;
+  name: string;
+  unit: string;
+  data_type: string;
+  is_setpoint?: boolean;
+  setpoint_signal_code?: string | null;
+  normal_min?: number | null;
+  normal_max?: number | null;
+  warn_min?: number | null;
+  warn_max?: number | null;
+  alarm_min?: number | null;
+  alarm_max?: number | null;
+  display_order?: number;
+}
+
+export interface MachineDefinition {
+  machine_code: string;
+  name: string;
+  machine_type?: string | null;
+  display_order?: number;
+  signals: SignalDefinition[];
+}
+
+export interface AreaDefinition {
+  area_code: string;
+  name: string;
+  display_order?: number;
+  machines: MachineDefinition[];
+}
+
+export interface PlantSummary {
+  plant_id: string;
+  name: string;
+  timezone: string;
+  has_viewer_token: boolean;
+  enabled_modules: string[];
+}
+
+export interface PublicPlantDefinition {
+  plant_id: string;
+  name: string;
+  timezone: string;
+  has_viewer_token: boolean;
+  enabled_modules: string[];
+  areas: AreaDefinition[];
+}
+
+export interface PlantMachineSignalValue {
+  value: number | string | boolean | null;
+  value_num?: number | null;
+  value_text?: string | null;
+  device_timestamp?: string | null;
+}
+
+export interface PlantMachineLatest {
+  machine_code: string;
+  area_code: string;
+  name: string;
+  machine_type?: string | null;
+  state: MachineState;
+  sub_state?: string | null;
+  last_seen_at?: string | null;
+  signals: Record<string, PlantMachineSignalValue>;
+}
+
 export interface MachineStatus {
   machine_id: string;
   name?: string;
-  sub_facility: SubFacilityType | string;
+  area_code?: string;
+  sub_facility: string;
   machine_state: MachineState;
   phase?: string | null;
   starved: boolean;
@@ -22,6 +87,7 @@ export interface MachineStatus {
   vibration_wear_level?: number | null;
   good_count?: number;
   reject_count?: number;
+  signals?: Record<string, PlantMachineSignalValue>;
   extra: Readings;
   timestamp?: string | null;
 }
@@ -85,7 +151,7 @@ export function isTelemetryMessage(
 export function isQueueDepthsMessage(
   msg: WebSocketMessage
 ): msg is WebSocketMessage & { payload: BackendQueueDepths } {
-  return msg.topic === "factory/queue_depths";
+  return msg.topic === "factory/queue_depths" || msg.topic.includes("/queue_depths");
 }
 
 export function isReadingValue(v: unknown): v is ReadingValue {
@@ -156,23 +222,3 @@ export function mapBackendQueueDepths(
     assemblyToQc: Number(data.qc ?? 0),
   };
 }
-
-export interface MachineConfigMeta {
-  id: string;
-  name: string;
-  stage: SubFacilityType;
-}
-
-export const KNOWN_MACHINES: Record<string, { name: string; stage: SubFacilityType }> = {
-  hm_01: { name: "Housing Molder 1", stage: "housing" },
-  hm_02: { name: "Housing Molder 2", stage: "housing" },
-  hm_03: { name: "Housing Molder 3", stage: "housing" },
-  hm_04: { name: "Housing Molder 4", stage: "housing" },
-  cs_01: { name: "Casting Machine 1", stage: "casting" },
-  cs_02: { name: "Casting Machine 2", stage: "casting" },
-  cs_03: { name: "Casting Machine 3", stage: "casting" },
-  am_01: { name: "Assembly Station 1", stage: "assembly" },
-  am_02: { name: "Assembly Station 2", stage: "assembly" },
-  am_03: { name: "Assembly Station 3", stage: "assembly" },
-  qc_01: { name: "QC Test Station", stage: "qc" },
-};

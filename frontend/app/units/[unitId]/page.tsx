@@ -4,9 +4,8 @@ import React, { useEffect, useState, useMemo, Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useParams } from "next/navigation";
 import { fetchUnitHistory, ApiError } from "../../../lib/api";
-import {
+import type {
   UnitHistoryResponse,
-  KNOWN_MACHINES,
   MachineStatus,
 } from "../../../types/factory";
 import { useFactoryWebSocket } from "../../../context/WebSocketContext";
@@ -376,8 +375,7 @@ function UnitDetailContent() {
               : isCurrentlyOnMachine
               ? activeMachine.machine_id
               : null;
-            const machineMeta = machineId ? KNOWN_MACHINES[machineId] : null;
-            const machineName = machineMeta?.name || machineId;
+            const machineName = machineId;
 
             const isHighAnomaly =
               recordedStage && recordedStage.anomaly_score > 2.0;
