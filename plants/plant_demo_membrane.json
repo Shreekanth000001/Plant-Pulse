@@ -1,0 +1,267 @@
+{
+  "plant_id": "plant_demo_membrane",
+  "name": "Membrane Manufacturing Facility 01",
+  "timezone": "America/Chicago",
+  "viewer_token": null,
+  "enabled_modules": ["core", "alarms", "product_traceability", "quality_inspection"],
+  "mqtt_credentials": [
+    {
+      "username": "device_plant_demo_membrane",
+      "password": "demo_membrane_secure_token_123",
+      "client_id": "client_demo_membrane_sim"
+    }
+  ],
+  "areas": [
+    {
+      "area_code": "housing",
+      "name": "Housing Sub-Facility",
+      "display_order": 1,
+      "machines": [
+        {
+          "machine_code": "hm_01",
+          "name": "Housing Molder 1",
+          "machine_type": "injection_molder",
+          "display_order": 1,
+          "signals": [
+            {
+              "signal_code": "mold_temperature_actual",
+              "name": "Mold Temperature",
+              "unit": "°C",
+              "data_type": "float",
+              "is_setpoint": false,
+              "setpoint_signal_code": "mold_temperature_setpoint",
+              "normal_min": 62.0,
+              "normal_max": 68.0,
+              "warn_min": 60.0,
+              "warn_max": 70.0,
+              "alarm_min": 58.0,
+              "alarm_max": 72.0,
+              "display_order": 1
+            },
+            {
+              "signal_code": "mold_temperature_setpoint",
+              "name": "Mold Temp Target",
+              "unit": "°C",
+              "data_type": "float",
+              "is_setpoint": true,
+              "display_order": 2
+            },
+            {
+              "signal_code": "vibration_mms",
+              "name": "Motor Vibration",
+              "unit": "mm/s",
+              "data_type": "float",
+              "warn_max": 4.5,
+              "alarm_max": 7.0,
+              "display_order": 3
+            }
+          ]
+        },
+        {
+          "machine_code": "hm_02",
+          "name": "Housing Molder 2",
+          "machine_type": "injection_molder",
+          "display_order": 2,
+          "signals": [
+            {
+              "signal_code": "mold_temperature_actual",
+              "name": "Mold Temperature",
+              "unit": "°C",
+              "data_type": "float",
+              "setpoint_signal_code": "mold_temperature_setpoint",
+              "normal_min": 62.0,
+              "normal_max": 68.0,
+              "warn_min": 60.0,
+              "warn_max": 70.0,
+              "alarm_max": 72.0,
+              "display_order": 1
+            },
+            {
+              "signal_code": "mold_temperature_setpoint",
+              "name": "Mold Temp Target",
+              "unit": "°C",
+              "data_type": "float",
+              "is_setpoint": true,
+              "display_order": 2
+            },
+            {
+              "signal_code": "vibration_mms",
+              "name": "Motor Vibration",
+              "unit": "mm/s",
+              "data_type": "float",
+              "warn_max": 4.5,
+              "alarm_max": 7.0,
+              "display_order": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "area_code": "casting",
+      "name": "Membrane Casting Line",
+      "display_order": 2,
+      "machines": [
+        {
+          "machine_code": "cs_01",
+          "name": "Casting Machine 1",
+          "display_order": 1,
+          "signals": [
+            {
+              "signal_code": "extrusion_temp_actual",
+              "name": "Extrusion Temperature",
+              "unit": "°C",
+              "data_type": "float",
+              "setpoint_signal_code": "extrusion_temp_setpoint",
+              "normal_min": 63.0,
+              "normal_max": 67.0,
+              "display_order": 1
+            },
+            {
+              "signal_code": "extrusion_temp_setpoint",
+              "name": "Extrusion Target",
+              "unit": "°C",
+              "data_type": "float",
+              "is_setpoint": true,
+              "display_order": 2
+            },
+            {
+              "signal_code": "viscosity_actual",
+              "name": "Polymer Viscosity",
+              "unit": "cP",
+              "data_type": "float",
+              "display_order": 3
+            },
+            {
+              "signal_code": "vibration_mms",
+              "name": "Casting Vibration",
+              "unit": "mm/s",
+              "data_type": "float",
+              "alarm_max": 5.0,
+              "display_order": 4
+            }
+          ]
+        },
+        {
+          "machine_code": "cs_02",
+          "name": "Casting Machine 2",
+          "display_order": 2,
+          "signals": [
+            {
+              "signal_code": "extrusion_temp_actual",
+              "name": "Extrusion Temperature",
+              "unit": "°C",
+              "data_type": "float",
+              "setpoint_signal_code": "extrusion_temp_setpoint",
+              "display_order": 1
+            },
+            {
+              "signal_code": "extrusion_temp_setpoint",
+              "name": "Extrusion Target",
+              "unit": "°C",
+              "data_type": "float",
+              "is_setpoint": true,
+              "display_order": 2
+            },
+            {
+              "signal_code": "viscosity_actual",
+              "name": "Polymer Viscosity",
+              "unit": "cP",
+              "data_type": "float",
+              "display_order": 3
+            },
+            {
+              "signal_code": "vibration_mms",
+              "name": "Casting Vibration",
+              "unit": "mm/s",
+              "data_type": "float",
+              "alarm_max": 5.0,
+              "display_order": 4
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "area_code": "assembly",
+      "name": "Robotic Assembly",
+      "display_order": 3,
+      "machines": [
+        {
+          "machine_code": "am_01",
+          "name": "Assembly Station 1",
+          "display_order": 1,
+          "signals": [
+            { "signal_code": "torque_actual", "name": "Torque", "unit": "N*m", "data_type": "float", "display_order": 1 },
+            { "signal_code": "seal_pressure_actual", "name": "Seal Pressure", "unit": "bar", "data_type": "float", "display_order": 2 },
+            { "signal_code": "vibration_mms", "name": "Motor Vibration", "unit": "mm/s", "data_type": "float", "display_order": 3 }
+          ]
+        },
+        {
+          "machine_code": "am_02",
+          "name": "Assembly Station 2",
+          "display_order": 2,
+          "signals": [
+            { "signal_code": "torque_actual", "name": "Torque", "unit": "N*m", "data_type": "float", "display_order": 1 },
+            { "signal_code": "seal_pressure_actual", "name": "Seal Pressure", "unit": "bar", "data_type": "float", "display_order": 2 },
+            { "signal_code": "vibration_mms", "name": "Motor Vibration", "unit": "mm/s", "data_type": "float", "display_order": 3 }
+          ]
+        },
+        {
+          "machine_code": "am_03",
+          "name": "Assembly Station 3",
+          "display_order": 3,
+          "signals": [
+            { "signal_code": "torque_actual", "name": "Torque", "unit": "N*m", "data_type": "float", "display_order": 1 },
+            { "signal_code": "seal_pressure_actual", "name": "Seal Pressure", "unit": "bar", "data_type": "float", "display_order": 2 },
+            { "signal_code": "vibration_mms", "name": "Motor Vibration", "unit": "mm/s", "data_type": "float", "display_order": 3 }
+          ]
+        },
+        {
+          "machine_code": "am_04",
+          "name": "Assembly Station 4",
+          "display_order": 4,
+          "signals": [
+            { "signal_code": "torque_actual", "name": "Torque", "unit": "N*m", "data_type": "float", "display_order": 1 },
+            { "signal_code": "seal_pressure_actual", "name": "Seal Pressure", "unit": "bar", "data_type": "float", "display_order": 2 },
+            { "signal_code": "vibration_mms", "name": "Motor Vibration", "unit": "mm/s", "data_type": "float", "display_order": 3 }
+          ]
+        }
+      ]
+    },
+    {
+      "area_code": "qc",
+      "name": "Quality Testing Station",
+      "display_order": 4,
+      "machines": [
+        {
+          "machine_code": "qc_01",
+          "name": "QC Test Station 1",
+          "display_order": 1,
+          "signals": [
+            { "signal_code": "test_duration", "name": "Test Duration", "unit": "s", "data_type": "float", "display_order": 1 },
+            { "signal_code": "vibration_mms", "name": "Vibration", "unit": "mm/s", "data_type": "float", "display_order": 2 }
+          ]
+        },
+        {
+          "machine_code": "qc_02",
+          "name": "QC Test Station 2",
+          "display_order": 2,
+          "signals": [
+            { "signal_code": "test_duration", "name": "Test Duration", "unit": "s", "data_type": "float", "display_order": 1 },
+            { "signal_code": "vibration_mms", "name": "Vibration", "unit": "mm/s", "data_type": "float", "display_order": 2 }
+          ]
+        },
+        {
+          "machine_code": "qc_03",
+          "name": "QC Test Station 3",
+          "display_order": 3,
+          "signals": [
+            { "signal_code": "test_duration", "name": "Test Duration", "unit": "s", "data_type": "float", "display_order": 1 },
+            { "signal_code": "vibration_mms", "name": "Vibration", "unit": "mm/s", "data_type": "float", "display_order": 2 }
+          ]
+        }
+      ]
+    }
+  ]
+}

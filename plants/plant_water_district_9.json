@@ -1,0 +1,138 @@
+{
+  "plant_id": "plant_water_district_9",
+  "name": "District 9 Water Booster Station",
+  "timezone": "America/New_York",
+  "viewer_token": "district9_read_secret_token_889",
+  "enabled_modules": ["core", "alarms"],
+  "mqtt_credentials": [
+    {
+      "username": "device_plant_water_district_9",
+      "password": "water_district_edge_key_771",
+      "client_id": "gateway_district9_cellular"
+    }
+  ],
+  "areas": [
+    {
+      "area_code": "pump_house",
+      "name": "Primary Pump House",
+      "display_order": 1,
+      "machines": [
+        {
+          "machine_code": "pump_01",
+          "name": "Main Intake Pump P-101",
+          "machine_type": "centrifugal_pump",
+          "display_order": 1,
+          "signals": [
+            {
+              "signal_code": "discharge_pressure_bar",
+              "name": "Discharge Pressure",
+              "unit": "bar",
+              "data_type": "float",
+              "normal_min": 3.8,
+              "normal_max": 4.5,
+              "warn_min": 3.2,
+              "warn_max": 5.0,
+              "alarm_min": 2.5,
+              "alarm_max": 5.5,
+              "display_order": 1
+            },
+            {
+              "signal_code": "flow_rate_m3h",
+              "name": "Water Flow Rate",
+              "unit": "m³/h",
+              "data_type": "float",
+              "normal_min": 120.0,
+              "normal_max": 180.0,
+              "warn_min": 90.0,
+              "display_order": 2
+            },
+            {
+              "signal_code": "motor_current_amps",
+              "name": "Motor Draw",
+              "unit": "A",
+              "data_type": "float",
+              "warn_max": 35.0,
+              "alarm_max": 42.0,
+              "display_order": 3
+            },
+            {
+              "signal_code": "bearing_temperature_c",
+              "name": "Bearing Temperature",
+              "unit": "°C",
+              "data_type": "float",
+              "normal_max": 65.0,
+              "warn_max": 75.0,
+              "alarm_max": 85.0,
+              "display_order": 4
+            },
+            {
+              "signal_code": "vibration_rms_mms",
+              "name": "Vibration RMS",
+              "unit": "mm/s",
+              "data_type": "float",
+              "warn_max": 4.0,
+              "alarm_max": 6.5,
+              "display_order": 5
+            }
+          ]
+        },
+        {
+          "machine_code": "pump_02",
+          "name": "Secondary Booster P-102",
+          "machine_type": "centrifugal_pump",
+          "display_order": 2,
+          "signals": [
+            {
+              "signal_code": "discharge_pressure_bar",
+              "name": "Discharge Pressure",
+              "unit": "bar",
+              "data_type": "float",
+              "normal_min": 3.8,
+              "normal_max": 4.5,
+              "warn_min": 3.2,
+              "warn_max": 5.0,
+              "alarm_max": 5.5,
+              "display_order": 1
+            },
+            {
+              "signal_code": "bearing_temperature_c",
+              "name": "Bearing Temperature",
+              "unit": "°C",
+              "data_type": "float",
+              "normal_max": 65.0,
+              "warn_max": 75.0,
+              "alarm_max": 85.0,
+              "display_order": 2
+            }
+          ]
+        },
+        {
+          "machine_code": "pump_03",
+          "name": "Standby Booster P-103",
+          "machine_type": "centrifugal_pump",
+          "display_order": 3,
+          "signals": [
+            {
+              "signal_code": "discharge_pressure_bar",
+              "name": "Discharge Pressure",
+              "unit": "bar",
+              "data_type": "float",
+              "normal_min": 3.8,
+              "normal_max": 4.5,
+              "display_order": 1
+            },
+            {
+              "signal_code": "bearing_temperature_c",
+              "name": "Bearing Temperature",
+              "unit": "°C",
+              "data_type": "float",
+              "warn_max": 75.0,
+              "alarm_max": 85.0,
+              "display_order": 2
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
