@@ -9,6 +9,7 @@ import os
 import random
 import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -75,6 +76,11 @@ class MachineSim:
         cycle_time_std: float,
         input_queue: list[Unit] | None,
         output_queue: list[Unit] | None,
+        repair_delay_seconds: float = 90.0,
+        drift_scale: float = 0.1,
+        initial_vibration: float = 0.2,
+        clock: Callable[[], float] | None = None,
+        rng: random.Random | None = None,
     ) -> None:
         self.machine_id = machine_id
         self.name = name
@@ -83,6 +89,10 @@ class MachineSim:
         self.cycle_time_mean = cycle_time_mean
         self.cycle_time_std = cycle_time_std
         self.vibration_fault_threshold = vibration_fault_threshold
+        self.repair_delay_seconds = repair_delay_seconds
+        self.drift_scale = drift_scale
+        self.clock = clock
+        self.rng = rng or random.Random()
 
         self.input_queue = input_queue
         self.output_queue = output_queue
@@ -95,7 +105,7 @@ class MachineSim:
         self.phase_duration = self._roll_phase_duration()
         self.machine_state = "IDLE"
         self.starved = False
-        self.vibration = 0.2
+        self.vibration = initial_vibration
         self.vibration_wear_level = 0.0
         self.good_count = 0
         self.reject_count = 0
@@ -103,26 +113,29 @@ class MachineSim:
         self.current_unit: Unit | None = None
         self._cycle_started_at: float | None = None
         self._last_stage_event: dict | None = None
+        self.repair_elapsed = 0.0
 
     @property
     def phase(self) -> str:
         return self.phases[self.phase_index]
 
     def _roll_phase_duration(self) -> float:
-        cycle_time = max(random.gauss(self.cycle_time_mean, self.cycle_time_std), 10.0)
+        cycle_time = max(
+            self.rng.gauss(self.cycle_time_mean, self.cycle_time_std), 10.0
+        )
         return cycle_time / self._working_phase_count
 
     def _try_start_cycle(self) -> bool:
-        if self.input_queue is None:
+        if self.input_queue is not None and self.input_queue:
+            self.current_unit = self.input_queue.pop(0)
+        elif self.sub_facility == "housing":
             self.current_unit = Unit()
         else:
-            if not self.input_queue:
-                self.starved = True
-                return False
-            self.current_unit = self.input_queue.pop(0)
+            self.starved = True
+            return False
 
         self.starved = False
-        self._cycle_started_at = time.time()
+        self._cycle_started_at = self.clock() if self.clock else time.time()
         self.phase_index = (self.phase_index + 1) % len(self.phases)
         self.phase_elapsed = 0.0
         self.phase_duration = self._roll_phase_duration()
@@ -138,7 +151,7 @@ class MachineSim:
 
     def _complete_unit(self) -> None:
         defect_chance = 0.03 + max(0.0, (self.vibration - 4.0) * 0.03)
-        outcome = "flagged" if random.random() < defect_chance else "ok"
+        outcome = "flagged" if self.rng.random() < defect_chance else "ok"
 
         if outcome == "flagged":
             self.reject_count += 1
@@ -147,7 +160,7 @@ class MachineSim:
 
         unit = self.current_unit
         snapshot, anomaly_score = self._snapshot_readings()
-        exited_at = time.time()
+        exited_at = self.clock() if self.clock else time.time()
         unit.record_stage(
             sub_facility=self.sub_facility,
             machine_id=self.machine_id,
@@ -178,7 +191,7 @@ class MachineSim:
         snapshot = {}
         anomaly_score = 0.0
         for name, (setpoint, std) in self.readings.items():
-            actual = random.gauss(setpoint, std)
+            actual = self.rng.gauss(setpoint, std)
             snapshot[name] = round(actual, 2)
             if std > 0:
                 anomaly_score += abs(actual - setpoint) / std
@@ -186,16 +199,31 @@ class MachineSim:
 
     def _update_vibration(self) -> None:
         if self.vibration < 10:
-            self.vibration += random.uniform(0, 0.1)
+            self.vibration += self.rng.uniform(0, 0.1) * self.drift_scale
         self.vibration_wear_level += self.vibration * 0.01
 
         if self.vibration > self.vibration_fault_threshold:
             self.machine_state = "FAULT"
+            self.repair_elapsed = 0.0
 
     def tick(self) -> dict:
         self._last_stage_event = None
 
-        if self.machine_state != "FAULT":
+        if self.machine_state == "FAULT":
+            self.repair_elapsed += TICK_SECONDS
+            if self.repair_elapsed >= self.repair_delay_seconds:
+                # Repair complete: preserve in-progress unit, reset vibration, return to IDLE
+                if self.current_unit is not None:
+                    if self.input_queue is not None:
+                        self.input_queue.insert(0, self.current_unit)
+                    self.current_unit = None
+                self.vibration = 0.2
+                self.machine_state = "IDLE"
+                self.phase_index = 0
+                self.phase_elapsed = 0.0
+                self.starved = False
+                self.repair_elapsed = 0.0
+        else:
             if self.phase == "IDLE":
                 started = self._try_start_cycle()
                 self.machine_state = "RUNNING" if started else "IDLE"
@@ -222,7 +250,7 @@ class MachineSim:
         }
 
         for field_name, (setpoint, std) in self.readings.items():
-            actual = random.gauss(setpoint, std)
+            actual = self.rng.gauss(setpoint, std)
             reading[f"{field_name}_setpoint"] = setpoint
             reading[f"{field_name}_actual"] = round(actual, 2)
 
@@ -237,12 +265,14 @@ class QCStation:
         input_queue: list[Unit],
         test_duration_mean: float,
         test_duration_std: float,
+        rng: random.Random | None = None,
     ) -> None:
         self.machine_id = machine_id
         self.name = name
         self.input_queue = input_queue
         self.test_duration_mean = test_duration_mean
         self.test_duration_std = test_duration_std
+        self.rng = rng or random.Random()
 
         self.machine_state = "IDLE"
         self.starved = False
@@ -262,7 +292,7 @@ class QCStation:
         self.current_unit = self.input_queue.pop(0)
         self._test_elapsed = 0.0
         self._test_duration = max(
-            random.gauss(self.test_duration_mean, self.test_duration_std), 5.0
+            self.rng.gauss(self.test_duration_mean, self.test_duration_std), 5.0
         )
         return True
 
@@ -279,7 +309,7 @@ class QCStation:
 
         if outcome == "fail":
             failed_stage = pick_defect_type(unit)
-            defect_type = random.choice(DEFECT_TYPES_BY_STAGE[failed_stage])
+            defect_type = self.rng.choice(DEFECT_TYPES_BY_STAGE[failed_stage])
             unit.status = "failed"
             result["defect_type"] = defect_type
             result["attributed_stage"] = failed_stage
@@ -333,10 +363,20 @@ def _extract_readings(machine_config: dict) -> dict:
 
 
 class Line:
-    def __init__(self) -> None:
-        self.queues: dict[str, list[Unit]] = {
-            stage: [] for stage in STAGE_ORDER if stage != "housing"
-        }
+    def __init__(
+        self,
+        repair_delay_seconds: float = 90.0,
+        drift_scale: float = 0.1,
+        clock: Callable[[], float] | None = None,
+        seed: int | None = None,
+    ) -> None:
+        self.repair_delay_seconds = repair_delay_seconds
+        self.drift_scale = drift_scale
+        self.clock = clock
+        self.seed = seed
+        self.base_rng = random.Random(seed) if seed is not None else random.Random()
+
+        self.queues: dict[str, list[Unit]] = {stage: [] for stage in STAGE_ORDER}
         self.machines: list[MachineSim] = []
         self.qc_stations: list[QCStation] = []
         self._build_machines()
@@ -346,11 +386,31 @@ class Line:
             sf["stage_type"]: sf for sf in FACILITY["sub_facilities"]
         }
 
+        # Staggered initial vibrations: hm_01 starts pre-worn at 5.8
+        # so it faults around 7-8 minutes into a cold start, matching live stack evidence.
+        # Other machines start at normal/low baselines.
+        initial_vibrations = {
+            "hm_01": 6.3,
+            "hm_02": 2.0,
+            "cs_01": 2.0,
+            "cs_02": 1.0,
+            "am_01": 1.5,
+            "am_02": 1.0,
+            "am_03": 0.5,
+            "am_04": 0.2,
+        }
+
+        m_idx = 0
         for stage_type in STAGE_ORDER:
             sf = sub_facilities_by_type[stage_type]
 
             if stage_type == "qc":
                 for m in sf["machines"]:
+                    qc_rng = (
+                        random.Random(self.base_rng.randint(0, 1_000_000))
+                        if self.seed is not None
+                        else None
+                    )
                     self.qc_stations.append(
                         QCStation(
                             machine_id=m["machine_id"],
@@ -358,6 +418,7 @@ class Line:
                             input_queue=self.queues["qc"],
                             test_duration_mean=m["test_duration_mean"],
                             test_duration_std=m["test_duration_std"],
+                            rng=qc_rng,
                         )
                     )
                 continue
@@ -365,10 +426,19 @@ class Line:
             stage_pos = STAGE_ORDER.index(stage_type)
             next_stage = STAGE_ORDER[stage_pos + 1]
 
-            input_queue = None if stage_type == "housing" else self.queues[stage_type]
+            input_queue = self.queues[stage_type]
             output_queue = self.queues[next_stage]
 
             for m in sf["machines"]:
+                m_rng = (
+                    random.Random(self.base_rng.randint(0, 1_000_000))
+                    if self.seed is not None
+                    else None
+                )
+                init_vib = initial_vibrations.get(m["machine_id"], 0.2)
+                # Stagger drift slightly per machine
+                m_drift = self.drift_scale * (0.9 + (m_idx % 3) * 0.1)
+
                 self.machines.append(
                     MachineSim(
                         machine_id=m["machine_id"],
@@ -381,8 +451,14 @@ class Line:
                         cycle_time_std=m["cycle_time_std"],
                         input_queue=input_queue,
                         output_queue=output_queue,
+                        repair_delay_seconds=self.repair_delay_seconds,
+                        drift_scale=m_drift,
+                        initial_vibration=init_vib,
+                        clock=self.clock,
+                        rng=m_rng,
                     )
                 )
+                m_idx += 1
 
     def tick(self) -> list[dict]:
         readings = [m.tick() for m in self.machines]
@@ -390,13 +466,47 @@ class Line:
         return readings
 
     def queue_depths(self) -> dict:
-        return {stage: len(q) for stage, q in self.queues.items()}
+        return {stage: len(q) for stage, q in self.queues.items() if stage != "housing"}
 
 
 class DemoSimulator:
-    def __init__(self, plant_id: str = "plant_demo_membrane") -> None:
+    def __init__(
+        self,
+        plant_id: str = "plant_demo_membrane",
+        repair_delay_seconds: float | None = None,
+        drift_scale: float | None = None,
+        clock: Callable[[], float] | None = None,
+        seed: int | None = None,
+    ) -> None:
         self.plant_id = plant_id
-        self.line = Line()
+        self.repair_delay_seconds = (
+            repair_delay_seconds
+            if repair_delay_seconds is not None
+            else float(
+                os.getenv(
+                    "SIMULATOR_REPAIR_DELAY_SECONDS",
+                    os.getenv("REPAIR_DELAY_SECONDS", "90.0"),
+                )
+            )
+        )
+        self.drift_scale = (
+            drift_scale
+            if drift_scale is not None
+            else float(
+                os.getenv(
+                    "SIMULATOR_DRIFT_SCALE",
+                    os.getenv("SIMULATOR_VIBRATION_DRIFT_SCALE", "0.1"),
+                )
+            )
+        )
+        self.clock = clock
+        self.seed = seed
+        self.line = Line(
+            repair_delay_seconds=self.repair_delay_seconds,
+            drift_scale=self.drift_scale,
+            clock=self.clock,
+            seed=self.seed,
+        )
         self._prev_states: dict[str, str] = {}
 
     def tick(self) -> list[dict]:
