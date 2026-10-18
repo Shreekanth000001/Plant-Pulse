@@ -1,3 +1,4 @@
+import os
 import shutil
 import socket
 import subprocess
@@ -65,10 +66,23 @@ def test_generate_auth_files_creates_files_with_secure_permissions(tmp_path):
     assert "device_plant_water_district_9:" in passwd_content
 
 
+def test_mosquitto_fixture_fails_in_ci_when_binary_missing(monkeypatch, tmp_path):
+    """Criterion 7: Mosquitto fixture must fail instead of skip when CI env var is set."""
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
+
+    with pytest.raises(pytest.fail.Exception, match="mosquitto"):
+        # Run generator fixture directly
+        gen = mosquitto_broker.__wrapped__(tmp_path)
+        next(gen)
+
+
 @pytest.fixture
 def mosquitto_broker(tmp_path):
     """Spins up a temporary Mosquitto instance with generated auth files."""
     if not shutil.which("mosquitto"):
+        if os.getenv("CI"):
+            pytest.fail("mosquitto binary not found on system in CI environment")
         pytest.skip("mosquitto binary not found on system")
 
     port = get_free_port()

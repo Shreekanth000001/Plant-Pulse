@@ -22,7 +22,7 @@ import sqlite3
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import aiomqtt
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -50,8 +50,15 @@ from topic_router import TopicRouter
 
 MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
+MQTT_USER = os.getenv("MQTT_USER")
+MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
 MQTT_TOPIC = "factory/#"
 RECONNECT_MAX_S = 30
+
+
+def get_mqtt_credentials() -> tuple[str | None, str | None]:
+    return os.getenv("MQTT_USER", MQTT_USER), os.getenv("MQTT_PASSWORD", MQTT_PASSWORD)
+
 
 PLATFORM_DB_PATH = os.getenv("PLATFORM_DB_PATH", "platform.db")
 PLANTS_DIR = Path(os.getenv("PLANTS_DIR", Path(__file__).resolve().parent / "plants"))
@@ -341,11 +348,71 @@ async def handle_plant_heartbeat(payload: dict, plant_id: str) -> None:
     )
 
 
+DEMO_PLANT_ID = "plant_demo_membrane"
+active_mqtt_client: aiomqtt.Client | None = None
+
+
+async def emit_heartbeat_tick(
+    conn_mgr: ConnectionManager | None = None,
+    publish_fn: Any | None = None,
+    plant_id: str = DEMO_PLANT_ID,
+) -> bool:
+    """Emits a heartbeat ping if the specified plant has active viewers connected."""
+    mgr = conn_mgr or manager
+    viewers = len(mgr._rooms.get(plant_id, set()))
+    if viewers <= 0:
+        return False
+
+    payload = json.dumps({"timestamp": datetime.now(UTC).isoformat()})
+    topic = f"plants/{plant_id}/control/heartbeat"
+
+    if publish_fn is not None:
+        res = publish_fn(topic, payload)
+        if asyncio.iscoroutine(res):
+            await res
+        return True
+
+    if active_mqtt_client is not None:
+        try:
+            await active_mqtt_client.publish(topic, payload.encode("utf-8"), qos=1)
+            return True
+        except Exception:
+            log.exception("Failed to publish heartbeat to %s", topic)
+            return False
+
+    return False
+
+
+async def heartbeat_emitter(
+    conn_mgr: ConnectionManager | None = None,
+    publish_fn: Any | None = None,
+    interval: float = 5.0,
+    plant_id: str = DEMO_PLANT_ID,
+) -> None:
+    """Background task emitting heartbeats every interval seconds while demo viewers exist."""
+    while True:
+        try:
+            await emit_heartbeat_tick(
+                conn_mgr=conn_mgr, publish_fn=publish_fn, plant_id=plant_id
+            )
+        except Exception:
+            log.exception("Error in heartbeat emitter tick")
+        await asyncio.sleep(interval)
+
+
 async def mqtt_listener() -> None:
+    global active_mqtt_client
     delay = 1
     while True:
         try:
-            async with aiomqtt.Client(hostname=MQTT_HOST, port=MQTT_PORT) as client:
+            username, password = get_mqtt_credentials()
+            async with aiomqtt.Client(
+                hostname=MQTT_HOST,
+                port=MQTT_PORT,
+                username=username,
+                password=password,
+            ) as client:
+                active_mqtt_client = client
                 await client.subscribe("plants/#", qos=1)
                 await client.subscribe(MQTT_TOPIC, qos=1)
                 log.info(
@@ -356,28 +423,34 @@ async def mqtt_listener() -> None:
                 )
                 delay = 1
 
-                async for message in client.messages:
-                    topic_str = str(message.topic)
-                    try:
-                        payload = json.loads(message.payload.decode("utf-8"))
-                    except (UnicodeDecodeError, json.JSONDecodeError):
-                        log.warning("Discarding malformed payload on %s", message.topic)
-                        continue
-
-                    if topic_str.startswith("plants/"):
-                        await topic_router.dispatch(topic_str, payload)
-                    elif topic_str.startswith("factory/"):
-                        handle_message(topic_str, payload)
-                        await manager.broadcast(
-                            json.dumps(
-                                {
-                                    "topic": topic_str,
-                                    "payload": payload,
-                                }
+                try:
+                    async for message in client.messages:
+                        topic_str = str(message.topic)
+                        try:
+                            payload = json.loads(message.payload.decode("utf-8"))
+                        except (UnicodeDecodeError, json.JSONDecodeError):
+                            log.warning(
+                                "Discarding malformed payload on %s", message.topic
                             )
-                        )
+                            continue
+
+                        if topic_str.startswith("plants/"):
+                            await topic_router.dispatch(topic_str, payload)
+                        elif topic_str.startswith("factory/"):
+                            handle_message(topic_str, payload)
+                            await manager.broadcast(
+                                json.dumps(
+                                    {
+                                        "topic": topic_str,
+                                        "payload": payload,
+                                    }
+                                )
+                            )
+                finally:
+                    active_mqtt_client = None
 
         except (aiomqtt.MqttError, OSError) as exc:
+            active_mqtt_client = None
             log.error("MQTT error: %s. Reconnecting in %ds...", exc, delay)
             await asyncio.sleep(delay)
             delay = min(delay * 2, RECONNECT_MAX_S)
@@ -434,10 +507,14 @@ async def lifespan(app: FastAPI):
     await ingest_engine.start()
 
     task = asyncio.create_task(mqtt_listener(), name="mqtt-listener")
+    heartbeat_task = asyncio.create_task(heartbeat_emitter(), name="heartbeat-emitter")
     try:
         yield
     finally:
+        heartbeat_task.cancel()
         task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await heartbeat_task
         with contextlib.suppress(asyncio.CancelledError):
             await task
         if ingest_engine:
