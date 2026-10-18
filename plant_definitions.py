@@ -53,6 +53,19 @@ class MQTTCredential(BaseModel):
     client_id: str
 
 
+class PlantSummary(BaseModel):
+    plant_id: str = Field(..., pattern=r"^[a-z0-9_]{3,64}$")
+    name: str
+    timezone: str = "UTC"
+    enabled_modules: list[
+        Literal["core", "alarms", "product_traceability", "quality_inspection"]
+    ] = ["core", "alarms"]
+
+
+class PublicPlantDefinition(PlantSummary):
+    areas: list[AreaDefinition]
+
+
 class PlantDefinition(BaseModel):
     plant_id: str = Field(..., pattern=r"^[a-z0-9_]{3,64}$")
     name: str
@@ -63,6 +76,12 @@ class PlantDefinition(BaseModel):
     ] = ["core", "alarms"]
     mqtt_credentials: list[MQTTCredential]
     areas: list[AreaDefinition]
+
+    def to_public(self) -> PublicPlantDefinition:
+        return PublicPlantDefinition.model_validate(self.model_dump())
+
+    def to_summary(self) -> PlantSummary:
+        return PlantSummary.model_validate(self.model_dump())
 
 
 def load_plants(directory: Path) -> dict[str, PlantDefinition]:

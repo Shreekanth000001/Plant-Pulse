@@ -18,8 +18,10 @@ import contextlib
 import json
 import logging
 import os
+import sqlite3
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated
 
 import aiomqtt
@@ -37,23 +39,37 @@ from database import (
     get_session,
     init_db,
 )
+from ingest import IngestEngine, sync_plant_definitions
+from plant_definitions import (
+    PlantDefinition,
+    PlantSummary,
+    PublicPlantDefinition,
+    load_plants,
+)
+from topic_router import TopicRouter
 
 MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_TOPIC = "factory/#"
 RECONNECT_MAX_S = 30
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+PLATFORM_DB_PATH = os.getenv("PLATFORM_DB_PATH", "platform.db")
+PLANTS_DIR = Path(os.getenv("PLANTS_DIR", Path(__file__).resolve().parent / "plants"))
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+)
 log = logging.getLogger("factory-backend")
 DbSession = Annotated[Session, Depends(get_session)]
 
 
 class ConnectionManager:
-    """Same pattern as the earlier FastAPI/WebSocket prototype — tracks
-    connected clients, fans out messages to all of them concurrently."""
+    """Tracks connected clients and fans out messages.
+    Supports both legacy global clients and plant-partitioned rooms."""
 
     def __init__(self) -> None:
         self._clients: set[WebSocket] = set()
+        self._rooms: dict[str, set[WebSocket]] = {}
 
     async def connect(self, ws: WebSocket) -> None:
         await ws.accept()
@@ -77,8 +93,42 @@ class ConnectionManager:
 
         await asyncio.gather(*(_send(ws) for ws in clients))
 
+    async def connect_plant(self, plant_id: str, ws: WebSocket) -> None:
+        await ws.accept()
+        if plant_id not in self._rooms:
+            self._rooms[plant_id] = set()
+        self._rooms[plant_id].add(ws)
+        log.info(
+            "WebSocket client connected to plant %s (%d total in room)",
+            plant_id,
+            len(self._rooms[plant_id]),
+        )
+
+    def disconnect_plant(self, plant_id: str, ws: WebSocket) -> None:
+        if plant_id in self._rooms:
+            self._rooms[plant_id].discard(ws)
+            if not self._rooms[plant_id]:
+                del self._rooms[plant_id]
+        log.info("WebSocket client disconnected from plant %s", plant_id)
+
+    async def broadcast_to_plant(self, plant_id: str, message: str) -> None:
+        clients = list(self._rooms.get(plant_id, set()))
+        if not clients:
+            return
+
+        async def _send(ws: WebSocket) -> None:
+            try:
+                await asyncio.wait_for(ws.send_text(message), timeout=2.0)
+            except Exception:  # noqa: BLE001
+                self.disconnect_plant(plant_id, ws)
+
+        await asyncio.gather(*(_send(ws) for ws in clients))
+
 
 manager = ConnectionManager()
+plants_registry: dict[str, PlantDefinition] = {}
+ingest_engine: IngestEngine | None = None
+topic_router = TopicRouter()
 
 # Queue sizes between stages, e.g. {"casting": 2, "assembly": 0, "qc": 1}.
 # Deliberately in-memory, not a database table: it's a "what is true right
@@ -90,8 +140,16 @@ latest_queue_depths: dict = {}
 # Fields that are "common" columns on TelemetryReading — everything else
 # in a telemetry payload goes into the `extra` JSON column.
 COMMON_TELEMETRY_FIELDS = {
-    "machine_id", "name", "machine_state", "phase", "starved", "current_unit",
-    "vibration", "vibration_wear_level", "good_count", "reject_count",
+    "machine_id",
+    "name",
+    "machine_state",
+    "phase",
+    "starved",
+    "current_unit",
+    "vibration",
+    "vibration_wear_level",
+    "good_count",
+    "reject_count",
 }
 
 
@@ -126,16 +184,18 @@ def _store_stage_event(db, payload: dict) -> None:
     def _to_dt(epoch_seconds):
         return datetime.fromtimestamp(epoch_seconds, tz=UTC) if epoch_seconds else None
 
-    db.add(StageEvent(
-        unit_id=unit_id,
-        sub_facility=payload["sub_facility"],
-        machine_id=payload["machine_id"],
-        entered_at=_to_dt(payload.get("entered_at")),
-        exited_at=_to_dt(payload.get("exited_at")),
-        outcome=payload.get("outcome"),
-        anomaly_score=payload.get("anomaly_score"),
-        readings=payload.get("readings"),
-    ))
+    db.add(
+        StageEvent(
+            unit_id=unit_id,
+            sub_facility=payload["sub_facility"],
+            machine_id=payload["machine_id"],
+            entered_at=_to_dt(payload.get("entered_at")),
+            exited_at=_to_dt(payload.get("exited_at")),
+            outcome=payload.get("outcome"),
+            anomaly_score=payload.get("anomaly_score"),
+            readings=payload.get("readings"),
+        )
+    )
 
 
 def _store_qc_result(db, machine_id: str, payload: dict) -> None:
@@ -147,15 +207,17 @@ def _store_qc_result(db, machine_id: str, payload: dict) -> None:
     else:
         existing.status = "passed" if payload["outcome"] == "pass" else "failed"
 
-    db.add(QCResult(
-        unit_id=unit_id,
-        machine_id=machine_id,
-        tested_at=datetime.now(UTC),
-        outcome=payload["outcome"],
-        probability=payload.get("probability"),
-        defect_type=payload.get("defect_type"),
-        attributed_stage=payload.get("attributed_stage"),
-    ))
+    db.add(
+        QCResult(
+            unit_id=unit_id,
+            machine_id=machine_id,
+            tested_at=datetime.now(UTC),
+            outcome=payload["outcome"],
+            probability=payload.get("probability"),
+            defect_type=payload.get("defect_type"),
+            attributed_stage=payload.get("attributed_stage"),
+        )
+    )
 
 
 def handle_message(topic: str, payload: dict) -> None:
@@ -197,41 +259,180 @@ def handle_message(topic: str, payload: dict) -> None:
         db.close()
 
 
+@topic_router.on("telemetry")
+async def handle_plant_telemetry(
+    payload: dict, plant_id: str, machine_code: str
+) -> None:
+    if ingest_engine:
+        await ingest_engine.handle_telemetry(payload, plant_id, machine_code)
+    await manager.broadcast_to_plant(
+        plant_id,
+        json.dumps(
+            {
+                "topic": f"plants/{plant_id}/assets/{machine_code}/telemetry",
+                "payload": payload,
+            }
+        ),
+    )
+
+
+@topic_router.on("state")
+async def handle_plant_state(payload: dict, plant_id: str, machine_code: str) -> None:
+    await manager.broadcast_to_plant(
+        plant_id,
+        json.dumps(
+            {
+                "topic": f"plants/{plant_id}/assets/{machine_code}/state",
+                "payload": payload,
+            }
+        ),
+    )
+
+
+@topic_router.on("stage_event")
+async def handle_plant_stage_event(payload: dict, plant_id: str) -> None:
+    await manager.broadcast_to_plant(
+        plant_id,
+        json.dumps(
+            {
+                "topic": f"plants/{plant_id}/modules/traceability/stage_event",
+                "payload": payload,
+            }
+        ),
+    )
+
+
+@topic_router.on("queue_depths")
+async def handle_plant_queue_depths(payload: dict, plant_id: str) -> None:
+    await manager.broadcast_to_plant(
+        plant_id,
+        json.dumps(
+            {
+                "topic": f"plants/{plant_id}/modules/traceability/queue_depths",
+                "payload": payload,
+            }
+        ),
+    )
+
+
+@topic_router.on("qc_result")
+async def handle_plant_qc_result(payload: dict, plant_id: str) -> None:
+    await manager.broadcast_to_plant(
+        plant_id,
+        json.dumps(
+            {
+                "topic": f"plants/{plant_id}/modules/quality/qc_result",
+                "payload": payload,
+            }
+        ),
+    )
+
+
+@topic_router.on("heartbeat")
+async def handle_plant_heartbeat(payload: dict, plant_id: str) -> None:
+    await manager.broadcast_to_plant(
+        plant_id,
+        json.dumps(
+            {
+                "topic": f"plants/{plant_id}/control/heartbeat",
+                "payload": payload,
+            }
+        ),
+    )
+
+
 async def mqtt_listener() -> None:
     delay = 1
     while True:
         try:
             async with aiomqtt.Client(hostname=MQTT_HOST, port=MQTT_PORT) as client:
+                await client.subscribe("plants/#", qos=1)
                 await client.subscribe(MQTT_TOPIC, qos=1)
-                log.info("Subscribed to %s on %s:%d", MQTT_TOPIC, MQTT_HOST, MQTT_PORT)
+                log.info(
+                    "Subscribed to plants/# and %s on %s:%d",
+                    MQTT_TOPIC,
+                    MQTT_HOST,
+                    MQTT_PORT,
+                )
                 delay = 1
 
                 async for message in client.messages:
+                    topic_str = str(message.topic)
                     try:
                         payload = json.loads(message.payload.decode("utf-8"))
                     except (UnicodeDecodeError, json.JSONDecodeError):
                         log.warning("Discarding malformed payload on %s", message.topic)
                         continue
 
-                    handle_message(str(message.topic), payload)
+                    if topic_str.startswith("plants/"):
+                        await topic_router.dispatch(topic_str, payload)
+                    elif topic_str.startswith("factory/"):
+                        handle_message(topic_str, payload)
+                        await manager.broadcast(
+                            json.dumps(
+                                {
+                                    "topic": topic_str,
+                                    "payload": payload,
+                                }
+                            )
+                        )
 
-                    # Broadcast every message to connected dashboards,
-                    # tagged with its topic so the frontend can tell a
-                    # telemetry tick apart from a stage_event or result.
-                    await manager.broadcast(json.dumps({
-                        "topic": str(message.topic),
-                        "payload": payload,
-                    }))
-
-        except aiomqtt.MqttError as exc:
+        except (aiomqtt.MqttError, OSError) as exc:
             log.error("MQTT error: %s. Reconnecting in %ds...", exc, delay)
             await asyncio.sleep(delay)
             delay = min(delay * 2, RECONNECT_MAX_S)
 
 
+def init_platform_db(db_path: Path | str = PLATFORM_DB_PATH) -> None:
+    """Ensure platform database schema exists via Alembic migrations."""
+    db_file = Path(db_path)
+    if db_file.exists():
+        try:
+            conn = sqlite3.connect(str(db_file))
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='machines';"
+            )
+            has_table = cursor.fetchone() is not None
+            conn.close()
+            if has_table:
+                return
+        except sqlite3.Error:
+            pass
+
+    from alembic import command
+    from alembic.config import Config
+
+    repo_root = Path(__file__).resolve().parent
+    ini_path = repo_root / "alembic.ini"
+    if ini_path.exists():
+        alembic_cfg = Config(str(ini_path))
+        alembic_cfg.set_main_option("script_location", str(repo_root / "migrations"))
+        alembic_cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_file.resolve()}")
+        command.upgrade(alembic_cfg, "head")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global ingest_engine
     init_db()
+    init_platform_db(PLATFORM_DB_PATH)
+
+    if PLANTS_DIR.exists():
+        loaded = load_plants(PLANTS_DIR)
+        plants_registry.clear()
+        plants_registry.update(loaded)
+
+        conn = sqlite3.connect(PLATFORM_DB_PATH)
+        try:
+            conn.execute("PRAGMA foreign_keys=ON;")
+            sync_plant_definitions(conn, plants_registry)
+        finally:
+            conn.close()
+
+    ingest_engine = IngestEngine(db_path=PLATFORM_DB_PATH, plants=plants_registry)
+    await ingest_engine.start()
+
     task = asyncio.create_task(mqtt_listener(), name="mqtt-listener")
     try:
         yield
@@ -239,6 +440,8 @@ async def lifespan(app: FastAPI):
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+        if ingest_engine:
+            await ingest_engine.stop()
 
 
 app = FastAPI(title="Factory Telemetry API", lifespan=lifespan)
@@ -260,6 +463,120 @@ app.add_middleware(
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/api/plants", response_model=list[PlantSummary])
+def list_plants() -> list[PlantSummary]:
+    return [p.to_summary() for p in plants_registry.values()]
+
+
+@app.get("/api/plants/{plant_id}/definition", response_model=PublicPlantDefinition)
+def get_plant_definition(plant_id: str) -> PublicPlantDefinition:
+    plant = plants_registry.get(plant_id)
+    if not plant:
+        raise HTTPException(status_code=404, detail=f"Plant '{plant_id}' not found")
+    return plant.to_public()
+
+
+@app.get("/api/plants/{plant_id}/machines/latest")
+def get_latest_plant_machines(plant_id: str) -> list[dict]:
+    plant = plants_registry.get(plant_id)
+    if not plant:
+        raise HTTPException(status_code=404, detail=f"Plant '{plant_id}' not found")
+
+    if not Path(PLATFORM_DB_PATH).exists():
+        return []
+
+    conn = sqlite3.connect(PLATFORM_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        try:
+            machines_rows = conn.execute(
+                """
+                SELECT m.machine_code, m.area_code, m.name, m.machine_type, m.display_order,
+                       s.state, s.sub_state, s.last_seen_at
+                FROM machines m
+                LEFT JOIN machine_states s
+                  ON m.plant_id = s.plant_id AND m.machine_code = s.machine_code
+                WHERE m.plant_id = ?
+                ORDER BY m.display_order
+                """,
+                (plant_id,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+
+        telemetry_rows = conn.execute(
+            """
+            WITH ranked_telemetry AS (
+                SELECT machine_code, signal_code, device_timestamp, value_num, value_text,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY machine_code, signal_code
+                           ORDER BY device_timestamp DESC, id DESC
+                       ) as rn
+                FROM telemetry_values
+                WHERE plant_id = ?
+            )
+            SELECT machine_code, signal_code, device_timestamp, value_num, value_text
+            FROM ranked_telemetry
+            WHERE rn = 1
+            """,
+            (plant_id,),
+        ).fetchall()
+
+        signals_by_machine: dict[str, dict] = {}
+        for tr in telemetry_rows:
+            m_code = tr["machine_code"]
+            if m_code not in signals_by_machine:
+                signals_by_machine[m_code] = {}
+            signals_by_machine[m_code][tr["signal_code"]] = {
+                "value": tr["value_num"]
+                if tr["value_num"] is not None
+                else tr["value_text"],
+                "value_num": tr["value_num"],
+                "value_text": tr["value_text"],
+                "device_timestamp": tr["device_timestamp"],
+            }
+
+        result = []
+        for mr in machines_rows:
+            m_code = mr["machine_code"]
+            result.append(
+                {
+                    "machine_code": m_code,
+                    "area_code": mr["area_code"],
+                    "name": mr["name"],
+                    "machine_type": mr["machine_type"],
+                    "state": mr["state"] or "IDLE",
+                    "sub_state": mr["sub_state"],
+                    "last_seen_at": mr["last_seen_at"],
+                    "signals": signals_by_machine.get(m_code, {}),
+                }
+            )
+        return result
+    finally:
+        conn.close()
+
+
+@app.websocket("/ws/{plant_id}/telemetry")
+async def plant_telemetry_ws(ws: WebSocket, plant_id: str) -> None:
+    plant = plants_registry.get(plant_id)
+    if not plant:
+        raise HTTPException(status_code=404, detail=f"Plant '{plant_id}' not found")
+
+    if plant.viewer_token is not None:
+        await ws.accept()
+        await ws.close(code=4401, reason="Unauthorized")
+        return
+
+    await manager.connect_plant(plant_id, ws)
+    try:
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        manager.disconnect_plant(plant_id, ws)
 
 
 @app.websocket("/ws/telemetry")
@@ -366,7 +683,9 @@ def unit_history(db: DbSession, unit_id: str) -> dict:
             }
             for s in stages
         ],
-        "qc_result": None if not qc else {
+        "qc_result": None
+        if not qc
+        else {
             "outcome": qc.outcome,
             "probability": qc.probability,
             "defect_type": qc.defect_type,
