@@ -1,18 +1,18 @@
 "use client";
 
-import React from "react";
+import React, { useMemo } from "react";
 import Link from "next/link";
-import { MachineStatus, KNOWN_MACHINES } from "../../types/factory";
+import type { MachineStatus, MachineDefinition } from "../../types/factory";
 import { ReadingsGrid } from "./ReadingsGrid";
 
 interface MachineCardProps {
   machine: MachineStatus;
+  machineDef?: MachineDefinition;
   onInspect?: () => void;
 }
 
-export function MachineCard({ machine, onInspect }: MachineCardProps) {
-  const machineMeta = KNOWN_MACHINES[machine.machine_id];
-  const displayName = machine.name || machineMeta?.name || machine.machine_id;
+export function MachineCard({ machine, machineDef, onInspect }: MachineCardProps) {
+  const displayName = machine.name || machine.machine_id;
 
   // Determine state color theme
   const state = machine.machine_state?.toUpperCase() || "IDLE";
@@ -64,6 +64,18 @@ export function MachineCard({ machine, onInspect }: MachineCardProps) {
   const reject = machine.reject_count ?? 0;
   const totalProduced = good + reject;
   const rejectRate = totalProduced > 0 ? ((reject / totalProduced) * 100).toFixed(1) : "0.0";
+
+  const effectiveReadings = useMemo(() => {
+    const res: Record<string, number | string | boolean | null> = { ...(machine.extra || {}) };
+    if (machine.signals) {
+      for (const [code, sig] of Object.entries(machine.signals)) {
+        if (res[code] === undefined && sig && sig.value !== undefined) {
+          res[code] = sig.value;
+        }
+      }
+    }
+    return res;
+  }, [machine.extra, machine.signals]);
 
   return (
     <div
@@ -119,7 +131,7 @@ export function MachineCard({ machine, onInspect }: MachineCardProps) {
           {currentUnit ? (
             <Link
               href={`/units/${encodeURIComponent(currentUnit)}`}
-              className="inline-flex items-center gap-1 font-mono text-xs font-bold text-blue-600 hover:text-blue-800 hover:underline mt-1 transition-colors truncate max-w-full"
+              className="inline-flex items-center gap-1 font-mono tabular-nums text-xs font-bold text-blue-600 hover:text-blue-800 hover:underline mt-1 transition-colors truncate max-w-full"
             >
               <span className="truncate">{currentUnit}</span>
               <svg className="w-3 h-3 opacity-80 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -138,7 +150,7 @@ export function MachineCard({ machine, onInspect }: MachineCardProps) {
           <div>
             <div className="flex items-center justify-between text-[11px] text-slate-500 font-semibold">
               <span>Vibration</span>
-              <span className={`font-mono text-xs font-bold ${isVibrationFault ? "text-rose-600" : isVibrationHigh ? "text-amber-700" : "text-emerald-700"}`}>
+              <span className={`font-mono tabular-nums text-xs font-bold ${isVibrationFault ? "text-rose-600" : isVibrationHigh ? "text-amber-700" : "text-emerald-700"}`}>
                 {vibration.toFixed(2)} mm/s
               </span>
             </div>
@@ -163,7 +175,7 @@ export function MachineCard({ machine, onInspect }: MachineCardProps) {
             <div className="text-[11px] text-slate-500 font-semibold">
               Output Volume
             </div>
-            <div className="text-xs font-bold text-slate-900 mt-1 font-mono">
+            <div className="text-xs font-bold text-slate-900 mt-1 font-mono tabular-nums">
               {totalProduced} units
             </div>
           </div>
@@ -172,7 +184,11 @@ export function MachineCard({ machine, onInspect }: MachineCardProps) {
 
       {/* Dynamic Process Readings */}
       <div className="my-1">
-        <ReadingsGrid extra={machine.extra || {}} subFacility={machine.sub_facility} />
+        <ReadingsGrid
+          extra={effectiveReadings}
+          subFacility={machine.sub_facility}
+          signalDefinitions={machineDef?.signals}
+        />
       </div>
 
       {/* Production Counter Footer & Inspect Action */}
@@ -181,12 +197,12 @@ export function MachineCard({ machine, onInspect }: MachineCardProps) {
           <span className="flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
             <span>Good:</span>
-            <strong className="text-slate-900 font-mono font-semibold">{good}</strong>
+            <strong className="text-slate-900 font-mono tabular-nums font-semibold">{good}</strong>
           </span>
           <span className="flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
             <span>Rej:</span>
-            <strong className={reject > 0 ? "text-rose-600 font-mono font-bold" : "text-slate-500 font-mono"}>{reject}</strong>
+            <strong className={reject > 0 ? "text-rose-600 font-mono tabular-nums font-bold" : "text-slate-500 font-mono tabular-nums"}>{reject}</strong>
           </span>
         </div>
 

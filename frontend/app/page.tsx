@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState, useMemo } from "react";
-import { KNOWN_MACHINES } from "../types/factory";
 import { useFactoryWebSocket } from "../context/WebSocketContext";
 import { MachineCard } from "../components/telemetry/MachineCard";
 import { QueueHandoffIndicator } from "../components/telemetry/QueueHandoffIndicator";
@@ -9,65 +8,23 @@ import { OEEHeader } from "../components/telemetry/OEEHeader";
 import { ProductionFlowTopology } from "../components/telemetry/ProductionFlowTopology";
 import { StationInspectorModal } from "../components/telemetry/StationInspectorModal";
 import { LiveEventTicker } from "../components/telemetry/LiveEventTicker";
-
-interface StageConfig {
-  id: "housing" | "casting" | "assembly" | "qc";
-  title: string;
-  subtitle: string;
-  icon: React.ReactNode;
-  expectedMachineIds: string[];
-}
-
-const STAGES: StageConfig[] = [
-  {
-    id: "housing",
-    title: "1. Housing Sub-Facility",
-    subtitle: "Precision polymer molding of outer filter cartridges",
-    icon: (
-      <svg className="w-5 h-5 text-slate-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-      </svg>
-    ),
-    expectedMachineIds: ["hm_01", "hm_02", "hm_03", "hm_04"],
-  },
-  {
-    id: "casting",
-    title: "2. Membrane Casting",
-    subtitle: "Polymer dope extrusion, phase inversion & film formation",
-    icon: (
-      <svg className="w-5 h-5 text-slate-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 4v16M17 4v16M3 8h18M3 16h18" />
-      </svg>
-    ),
-    expectedMachineIds: ["cs_01", "cs_02", "cs_03"],
-  },
-  {
-    id: "assembly",
-    title: "3. Assembly Station",
-    subtitle: "Membrane insertion, robotic torque fitting & ultrasonic sealing",
-    icon: (
-      <svg className="w-5 h-5 text-slate-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-      </svg>
-    ),
-    expectedMachineIds: ["am_01", "am_02", "am_03"],
-  },
-  {
-    id: "qc",
-    title: "4. Quality Control & Testing",
-    subtitle: "Automated integrity inspection, leak testing & defect attribution",
-    icon: (
-      <svg className="w-5 h-5 text-slate-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-      </svg>
-    ),
-    expectedMachineIds: ["qc_01"],
-  },
-];
+import {
+  shouldShowLineIsFillingBanner,
+  isModuleEnabled,
+} from "../lib/plant-utils";
+import type { MachineStatus, MachineDefinition } from "../types/factory";
 
 export default function LiveOverviewPage() {
-  const { machines, handoffs, status, lastMessageAt } = useFactoryWebSocket();
+  const {
+    machines,
+    handoffs,
+    status,
+    lastMessageAt,
+    plantDefinition,
+    recentQcResults,
+    isTokenRequired,
+    pollingActive,
+  } = useFactoryWebSocket();
 
   // Selected machine for inspector modal
   const [selectedMachineId, setSelectedMachineId] = useState<string | null>(null);
@@ -75,18 +32,38 @@ export default function LiveOverviewPage() {
   // Filter state for station matrix
   const [statusFilter, setStatusFilter] = useState<"ALL" | "RUNNING" | "STARVED" | "FAULT">("ALL");
 
-  // Check starvation per stage for handoff indicators
-  const isCastingStarved = useMemo(() => {
-    return STAGES[1].expectedMachineIds.some((id) => machines[id]?.starved);
-  }, [machines]);
+  const hasTraceability = isModuleEnabled(
+    plantDefinition?.enabled_modules,
+    "product_traceability"
+  );
 
-  const isAssemblyStarved = useMemo(() => {
-    return STAGES[2].expectedMachineIds.some((id) => machines[id]?.starved);
-  }, [machines]);
+  // Dynamic areas from plant definition sorted by display_order
+  const sortedAreas = useMemo(() => {
+    if (!plantDefinition?.areas) return [];
+    return [...plantDefinition.areas].sort(
+      (a, b) => (a.display_order ?? 0) - (b.display_order ?? 0)
+    );
+  }, [plantDefinition]);
 
-  const isQcStarved = useMemo(() => {
-    return STAGES[3].expectedMachineIds.some((id) => machines[id]?.starved);
-  }, [machines]);
+  // Total machines across all areas
+  const allMachineIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const area of sortedAreas) {
+      for (const m of area.machines || []) {
+        ids.push(m.machine_code);
+      }
+    }
+    return ids;
+  }, [sortedAreas]);
+
+  // Starvation per area for handoff indicators
+  const isDownstreamStarved = (areaIndex: number) => {
+    if (areaIndex >= sortedAreas.length - 1) return false;
+    const nextArea = sortedAreas[areaIndex + 1];
+    return (nextArea.machines || []).some(
+      (m) => machines[m.machine_code]?.starved
+    );
+  };
 
   const activeInFlightCount = useMemo(() => {
     return Object.values(machines).filter((m) => Boolean(m.current_unit_id)).length;
@@ -105,8 +82,40 @@ export default function LiveOverviewPage() {
       else if (state === "RUNNING" || state === "TESTING") running++;
     }
 
-    return { total: list.length || 11, running, starved, fault };
-  }, [machines]);
+    return { total: list.length || allMachineIds.length || 0, running, starved, fault };
+  }, [machines, allMachineIds]);
+
+  const showFillingBanner = shouldShowLineIsFillingBanner({
+    enabledModules: plantDefinition?.enabled_modules,
+    qcResultCount: recentQcResults.length,
+  });
+
+  let selectedMachine: MachineStatus | null = null;
+  let selectedMachineDef: MachineDefinition | undefined = undefined;
+
+  if (selectedMachineId) {
+    selectedMachine = machines[selectedMachineId] || null;
+    if (plantDefinition?.areas) {
+      for (const area of plantDefinition.areas) {
+        const found = area.machines?.find((d) => d.machine_code === selectedMachineId);
+        if (found) {
+          selectedMachineDef = found;
+          if (!selectedMachine) {
+            selectedMachine = {
+              machine_id: found.machine_code,
+              name: found.name,
+              area_code: area.area_code,
+              sub_facility: area.area_code,
+              machine_state: "IDLE",
+              starved: false,
+              extra: {},
+            };
+          }
+          break;
+        }
+      }
+    }
+  }
 
   return (
     <div className="flex flex-col gap-8 pb-10">
@@ -114,7 +123,8 @@ export default function LiveOverviewPage() {
       {selectedMachineId && (
         <StationInspectorModal
           machineId={selectedMachineId}
-          machine={machines[selectedMachineId] || null}
+          machine={selectedMachine}
+          machineDef={selectedMachineDef}
           onClose={() => setSelectedMachineId(null)}
         />
       )}
@@ -127,42 +137,79 @@ export default function LiveOverviewPage() {
               className={`w-2 h-2 rounded-full ${
                 status === "connected"
                   ? "bg-emerald-500 animate-pulse"
+                  : status === "token_required"
+                  ? "bg-blue-500 animate-pulse"
                   : status === "reconnecting"
                   ? "bg-amber-500 animate-ping"
                   : "bg-rose-500"
               }`}
             />
             <span className="text-slate-900 font-semibold">
-              Line Operational Telemetry: <span className="capitalize">{status}</span>
+              Operational Telemetry:{" "}
+              <span className="capitalize">
+                {status === "token_required" ? "Token Plant (Snapshot Mode)" : status}
+              </span>
             </span>
           </span>
           <span className="text-slate-300">|</span>
           <span>
             Tick:{" "}
-            <span className="text-blue-600 font-mono font-bold">
-              {lastMessageAt ? new Date(lastMessageAt).toLocaleTimeString() : "Awaiting tick"}
+            <span className="text-blue-600 font-mono tabular-nums font-bold">
+              {lastMessageAt ? new Date(lastMessageAt).toLocaleTimeString() : "Awaiting telemetry"}
             </span>
           </span>
         </div>
 
-        <div className="flex items-center gap-4 text-slate-500">
-          <span>
-            Floor Work-In-Progress:{" "}
-            <strong className="text-blue-700 font-mono font-bold">{activeInFlightCount} in-flight</strong>
-          </span>
-          <span className="text-slate-300">|</span>
-          <span>
-            Inter-Stage Buffers:{" "}
-            <strong className="text-amber-800 font-mono font-bold">
-              {handoffs.housingToCasting + handoffs.castingToAssembly + handoffs.assemblyToQc} units
-            </strong>
+        {hasTraceability && (
+          <div className="flex items-center gap-4 text-slate-500">
+            <span>
+              Floor WIP:{" "}
+              <strong className="text-blue-700 font-mono tabular-nums font-bold">
+                {activeInFlightCount} in-flight
+              </strong>
+            </span>
+            <span className="text-slate-300">|</span>
+            <span>
+              Inter-Stage Buffers:{" "}
+              <strong className="text-amber-800 font-mono tabular-nums font-bold">
+                {handoffs.housingToCasting + handoffs.castingToAssembly + handoffs.assemblyToQc} units
+              </strong>
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Live View Needs Viewer Token Banner (Token Plant 4401 Fallback) */}
+      {(isTokenRequired || status === "token_required") && (
+        <div
+          role="alert"
+          className="p-4.5 rounded-2xl bg-amber-50 border-2 border-amber-300 text-amber-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-amber-100 border border-amber-300 flex items-center justify-center text-amber-800 font-bold shrink-0 text-base">
+              🔒
+            </div>
+            <div>
+              <h3 className="text-xs font-bold text-amber-900">
+                Live view needs a viewer token
+              </h3>
+              <p className="text-xs text-amber-800 mt-0.5">
+                Operator authentication required for streaming WebSocket access. Operating in snapshot mode with REST polling every 5 seconds.
+              </p>
+            </div>
+          </div>
+          <span className="text-xs font-mono tabular-nums font-semibold px-3 py-1.5 rounded-lg bg-white border border-amber-200 text-amber-800 whitespace-nowrap shadow-2xs">
+            {pollingActive ? "Polling active (5s)" : "Token required"}
           </span>
         </div>
-      </div>
+      )}
 
       {/* Disconnected Alert Banner (if offline and no machines loaded) */}
       {status === "disconnected" && Object.keys(machines).length === 0 && (
-        <div role="alert" className="p-4.5 rounded-2xl bg-rose-50 border-2 border-rose-300 text-rose-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+        <div
+          role="alert"
+          className="p-4.5 rounded-2xl bg-rose-50 border-2 border-rose-300 text-rose-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs"
+        >
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-rose-100 border border-rose-300 flex items-center justify-center text-rose-700 font-bold shrink-0 text-base">
               !
@@ -182,22 +229,48 @@ export default function LiveOverviewPage() {
         </div>
       )}
 
+      {/* Line is Filling Banner (Data-driven only: quality_inspection enabled and 0 QC results) */}
+      {showFillingBanner && (
+        <div
+          role="status"
+          className="p-4 rounded-2xl bg-blue-50 border-2 border-blue-300 text-blue-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-xl bg-blue-100 border border-blue-300 flex items-center justify-center text-blue-700 font-bold shrink-0 text-base">
+              ℹ
+            </div>
+            <div>
+              <h4 className="text-xs font-bold text-blue-900">
+                Line is filling
+              </h4>
+              <p className="text-xs text-blue-800 mt-0.5">
+                First production cycle in progress — awaiting initial end-of-line quality verification results.
+              </p>
+            </div>
+          </div>
+          <span className="text-xs font-mono font-semibold px-2.5 py-1 rounded-lg bg-white border border-blue-200 text-blue-700 whitespace-nowrap">
+            QC Pending
+          </span>
+        </div>
+      )}
+
       {/* 1. Executive OEE Overview & Shift Rhythm */}
       <OEEHeader machines={machines} />
 
-      {/* 2. Interactive Production Flow Topology (Interactive Process Flow) */}
+      {/* 2. Interactive Plant Facility Topology */}
       <ProductionFlowTopology
+        definition={plantDefinition}
         machines={machines}
         handoffs={handoffs}
         onSelectMachine={(id) => setSelectedMachineId(id)}
       />
 
-      {/* 3. Station Matrix Filter & Production Stages */}
+      {/* 3. Station Matrix Filter & Production Areas */}
       <div className="flex flex-col gap-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h2 className="text-lg font-bold text-slate-900 tracking-tight">
-              Production Stage Stations
+              Facility Areas & Assets
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
               Live individual station telemetry, process reading gauges, and maintenance vibration sensors.
@@ -257,66 +330,74 @@ export default function LiveOverviewPage() {
           </div>
         </div>
 
-        {/* Stages List */}
+        {/* Dynamic Areas List */}
         <div className="flex flex-col gap-6">
-          {STAGES.map((stage, idx) => {
-            const rawStageMachines = stage.expectedMachineIds.map(
-              (id) =>
-                machines[id] || {
-                  machine_id: id,
-                  name: KNOWN_MACHINES[id]?.name || id,
-                  sub_facility: stage.id,
+          {sortedAreas.map((area, idx) => {
+            const areaMachinesDef = [...(area.machines || [])].sort(
+              (a, b) => (a.display_order ?? 0) - (b.display_order ?? 0)
+            );
+
+            const rawAreaMachines = areaMachinesDef.map((mDef) => {
+              return (
+                machines[mDef.machine_code] || {
+                  machine_id: mDef.machine_code,
+                  name: mDef.name,
+                  area_code: area.area_code,
+                  sub_facility: area.area_code,
                   machine_state: "IDLE",
                   starved: false,
                   extra: {},
                 }
-            );
+              );
+            });
 
             // Filter machines based on selected status filter
-            const stageMachines = rawStageMachines.filter((m) => {
+            const filteredMachines = rawAreaMachines.filter((m) => {
               if (statusFilter === "ALL") return true;
               const state = m.machine_state?.toUpperCase();
-              if (statusFilter === "RUNNING") return (state === "RUNNING" || state === "TESTING") && !m.starved;
+              if (statusFilter === "RUNNING")
+                return (state === "RUNNING" || state === "TESTING") && !m.starved;
               if (statusFilter === "STARVED") return m.starved;
               if (statusFilter === "FAULT") return state === "FAULT";
               return true;
             });
 
-            const activeCount = rawStageMachines.filter(
+            const activeCount = rawAreaMachines.filter(
               (m) => m.machine_state === "RUNNING" || m.machine_state === "TESTING"
             ).length;
-            const stageHasStarved = rawStageMachines.some((m) => m.starved);
+            const areaHasStarved = rawAreaMachines.some((m) => m.starved);
 
             return (
-              <React.Fragment key={stage.id}>
-                {/* Stage Container */}
+              <React.Fragment key={area.area_code}>
+                {/* Area Section Container */}
                 <section className="bg-white rounded-3xl p-6 lg:p-7 flex flex-col gap-5 border border-slate-200/90 shadow-xs">
-                  {/* Stage Header */}
+                  {/* Area Header */}
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-100 gap-3">
                     <div className="flex items-center gap-3.5">
-                      <div className="w-11 h-11 rounded-2xl bg-slate-50 border border-slate-200 flex items-center justify-center shadow-xs">
-                        {stage.icon}
+                      <div className="w-11 h-11 rounded-2xl bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-700 font-bold font-mono text-sm shadow-xs">
+                        {idx + 1}
                       </div>
                       <div>
                         <h3 className="text-base font-bold text-slate-900 tracking-tight">
-                          {stage.title}
+                          {area.name}
                         </h3>
-                        <p className="text-xs text-slate-500 mt-0.5">
-                          {stage.subtitle}
+                        <p className="text-xs text-slate-500 font-mono mt-0.5">
+                          Area Code: {area.area_code}
                         </p>
                       </div>
                     </div>
 
-                    {/* Stage Metrics Badges */}
+                    {/* Area Metrics Badges */}
                     <div className="flex items-center gap-2 text-xs">
-                      <span className="px-3 py-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200 font-medium">
-                        {rawStageMachines.length} {rawStageMachines.length === 1 ? "Station" : "Stations"}
+                      <span className="px-3 py-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200 font-medium font-mono tabular-nums">
+                        {rawAreaMachines.length}{" "}
+                        {rawAreaMachines.length === 1 ? "Station" : "Stations"}
                       </span>
-                      <span className="px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold flex items-center gap-1.5">
+                      <span className="px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold flex items-center gap-1.5 font-mono tabular-nums">
                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                         {activeCount} Active
                       </span>
-                      {stageHasStarved && (
+                      {areaHasStarved && (
                         <span className="px-3 py-1 rounded-full bg-amber-50 text-amber-800 border border-amber-200 font-semibold flex items-center gap-1.5 animate-pulse">
                           <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
                           Starved
@@ -326,56 +407,57 @@ export default function LiveOverviewPage() {
                   </div>
 
                   {/* Grid of Machine Status Cards */}
-                  {stageMachines.length > 0 ? (
+                  {filteredMachines.length > 0 ? (
                     <div
                       className={`grid grid-cols-1 md:grid-cols-2 ${
-                        stage.expectedMachineIds.length >= 4
+                        areaMachinesDef.length >= 4
                           ? "xl:grid-cols-4"
-                          : stage.expectedMachineIds.length === 3
+                          : areaMachinesDef.length === 3
                           ? "xl:grid-cols-3"
                           : "xl:grid-cols-2"
                       } gap-4`}
                     >
-                      {stageMachines.map((m) => (
+                      {filteredMachines.map((m) => (
                         <MachineCard
                           key={m.machine_id}
                           machine={m}
+                          machineDef={areaMachinesDef.find((d) => d.machine_code === m.machine_id)}
                           onInspect={() => setSelectedMachineId(m.machine_id)}
                         />
                       ))}
                     </div>
                   ) : (
                     <div className="p-6 text-center text-xs text-slate-500 italic bg-slate-50 rounded-2xl border border-slate-200">
-                      No stations match the selected &quot;{statusFilter}&quot; filter in this stage.
+                      No stations match the selected &quot;{statusFilter}&quot; filter in this area.
                     </div>
                   )}
                 </section>
 
-                {/* Inter-Stage Queue Depth Indicators */}
-                {idx === 0 && (
+                {/* Inter-Stage Queue Depth Indicators (only rendered when product_traceability enabled) */}
+                {hasTraceability && idx === 0 && sortedAreas.length > 1 && (
                   <QueueHandoffIndicator
-                    fromStage="Housing (Molding)"
-                    toStage="Membrane Casting (Extrusion)"
+                    fromStage={sortedAreas[0]?.name || "Stage 1"}
+                    toStage={sortedAreas[1]?.name || "Stage 2"}
                     depth={handoffs.housingToCasting}
-                    isDownstreamStarved={isCastingStarved}
+                    isDownstreamStarved={isDownstreamStarved(0)}
                   />
                 )}
 
-                {idx === 1 && (
+                {hasTraceability && idx === 1 && sortedAreas.length > 2 && (
                   <QueueHandoffIndicator
-                    fromStage="Membrane Casting"
-                    toStage="Assembly Station"
+                    fromStage={sortedAreas[1]?.name || "Stage 2"}
+                    toStage={sortedAreas[2]?.name || "Stage 3"}
                     depth={handoffs.castingToAssembly}
-                    isDownstreamStarved={isAssemblyStarved}
+                    isDownstreamStarved={isDownstreamStarved(1)}
                   />
                 )}
 
-                {idx === 2 && (
+                {hasTraceability && idx === 2 && sortedAreas.length > 3 && (
                   <QueueHandoffIndicator
-                    fromStage="Assembly Station"
-                    toStage="QC (Testing Station)"
+                    fromStage={sortedAreas[2]?.name || "Stage 3"}
+                    toStage={sortedAreas[3]?.name || "Stage 4"}
                     depth={handoffs.assemblyToQc}
-                    isDownstreamStarved={isQcStarved}
+                    isDownstreamStarved={isDownstreamStarved(2)}
                   />
                 )}
               </React.Fragment>

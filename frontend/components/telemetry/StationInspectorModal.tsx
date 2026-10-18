@@ -1,19 +1,19 @@
-"use client";
-
 import React, { useEffect, useRef } from "react";
 import Link from "next/link";
-import { MachineStatus, KNOWN_MACHINES } from "../../types/factory";
+import type { MachineStatus, MachineDefinition } from "../../types/factory";
 import { ReadingsGrid } from "./ReadingsGrid";
 
 interface StationInspectorModalProps {
   machineId: string | null;
   machine: MachineStatus | null;
+  machineDef?: MachineDefinition;
   onClose: () => void;
 }
 
 export function StationInspectorModal({
   machineId,
   machine,
+  machineDef,
   onClose,
 }: StationInspectorModalProps) {
   const modalRef = useRef<HTMLDivElement>(null);
@@ -71,8 +71,7 @@ export function StationInspectorModal({
 
   if (!machineId || !machine) return null;
 
-  const meta = KNOWN_MACHINES[machineId];
-  const displayName = machine.name || meta?.name || machineId;
+  const displayName = machine.name || machineId;
   const state = machine.machine_state?.toUpperCase() || "IDLE";
   const isStarved = machine.starved;
 
@@ -228,7 +227,11 @@ export function StationInspectorModal({
             <div className="text-xs font-bold text-slate-900 tracking-tight">
               Streaming Process Sensor Readings & Setpoints
             </div>
-            <ReadingsGrid extra={machine.extra || {}} subFacility={machine.sub_facility} />
+            <ReadingsGrid
+              extra={machine.extra || {}}
+              subFacility={machine.sub_facility}
+              signalDefinitions={machineDef?.signals}
+            />
           </div>
 
           {/* Shift Production Counters */}

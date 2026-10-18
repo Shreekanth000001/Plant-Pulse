@@ -1,15 +1,18 @@
-import {
+import type {
   MachineStatus,
   UnitHistoryResponse,
   RecentUnitItem,
   DefectRateByHour,
   DefectRateByStage,
   BackendQueueDepths,
+  PlantSummary,
+  PublicPlantDefinition,
+  PlantMachineLatest,
 } from "../types/factory";
 
-  export function getErrorMessage(err: unknown, fallback: string): string {
-    return err instanceof Error && err.message ? err.message : fallback;
-  }
+export function getErrorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
 
 /**
  * Returns the sanitized base URL for API requests.
@@ -24,14 +27,23 @@ export function getApiBaseUrl(): string {
 }
 
 /**
- * Returns the sanitized WebSocket URL.
+ * Returns the sanitized WebSocket URL for a given plant or the legacy stream.
  */
-export function getWsUrl(): string {
-  const envUrl = process.env.NEXT_PUBLIC_WS_URL;
-  if (envUrl) {
-    return envUrl.trim();
+export function getWsUrl(plantId?: string): string {
+  const envWs = process.env.NEXT_PUBLIC_WS_URL;
+  let baseWs = "ws://localhost:8000";
+  if (envWs) {
+    baseWs = envWs.trim().replace(/\/+$/, "");
+    // If NEXT_PUBLIC_WS_URL includes a path like /ws/telemetry, extract host origin
+    if (baseWs.includes("/ws/")) {
+      baseWs = baseWs.split("/ws/")[0].replace(/\/+$/, "");
+    }
   }
-  return "ws://localhost:8000/ws/telemetry";
+
+  if (plantId) {
+    return `${baseWs}/ws/${encodeURIComponent(plantId.trim())}/telemetry`;
+  }
+  return `${baseWs}/ws/telemetry`;
 }
 
 export class ApiError extends Error {
@@ -44,7 +56,78 @@ export class ApiError extends Error {
 }
 
 /**
- * Fetch latest telemetry for all machines.
+ * Fetch all registered plants.
+ */
+export async function fetchPlants(): Promise<PlantSummary[]> {
+  const baseUrl = getApiBaseUrl();
+  const res = await fetch(`${baseUrl}/api/plants`, {
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    throw new ApiError(
+      `Failed to fetch plants: ${res.statusText}`,
+      res.status
+    );
+  }
+
+  return res.json();
+}
+
+/**
+ * Fetch public plant definition (omits passwords and viewer tokens).
+ */
+export async function fetchPlantDefinition(
+  plantId: string
+): Promise<PublicPlantDefinition> {
+  const baseUrl = getApiBaseUrl();
+  const cleanId = encodeURIComponent(plantId.trim());
+  const res = await fetch(`${baseUrl}/api/plants/${cleanId}/definition`, {
+    cache: "no-store",
+  });
+
+  if (res.status === 404) {
+    throw new ApiError(`Plant '${plantId}' not found`, 404);
+  }
+
+  if (!res.ok) {
+    throw new ApiError(
+      `Failed to fetch definition for plant '${plantId}': ${res.statusText}`,
+      res.status
+    );
+  }
+
+  return res.json();
+}
+
+/**
+ * Fetch latest telemetry and states for all machines of a plant.
+ */
+export async function fetchPlantMachinesLatest(
+  plantId: string
+): Promise<PlantMachineLatest[]> {
+  const baseUrl = getApiBaseUrl();
+  const cleanId = encodeURIComponent(plantId.trim());
+  const res = await fetch(`${baseUrl}/api/plants/${cleanId}/machines/latest`, {
+    cache: "no-store",
+  });
+
+  if (res.status === 404) {
+    throw new ApiError(`Plant '${plantId}' not found`, 404);
+  }
+
+  if (!res.ok) {
+    throw new ApiError(
+      `Failed to fetch latest machines for plant '${plantId}': ${res.statusText}`,
+      res.status
+    );
+  }
+
+  return res.json();
+}
+
+/**
+ * Fetch latest telemetry for all machines (legacy endpoint).
  */
 export async function fetchLatestMachines(): Promise<MachineStatus[]> {
   const baseUrl = getApiBaseUrl();

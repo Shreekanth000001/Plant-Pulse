@@ -4,7 +4,7 @@ import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { fetchRecentUnits, getErrorMessage } from "../../lib/api";
-import { RecentUnitItem, KNOWN_MACHINES } from "../../types/factory";
+import type { RecentUnitItem } from "../../types/factory";
 import { useFactoryWebSocket } from "../../context/WebSocketContext";
 
 const STAGE_LABELS: Record<string, { label: string; icon: React.ReactNode }> = {
@@ -101,11 +101,10 @@ export default function UnitsIndexPage() {
     for (const m of Object.values(machines)) {
       if (m.current_unit_id && !seenUnits.has(m.current_unit_id)) {
         seenUnits.add(m.current_unit_id);
-        const meta = KNOWN_MACHINES[m.machine_id];
         list.push({
           unitId: m.current_unit_id,
           machineId: m.machine_id,
-          machineName: meta?.name || m.name || m.machine_id,
+          machineName: m.name || m.machine_id,
           subFacility: m.sub_facility,
           phase: m.phase,
           machineState: m.machine_state || "IDLE",
