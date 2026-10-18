@@ -120,6 +120,59 @@ def test_criterion_3_get_plant_definition(server):
     assert status == 404, f"Expected 404 for unknown plant, got {status}: {data}"
 
 
+def http_get_raw(url: str) -> tuple[int, str]:
+    req = urllib.request.Request(url, headers={"User-Agent": "test-runner"})
+    try:
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
+            return resp.status, resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8")
+
+
+def test_endpoints_and_ws_frames_leak_no_secrets(server):
+    """Security: Neither /api/plants, /api/plants/{id}/definition, nor WS frames leak secrets."""
+    from plant_definitions import load_plants
+
+    plants = load_plants(PLANTS_DIR)
+    assert len(plants) > 0
+
+    all_passwords = [
+        cred.password for p in plants.values() for cred in p.mqtt_credentials
+    ]
+    all_viewer_tokens = [p.viewer_token for p in plants.values() if p.viewer_token]
+
+    # 1. Check GET /api/plants
+    status, plants_raw = http_get_raw(f"{server['base_url']}/api/plants")
+    assert status == 200
+    assert "mqtt_credentials" not in plants_raw
+    assert "viewer_token" not in plants_raw
+    for pwd in all_passwords:
+        assert pwd not in plants_raw, f"GET /api/plants leaks password {pwd}"
+    for token in all_viewer_tokens:
+        assert token not in plants_raw, f"GET /api/plants leaks viewer_token {token}"
+
+    # 2. Check GET /api/plants/{plant_id}/definition for every plant in plants/
+    for plant_id in plants:
+        status, raw_text = http_get_raw(
+            f"{server['base_url']}/api/plants/{plant_id}/definition"
+        )
+        assert status == 200, f"Failed fetching definition for {plant_id}: {raw_text}"
+        assert "mqtt_credentials" not in raw_text, (
+            f"Plant definition for {plant_id} leaks 'mqtt_credentials' key"
+        )
+        assert "viewer_token" not in raw_text, (
+            f"Plant definition for {plant_id} leaks 'viewer_token' key"
+        )
+        for token in all_viewer_tokens:
+            assert token not in raw_text, (
+                f"Plant definition for {plant_id} leaks viewer_token {token}"
+            )
+        for pwd in all_passwords:
+            assert pwd not in raw_text, (
+                f"Plant definition for {plant_id} leaks MQTT password {pwd}"
+            )
+
+
 def test_criterion_4_get_plant_machines_latest(server):
     """Criterion 4: GET /api/plants/{plant_id}/machines/latest returns latest machine telemetry or 404."""
     # 1. Valid plant returns machines
@@ -233,6 +286,8 @@ async def test_criterion_8_websocket_cross_plant_isolation(server):
 
         # Plant A viewer receives the frame
         msg_raw = await asyncio.wait_for(ws_a.recv(), timeout=2.0)
+        assert "mqtt_credentials" not in msg_raw
+        assert "viewer_token" not in msg_raw
         frame = json.loads(msg_raw)
         assert frame["topic"] == "plants/plant_demo_membrane/assets/hm_01/telemetry"
         assert frame["payload"]["message_id"] == "test-a-001"

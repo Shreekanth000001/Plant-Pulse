@@ -40,7 +40,12 @@ from database import (
     init_db,
 )
 from ingest import IngestEngine, sync_plant_definitions
-from plant_definitions import PlantDefinition, load_plants
+from plant_definitions import (
+    PlantDefinition,
+    PlantSummary,
+    PublicPlantDefinition,
+    load_plants,
+)
 from topic_router import TopicRouter
 
 MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
@@ -431,25 +436,17 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
-@app.get("/api/plants")
-def list_plants() -> list[dict]:
-    return [
-        {
-            "plant_id": p.plant_id,
-            "name": p.name,
-            "timezone": p.timezone,
-            "enabled_modules": p.enabled_modules,
-        }
-        for p in plants_registry.values()
-    ]
+@app.get("/api/plants", response_model=list[PlantSummary])
+def list_plants() -> list[PlantSummary]:
+    return [p.to_summary() for p in plants_registry.values()]
 
 
-@app.get("/api/plants/{plant_id}/definition")
-def get_plant_definition(plant_id: str) -> dict:
+@app.get("/api/plants/{plant_id}/definition", response_model=PublicPlantDefinition)
+def get_plant_definition(plant_id: str) -> PublicPlantDefinition:
     plant = plants_registry.get(plant_id)
     if not plant:
         raise HTTPException(status_code=404, detail=f"Plant '{plant_id}' not found")
-    return plant.model_dump()
+    return plant.to_public()
 
 
 @app.get("/api/plants/{plant_id}/machines/latest")
