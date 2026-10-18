@@ -107,7 +107,7 @@ export function buildAreaOverview(
 
     const machineViews: OverviewMachineView[] = sortedMachines.map((mDef) => {
       const latest = latestMap.get(mDef.machine_code);
-      const state = latest?.state || "IDLE";
+      const state = latest?.state || "OFFLINE";
       const subState = latest?.sub_state ?? null;
       const lastSeenAt = latest?.last_seen_at ?? null;
 

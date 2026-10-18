@@ -11,6 +11,45 @@ from plant_definitions import PlantDefinition
 
 logger = logging.getLogger("ingest-engine")
 
+KNOWN_STATUSES = frozenset(
+    {"RUNNING", "IDLE", "STANDBY", "FAULT", "OFFLINE", "TESTING"}
+)
+
+
+def extract_machine_state_record(
+    plant_id: str,
+    machine_code: str,
+    status: Any,
+    sub_status: Any,
+    device_ts_iso: str,
+    now_iso: str,
+) -> tuple[str, str, str, str | None, str, str] | None:
+    """Shared function to extract and validate machine state tuple from telemetry or state payloads.
+
+    Unknown status values are stored, logged as a warning, and never fail the batch.
+    """
+    if status is None or status == "":
+        return None
+
+    status_str = str(status).strip()
+    if status_str.upper() not in KNOWN_STATUSES:
+        logger.warning(
+            "Unknown status '%s' for plant '%s', machine '%s'",
+            status_str,
+            plant_id,
+            machine_code,
+        )
+
+    sub_status_str = str(sub_status).strip() if sub_status is not None else None
+    return (
+        plant_id,
+        machine_code,
+        status_str,
+        sub_status_str,
+        device_ts_iso,
+        now_iso,
+    )
+
 
 def sync_plant_definitions(
     conn: sqlite3.Connection,
@@ -160,7 +199,9 @@ class IngestEngine:
         self._batch_size = batch_size
         self._max_late_seconds = max_late_seconds
 
-        self._queue: asyncio.Queue[list[tuple]] = asyncio.Queue(maxsize=max_queue_size)
+        self._queue: asyncio.Queue[tuple[list[tuple], tuple | None]] = asyncio.Queue(
+            maxsize=max_queue_size
+        )
         self._dropped_total = 0
         self._last_drop_log_time = 0.0
 
@@ -224,12 +265,13 @@ class IngestEngine:
             len(parts) != 5
             or parts[0] != "plants"
             or parts[2] != "assets"
-            or parts[4] != "telemetry"
+            or parts[4] not in ("telemetry", "state")
         ):
             return False, "INVALID_TOPIC_SHAPE", []
 
         topic_plant_id = parts[1]
         topic_machine_code = parts[3]
+        topic_kind = parts[4]
 
         plant_id = payload.get("plant_id")
         asset_id = payload.get("asset_id")
@@ -273,6 +315,8 @@ class IngestEngine:
 
         if device_ts.tzinfo is None:
             device_ts = device_ts.replace(tzinfo=UTC)
+        else:
+            device_ts = device_ts.astimezone(UTC)
 
         # Future data rejection: device_ts > now + 300s
         if device_ts > now + timedelta(seconds=300):
@@ -282,47 +326,49 @@ class IngestEngine:
         if device_ts < now - timedelta(seconds=self._max_late_seconds):
             return False, "LATE_TIMESTAMP_REJECTED", []
 
-        # 6. Extract metric rows
+        # 6. Message ID validation
         message_id = payload.get("message_id")
         if not message_id:
             return False, "MISSING_MESSAGE_ID", []
 
         payload_body = payload.get("payload") or {}
-        metrics = payload_body.get("metrics") or {}
-
-        rows: list[tuple] = []
         device_ts_iso = device_ts.isoformat()
         received_at_iso = now.isoformat()
 
-        for sig_code, val in metrics.items():
-            # If signals are known for asset, ignore unknown signals without discarding siblings
-            if valid_signal_codes is not None and sig_code not in valid_signal_codes:
-                continue
+        metric_rows: list[tuple] = []
+        if topic_kind == "telemetry":
+            metrics = payload_body.get("metrics") or {}
+            for sig_code, val in metrics.items():
+                if (
+                    valid_signal_codes is not None
+                    and sig_code not in valid_signal_codes
+                ):
+                    continue
 
-            value_num: float | None = None
-            value_text: str | None = None
+                value_num: float | None = None
+                value_text: str | None = None
 
-            if isinstance(val, (int, float)) and not isinstance(val, bool):
-                value_num = float(val)
-            elif isinstance(val, bool):
-                value_num = 1.0 if val else 0.0
-            else:
-                value_text = str(val)
+                if isinstance(val, (int, float)) and not isinstance(val, bool):
+                    value_num = float(val)
+                elif isinstance(val, bool):
+                    value_num = 1.0 if val else 0.0
+                else:
+                    value_text = str(val)
 
-            rows.append(
-                (
-                    plant_id,
-                    asset_id,
-                    sig_code,
-                    device_ts_iso,
-                    received_at_iso,
-                    message_id,
-                    value_num,
-                    value_text,
+                metric_rows.append(
+                    (
+                        plant_id,
+                        asset_id,
+                        sig_code,
+                        device_ts_iso,
+                        received_at_iso,
+                        message_id,
+                        value_num,
+                        value_text,
+                    )
                 )
-            )
 
-        return True, "OK", rows
+        return True, "OK", metric_rows
 
     async def enqueue(self, topic: str, payload: dict[str, Any]) -> bool:
         """Validate envelope and enqueue rows for batch commit."""
@@ -330,9 +376,36 @@ class IngestEngine:
             return False
 
         now = datetime.now(UTC)
-        is_valid, reason, rows = self._validate_envelope(topic, payload, now)
-        if not is_valid or not rows:
+        is_valid, reason, metric_rows = self._validate_envelope(topic, payload, now)
+        if not is_valid:
             logger.warning("Ingest rejected message on topic %s: %s", topic, reason)
+            return False
+
+        payload_body = payload.get("payload") or {}
+        raw_status = payload_body.get("status")
+        raw_sub_status = payload_body.get("sub_status")
+
+        device_ts_raw = payload.get("device_timestamp")
+        device_ts = datetime.fromisoformat(str(device_ts_raw))
+        if device_ts.tzinfo is None:
+            device_ts = device_ts.replace(tzinfo=UTC)
+        else:
+            device_ts = device_ts.astimezone(UTC)
+
+        state_row = extract_machine_state_record(
+            plant_id=payload.get("plant_id", ""),
+            machine_code=payload.get("asset_id", ""),
+            status=raw_status,
+            sub_status=raw_sub_status,
+            device_ts_iso=device_ts.isoformat(),
+            now_iso=now.isoformat(),
+        )
+
+        if not metric_rows and state_row is None:
+            logger.warning(
+                "Ingest discarded message on topic %s: no metrics and no state",
+                topic,
+            )
             return False
 
         if self._queue.full():
@@ -347,7 +420,7 @@ class IngestEngine:
                 self._last_drop_log_time = now_sec
             return False
 
-        self._queue.put_nowait(rows)
+        self._queue.put_nowait((metric_rows, state_row))
         return True
 
     async def handle_telemetry(
@@ -360,32 +433,64 @@ class IngestEngine:
         topic = f"plants/{plant_id}/assets/{machine_code}/telemetry"
         return await self.enqueue(topic, payload)
 
-    def _commit_batch_sync(self, rows: Sequence[tuple]) -> int:
-        """Synchronously commit batch of narrow rows to SQLite off the event loop."""
-        if not rows:
+    async def handle_state(
+        self,
+        payload: dict[str, Any],
+        plant_id: str,
+        machine_code: str,
+    ) -> bool:
+        """Handler signature compatible with TopicRouter."""
+        topic = f"plants/{plant_id}/assets/{machine_code}/state"
+        return await self.enqueue(topic, payload)
+
+    def _commit_batch_sync(
+        self,
+        metric_rows: Sequence[tuple],
+        state_rows: Sequence[tuple],
+    ) -> int:
+        """Synchronously commit batch of narrow rows and machine states in the same transaction."""
+        if not metric_rows and not state_rows:
             return 0
         cursor = self._conn.cursor()
-        cursor.executemany(
-            """
-            INSERT OR IGNORE INTO telemetry_values (
-                plant_id, machine_code, signal_code,
-                device_timestamp, received_at, message_id,
-                value_num, value_text
+        if metric_rows:
+            cursor.executemany(
+                """
+                INSERT OR IGNORE INTO telemetry_values (
+                    plant_id, machine_code, signal_code,
+                    device_timestamp, received_at, message_id,
+                    value_num, value_text
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                metric_rows,
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            rows,
-        )
+        if state_rows:
+            cursor.executemany(
+                """
+                INSERT INTO machine_states (
+                    plant_id, machine_code, state,
+                    sub_state, last_seen_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (plant_id, machine_code) DO UPDATE SET
+                    state = excluded.state,
+                    sub_state = excluded.sub_state,
+                    last_seen_at = excluded.last_seen_at,
+                    updated_at = excluded.updated_at
+                WHERE excluded.last_seen_at > machine_states.last_seen_at;
+                """,
+                state_rows,
+            )
         self._conn.commit()
-        return len(rows)
+        return len(metric_rows) + len(state_rows)
 
     async def flush(self) -> int:
         """Flush and commit all queued items immediately off the event loop."""
-        items: list[tuple] = []
+        items: list[tuple[list[tuple], tuple | None]] = []
         while not self._queue.empty():
             try:
-                batch = self._queue.get_nowait()
-                items.extend(batch)
+                item = self._queue.get_nowait()
+                items.append(item)
                 self._queue.task_done()
             except asyncio.QueueEmpty:
                 break
@@ -393,31 +498,54 @@ class IngestEngine:
         if not items:
             return 0
 
-        return await asyncio.to_thread(self._commit_batch_sync, items)
+        metric_rows: list[tuple] = []
+        state_rows: list[tuple] = []
+        for m_rows, s_row in items:
+            if m_rows:
+                metric_rows.extend(m_rows)
+            if s_row is not None:
+                state_rows.append(s_row)
+
+        return await asyncio.to_thread(self._commit_batch_sync, metric_rows, state_rows)
 
     async def _worker_loop(self) -> None:
         """Background worker aggregating batches on batch_size or flush_interval."""
         while self._running:
-            batch_rows: list[tuple] = []
+            batch_metric_rows: list[tuple] = []
+            batch_state_rows: list[tuple] = []
             deadline = asyncio.get_running_loop().time() + self._flush_interval
 
-            while len(batch_rows) < self._batch_size:
+            while (
+                len(batch_metric_rows) < self._batch_size
+                and len(batch_state_rows) < self._batch_size
+            ):
                 timeout = deadline - asyncio.get_running_loop().time()
                 if timeout <= 0:
                     break
 
                 try:
-                    message_rows = await asyncio.wait_for(
+                    m_rows, s_row = await asyncio.wait_for(
                         self._queue.get(), timeout=timeout
                     )
-                    batch_rows.extend(message_rows)
+                    if m_rows:
+                        batch_metric_rows.extend(m_rows)
+                    if s_row is not None:
+                        batch_state_rows.append(s_row)
                     self._queue.task_done()
                 except TimeoutError:
                     break
                 except asyncio.CancelledError:
-                    if batch_rows:
-                        await asyncio.to_thread(self._commit_batch_sync, batch_rows)
+                    if batch_metric_rows or batch_state_rows:
+                        await asyncio.to_thread(
+                            self._commit_batch_sync,
+                            batch_metric_rows,
+                            batch_state_rows,
+                        )
                     raise
 
-            if batch_rows:
-                await asyncio.to_thread(self._commit_batch_sync, batch_rows)
+            if batch_metric_rows or batch_state_rows:
+                await asyncio.to_thread(
+                    self._commit_batch_sync,
+                    batch_metric_rows,
+                    batch_state_rows,
+                )

@@ -15,13 +15,13 @@ export function MachineCard({ machine, machineDef, onInspect }: MachineCardProps
   const displayName = machine.name || machine.machine_id;
 
   // Determine state color theme
-  const state = machine.machine_state?.toUpperCase() || "IDLE";
+  const state = machine.machine_state?.toUpperCase() || "OFFLINE";
   const isStarved = machine.starved;
 
-  let stateBorder = "border-amber-200";
-  let stateBadgeBg = "bg-amber-50 text-amber-800 font-semibold";
-  let dotColor = "bg-amber-400";
-  let accentBarGradient = "from-amber-400 to-amber-500";
+  let stateBorder = "border-slate-200";
+  let stateBadgeBg = "bg-slate-100 text-slate-600 font-medium";
+  let dotColor = "bg-slate-400";
+  let accentBarGradient = "from-slate-300 to-slate-400";
   let panelHighlight = "";
 
   if (state === "FAULT") {
@@ -40,6 +40,11 @@ export function MachineCard({ machine, machineDef, onInspect }: MachineCardProps
     stateBadgeBg = "bg-blue-50 text-blue-700 font-semibold";
     dotColor = "bg-blue-600 animate-pulse";
     accentBarGradient = "from-blue-600 to-indigo-600";
+  } else if (state === "IDLE") {
+    stateBorder = "border-amber-200";
+    stateBadgeBg = "bg-amber-50 text-amber-800 font-semibold";
+    dotColor = "bg-amber-400";
+    accentBarGradient = "from-amber-400 to-amber-500";
   } else if (isStarved) {
     stateBadgeBg = "bg-amber-50 text-amber-800 border-amber-200 font-semibold";
     accentBarGradient = "from-amber-400 to-amber-500 animate-pulse";

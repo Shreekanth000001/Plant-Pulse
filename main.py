@@ -285,6 +285,8 @@ async def handle_plant_telemetry(
 
 @topic_router.on("state")
 async def handle_plant_state(payload: dict, plant_id: str, machine_code: str) -> None:
+    if ingest_engine:
+        await ingest_engine.handle_state(payload, plant_id, machine_code)
     await manager.broadcast_to_plant(
         plant_id,
         json.dumps(
@@ -624,7 +626,7 @@ def get_latest_plant_machines(plant_id: str) -> list[dict]:
                     "area_code": mr["area_code"],
                     "name": mr["name"],
                     "machine_type": mr["machine_type"],
-                    "state": mr["state"] or "IDLE",
+                    "state": mr["state"] or "OFFLINE",
                     "sub_state": mr["sub_state"],
                     "last_seen_at": mr["last_seen_at"],
                     "signals": signals_by_machine.get(m_code, {}),

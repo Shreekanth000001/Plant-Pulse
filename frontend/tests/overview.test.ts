@@ -297,3 +297,31 @@ test("Criterion 7: localStorage reads and writes are safely wrapped in try/catch
     safeLocalStorageSet("my_key", "fail_val", brokenLocalStorage);
   });
 });
+
+test("Criterion 8: Machine with no state reported defaults to 'OFFLINE'", () => {
+  const definition: PublicPlantDefinition = {
+    plant_id: "plant_demo_membrane",
+    name: "Membrane Facility",
+    timezone: "America/Chicago",
+    has_viewer_token: false,
+    enabled_modules: ["core"],
+    areas: [
+      {
+        area_code: "housing",
+        name: "Housing Area",
+        display_order: 1,
+        machines: [
+          {
+            machine_code: "hm_01",
+            name: "Housing Machine 1",
+            display_order: 1,
+            signals: [],
+          },
+        ],
+      },
+    ],
+  };
+
+  const overview = buildAreaOverview(definition, []);
+  assert.equal(overview[0].machines[0].state, "OFFLINE");
+});

@@ -72,13 +72,15 @@ export function StationInspectorModal({
   if (!machineId || !machine) return null;
 
   const displayName = machine.name || machineId;
-  const state = machine.machine_state?.toUpperCase() || "IDLE";
+  const state = machine.machine_state?.toUpperCase() || "OFFLINE";
   const isStarved = machine.starved;
 
-  let stateColor = "text-emerald-700 bg-emerald-50 border-emerald-200";
+  let stateColor = "text-slate-600 bg-slate-100 border-slate-200";
   if (state === "FAULT") {
     stateColor = "text-rose-700 bg-rose-50 border-rose-200";
-  } else if (isStarved) {
+  } else if (state === "RUNNING") {
+    stateColor = "text-emerald-700 bg-emerald-50 border-emerald-200";
+  } else if (state === "IDLE" || isStarved) {
     stateColor = "text-amber-800 bg-amber-50 border-amber-200";
   }
 

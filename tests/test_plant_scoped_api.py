@@ -6,6 +6,7 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import closing
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -196,6 +197,96 @@ def test_criterion_4_get_plant_machines_latest(server):
         f"{server['base_url']}/api/plants/unknown_plant_xyz/machines/latest"
     )
     assert status == 404, f"Expected 404 for unknown plant, got {status}: {data}"
+
+
+@pytest.mark.anyio
+async def test_criterion_4b_machines_latest_returns_offline_when_no_machine_states_row(
+    server,
+):
+    """When no machine_states row exists, GET /api/plants/{plant_id}/machines/latest returns state='OFFLINE'."""
+    status, data = http_get(
+        f"{server['base_url']}/api/plants/plant_demo_membrane/machines/latest"
+    )
+    assert status == 200
+    # For a machine that has received no telemetry, state must be OFFLINE (not IDLE)
+    m = next(m for m in data if m["machine_code"] == "hm_02")
+    assert m["state"] == "OFFLINE"
+
+
+@pytest.mark.anyio
+async def test_criterion_4c_telemetry_message_updates_machine_state_in_machines_latest(
+    server,
+):
+    """Telemetry message with status RUNNING updates machine_states and /machines/latest reports RUNNING and sub_state."""
+    import main
+
+    now = datetime.now(UTC)
+    telemetry_payload = {
+        "schema_version": "1.0",
+        "message_id": f"test-state-tel-{now.timestamp()}",
+        "plant_id": "plant_demo_membrane",
+        "asset_id": "hm_01",
+        "device_timestamp": now.isoformat(),
+        "payload_type": "telemetry",
+        "payload": {
+            "status": "RUNNING",
+            "sub_status": "HEATING",
+            "metrics": {
+                "mold_temperature_actual": 68.5,
+            },
+        },
+    }
+
+    await main.topic_router.dispatch(
+        "plants/plant_demo_membrane/assets/hm_01/telemetry",
+        telemetry_payload,
+    )
+    if main.ingest_engine:
+        await main.ingest_engine.flush()
+
+    status, data = http_get(
+        f"{server['base_url']}/api/plants/plant_demo_membrane/machines/latest"
+    )
+    assert status == 200
+    m = next(m for m in data if m["machine_code"] == "hm_01")
+    assert m["state"] == "RUNNING"
+    assert m["sub_state"] == "HEATING"
+
+
+@pytest.mark.anyio
+async def test_criterion_4d_state_topic_updates_machine_state(server):
+    """State-change message on state topic updates machine_states and /machines/latest reports new state and sub_state."""
+    import main
+
+    later = datetime.now(UTC) + timedelta(seconds=1)
+    state_payload = {
+        "schema_version": "1.0",
+        "message_id": f"test-state-chg-{later.timestamp()}",
+        "plant_id": "plant_demo_membrane",
+        "asset_id": "hm_01",
+        "device_timestamp": later.isoformat(),
+        "payload_type": "state_change",
+        "payload": {
+            "previous_status": "RUNNING",
+            "status": "FAULT",
+            "sub_status": "OVERHEAT",
+        },
+    }
+
+    await main.topic_router.dispatch(
+        "plants/plant_demo_membrane/assets/hm_01/state",
+        state_payload,
+    )
+    if main.ingest_engine:
+        await main.ingest_engine.flush()
+
+    status, data = http_get(
+        f"{server['base_url']}/api/plants/plant_demo_membrane/machines/latest"
+    )
+    assert status == 200
+    m = next(m for m in data if m["machine_code"] == "hm_01")
+    assert m["state"] == "FAULT"
+    assert m["sub_state"] == "OVERHEAT"
 
 
 @pytest.mark.anyio
