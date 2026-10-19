@@ -35,8 +35,20 @@ try:
         load_simulator_credentials,
     )
     from demo.simulator.watchdog import Watchdog
+    from demo.simulator.water_simulator import (
+        WaterPlantSimulator,
+        build_water_state_payload,
+        build_water_telemetry_payload,
+        load_water_credentials,
+    )
 except ImportError:
     from watchdog import Watchdog
+    from water_simulator import (
+        WaterPlantSimulator,
+        build_water_state_payload,
+        build_water_telemetry_payload,
+        load_water_credentials,
+    )
 
     from simulator import (
         DemoSimulator,
@@ -68,6 +80,47 @@ QOS = 1
 
 stop_event_set = False
 connected = False
+water_connected = False
+WATER_PLANT_ID = "plant_water_district_9"
+WATER_TICK_SECONDS = 5.0
+
+
+def create_water_mqtt_client(creds: dict[str, str]) -> mqtt.Client:
+    def on_connect(client, userdata, flags, reason_code, properties=None):
+        global water_connected
+        if reason_code.is_failure:
+            log.error("Broker refused water client connection: %s", reason_code)
+            water_connected = False
+        else:
+            log.info(
+                "Connected water client to MQTT broker at %s:%d as %s",
+                BROKER_HOST,
+                BROKER_PORT,
+                creds["WATER_MQTT_CLIENT_ID"],
+            )
+            water_connected = True
+
+    def on_disconnect(client, userdata, flags, reason_code, properties=None):
+        global water_connected
+        water_connected = False
+        if not stop_event_set:
+            log.warning(
+                "Lost broker connection for water client (%s). Auto-reconnecting...",
+                reason_code,
+            )
+
+    client = mqtt.Client(
+        callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+        client_id=creds["WATER_MQTT_CLIENT_ID"],
+    )
+    client.username_pw_set(
+        username=creds["WATER_MQTT_USER"],
+        password=creds["WATER_MQTT_PASSWORD"],
+    )
+    client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
+    client.reconnect_delay_set(min_delay=1, max_delay=30)
+    return client
 
 
 def create_mqtt_client(
@@ -142,34 +195,50 @@ def main() -> None:
 
     # 1. Load credentials or fail fast
     creds = load_simulator_credentials()
+    water_creds = load_water_credentials()
 
-    # 2. Initialize Watchdog & Simulator
+    # 2. Initialize Watchdog & Simulators
     watchdog = Watchdog(
         timeout_seconds=30.0,
         max_runtime_seconds=MAX_RUNTIME,
     )
     simulator = DemoSimulator(plant_id=PLANT_ID)
+    water_simulator = WaterPlantSimulator(plant_id=WATER_PLANT_ID)
 
-    # 3. Connect to MQTT
+    # 3. Connect to MQTT for Demo Plant and Water Plant
     client = create_mqtt_client(creds, watchdog, PLANT_ID)
     if not connect_with_retry(client):
         return
     client.loop_start()
 
+    water_client = create_water_mqtt_client(water_creds)
+    if not connect_with_retry(water_client):
+        client.loop_stop()
+        client.disconnect()
+        return
+    water_client.loop_start()
+
     wait_elapsed = 0.0
-    while not connected and wait_elapsed < 5.0 and not stop_event_set:
+    while (
+        (not connected or not water_connected)
+        and wait_elapsed < 5.0
+        and not stop_event_set
+    ):
         time.sleep(0.1)
         wait_elapsed += 0.1
 
     log.info(
-        "Simulator initialized for %s. Awaiting watchdog heartbeat on plants/%s/control/heartbeat...",
+        "Simulators initialized for %s and %s. Awaiting watchdog heartbeat on plants/%s/control/heartbeat...",
         PLANT_ID,
+        WATER_PLANT_ID,
         PLANT_ID,
     )
 
     stage_by_machine = {m.machine_id: m.sub_facility for m in simulator.line.machines}
     stage_by_machine.update({q.machine_id: "qc" for q in simulator.line.qc_stations})
     prev_machine_states: dict[str, str] = {}
+    prev_water_machine_states: dict[str, str] = {}
+    last_water_publish = 0.0
     tick_count = 0
 
     try:
@@ -178,7 +247,7 @@ def main() -> None:
                 time.sleep(0.5)
                 continue
 
-            # Watchdog active: generate simulation tick
+            # Watchdog active: generate simulation tick for demo manufacturing line
             readings = simulator.tick()
 
             if connected:
@@ -243,12 +312,44 @@ def main() -> None:
                     )
                     client.publish(qd_topic, json.dumps(qd_payload), qos=QOS)
 
+            # Water plant telemetry publishing (at 5s interval, only while watchdog should_run)
+            now_mono = time.monotonic()
+            if water_connected and (
+                now_mono - last_water_publish >= WATER_TICK_SECONDS
+            ):
+                water_readings = water_simulator.tick()
+                for w_reading in water_readings:
+                    w_code = w_reading["machine_code"]
+                    w_state = w_reading["state"]
+                    w_prev = prev_water_machine_states.get(w_code)
+
+                    # State event if state changed or first emission
+                    if w_prev is None or w_prev != w_state:
+                        ws_topic, ws_payload = build_water_state_payload(
+                            WATER_PLANT_ID,
+                            w_code,
+                            previous_status=w_prev,
+                            status=w_state,
+                        )
+                        water_client.publish(ws_topic, json.dumps(ws_payload), qos=QOS)
+                        prev_water_machine_states[w_code] = w_state
+
+                    # Telemetry payload
+                    wt_topic, wt_payload = build_water_telemetry_payload(
+                        w_reading, plant_id=WATER_PLANT_ID
+                    )
+                    water_client.publish(wt_topic, json.dumps(wt_payload), qos=QOS)
+
+                last_water_publish = now_mono
+
             time.sleep(TICK_SECONDS)
 
     finally:
         log.info("Simulator shutting down...")
         client.loop_stop()
         client.disconnect()
+        water_client.loop_stop()
+        water_client.disconnect()
 
 
 if __name__ == "__main__":
