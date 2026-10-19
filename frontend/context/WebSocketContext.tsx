@@ -10,15 +10,19 @@ import React, {
 } from "react";
 import {
   getWsUrl,
+  createWsTicket,
   fetchQueueDepths,
   fetchPlants,
   fetchPlantDefinition,
   fetchPlantMachinesLatest,
+  ApiError,
 } from "../lib/api";
 import {
   safeLocalStorageGet,
   safeLocalStorageSet,
-  handleWsCloseState,
+  safeSessionStorageGet,
+  safeSessionStorageSet,
+  safeSessionStorageRemove,
 } from "../lib/plant-utils";
 import type {
   WebSocketMessage,
@@ -70,6 +74,9 @@ interface WebSocketContextType {
     callback: (message: WebSocketMessage) => void
   ) => () => void;
   isTokenRequired: boolean;
+  tokenError: string | null;
+  submitViewerToken: (token: string) => void;
+  clearViewerToken: () => void;
   pollingActive: boolean;
 }
 
@@ -97,6 +104,8 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     assemblyToQc: 0,
   });
   const [machines, setMachines] = useState<Record<string, MachineStatus>>({});
+  const [tokenMap, setTokenMap] = useState<Record<string, string>>({});
+  const [tokenError, setTokenError] = useState<string | null>(null);
   const [isTokenRequired, setIsTokenRequired] = useState(false);
   const [pollingActive, setPollingActive] = useState(false);
 
@@ -128,6 +137,28 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     []
   );
 
+  const submitViewerToken = useCallback(
+    (token: string) => {
+      safeSessionStorageSet(`plantpulse_viewer_token_${selectedPlantId}`, token);
+      setTokenMap((prev) => ({ ...prev, [selectedPlantId]: token }));
+      setTokenError(null);
+      setIsTokenRequired(false);
+    },
+    [selectedPlantId]
+  );
+
+  const clearViewerToken = useCallback(() => {
+    safeSessionStorageRemove(`plantpulse_viewer_token_${selectedPlantId}`);
+    setTokenMap((prev) => {
+      const next = { ...prev };
+      delete next[selectedPlantId];
+      return next;
+    });
+    setTokenError(null);
+    setIsTokenRequired(true);
+    setStatus("token_required");
+  }, [selectedPlantId]);
+
   // 1. Fetch plants list on mount
   useEffect(() => {
     let active = true;
@@ -143,20 +174,11 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // 2. Main plant sync effect (runs whenever selectedPlantId changes)
+  // 2. Main plant sync effect (runs whenever selectedPlantId, tokenMap, or plantsList changes)
   useEffect(() => {
     isCleanedUpRef.current = false;
     let isCurrent = true;
 
-    // Reset plant-specific state
-    queueMicrotask(() => {
-      if (!isCurrent) return;
-      setStatus("disconnected");
-      setIsTokenRequired(false);
-      setPollingActive(false);
-      setReconnectAttempt(0);
-    });
-    reconnectDelayRef.current = INITIAL_RECONNECT_DELAY_MS;
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
@@ -173,39 +195,55 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
       wsRef.current = null;
     }
 
-    // Function to poll REST endpoint
-    const pollLatestMachines = async () => {
-      try {
-        const latest = await fetchPlantMachinesLatest(selectedPlantId);
+    const cachedToken =
+      tokenMap[selectedPlantId] ||
+      safeSessionStorageGet<string | null>(
+        `plantpulse_viewer_token_${selectedPlantId}`,
+        null
+      );
+
+    const currentPlantSummary = plantsList.find(
+      (p) => p.plant_id === selectedPlantId
+    );
+
+    // If plant summary indicates viewer_token is required but no cached token exists:
+    if (currentPlantSummary?.has_viewer_token && !cachedToken) {
+      queueMicrotask(() => {
         if (!isCurrent) return;
-        setMachinesLatest(latest);
-        setMachines((prev) => {
-          const next = { ...prev };
-          for (const m of latest) {
-            const existing = next[m.machine_code] || {
-              machine_id: m.machine_code,
-              name: m.name,
-              area_code: m.area_code,
-              sub_facility: m.area_code,
-              machine_state: m.state,
-              phase: m.sub_state,
-              starved: false,
-              signals: m.signals || {},
-              extra: {},
-            };
-            next[m.machine_code] = {
-              ...existing,
-              name: m.name,
-              machine_state: m.state,
-              phase: m.sub_state,
-              signals: m.signals || {},
-            };
-          }
-          return next;
-        });
-        setLastMessageAt(new Date().toISOString());
-      } catch (err) {
-        console.warn("Error polling machines latest:", err);
+        setStatus("token_required");
+        setIsTokenRequired(true);
+        setPollingActive(false);
+        setPlantDefinition(null);
+        setMachinesLatest([]);
+        setMachines({});
+      });
+      return;
+    }
+
+    queueMicrotask(() => {
+      if (!isCurrent) return;
+      setStatus("disconnected");
+      setIsTokenRequired(false);
+      setPollingActive(false);
+      setReconnectAttempt(0);
+    });
+    reconnectDelayRef.current = INITIAL_RECONNECT_DELAY_MS;
+
+    const handleAuthFailure = (errMsg: string) => {
+      if (!isCurrent) return;
+      safeSessionStorageRemove(`plantpulse_viewer_token_${selectedPlantId}`);
+      setTokenMap((prev) => {
+        const next = { ...prev };
+        delete next[selectedPlantId];
+        return next;
+      });
+      setTokenError(errMsg);
+      setIsTokenRequired(true);
+      setStatus("token_required");
+      if (wsRef.current) {
+        wsRef.current.onclose = null;
+        wsRef.current.close();
+        wsRef.current = null;
       }
     };
 
@@ -213,8 +251,14 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     const initPlant = async () => {
       try {
         const [def, latest] = await Promise.all([
-          fetchPlantDefinition(selectedPlantId).catch(() => null),
-          fetchPlantMachinesLatest(selectedPlantId).catch(() => []),
+          fetchPlantDefinition(selectedPlantId, cachedToken).catch((err) => {
+            if (err instanceof ApiError && err.status === 401) throw err;
+            return null;
+          }),
+          fetchPlantMachinesLatest(selectedPlantId, cachedToken).catch((err) => {
+            if (err instanceof ApiError && err.status === 401) throw err;
+            return [];
+          }),
         ]);
         if (!isCurrent) return;
 
@@ -222,7 +266,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
           setPlantDefinition(def);
           const initialMachines: Record<string, MachineStatus> = {};
           const latestMap = new Map<string, PlantMachineLatest>();
-          for (const m of latest) {
+          for (const m of latest || []) {
             latestMap.set(m.machine_code, m);
           }
 
@@ -251,7 +295,6 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
           setMachinesLatest(latest);
         }
 
-        // Fetch queue depths if plant has product_traceability enabled
         if (def && def.enabled_modules?.includes("product_traceability")) {
           fetchQueueDepths()
             .then((depths) => {
@@ -262,6 +305,10 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
             .catch(() => {});
         }
       } catch (err) {
+        if (err instanceof ApiError && err.status === 401) {
+          handleAuthFailure("Invalid or expired viewer token. Please re-enter.");
+          return;
+        }
         console.warn("Failed to initialize plant definition:", err);
       }
     };
@@ -269,10 +316,30 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     initPlant();
 
     // Establish WebSocket connection
-    const connectWs = () => {
-      if (typeof window === "undefined" || isCleanedUpRef.current) return;
+    const connectWs = async () => {
+      if (typeof window === "undefined" || isCleanedUpRef.current || !isCurrent) return;
 
-      const wsUrl = getWsUrl(selectedPlantId);
+      let wsTicket: string | null = null;
+      if (currentPlantSummary?.has_viewer_token || cachedToken) {
+        if (!cachedToken) {
+          handleAuthFailure("Viewer token required for streaming access.");
+          return;
+        }
+        try {
+          const res = await createWsTicket(selectedPlantId, cachedToken);
+          if (isCleanedUpRef.current || !isCurrent) return;
+          wsTicket = res.ticket;
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 401) {
+            handleAuthFailure("Invalid or expired viewer token. Please re-enter.");
+            return;
+          }
+          scheduleReconnect();
+          return;
+        }
+      }
+
+      const wsUrl = getWsUrl(selectedPlantId, wsTicket);
       try {
         const ws = new WebSocket(wsUrl);
         wsRef.current = ws;
@@ -321,7 +388,6 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
                   }
                 }
 
-                // If readings has vibration, update vibration property
                 const vib =
                   typeof readingsObj.vibration_rms_mms === "number"
                     ? readingsObj.vibration_rms_mms
@@ -361,7 +427,8 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
                 (payload.state as string) ||
                 (payload.status as string) ||
                 "OFFLINE";
-              const subState = (payload.sub_status as string) || (payload.sub_state as string);
+              const subState =
+                (payload.sub_status as string) || (payload.sub_state as string);
 
               setMachines((prev) => {
                 const existing = prev[machineCode];
@@ -381,7 +448,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
               const depths = raw.payload as BackendQueueDepths;
               setHandoffs(mapBackendQueueDepths(depths));
             }
-            // 4. QC Result topic: plants/{plant_id}/modules/quality/qc_result or legacy .../result
+            // 4. QC Result topic
             else if (topic.includes("/qc_result") || topic.endsWith("/result")) {
               const qcPayload = raw.payload as QCResultPayload;
               const uniqueSuffix = Math.random().toString(36).substring(2, 8);
@@ -402,7 +469,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
                 return [newNotification, ...prev.slice(0, 4)];
               });
             }
-            // 5. Legacy telemetry topics: factory/{subFacility}/{machineId}/telemetry
+            // 5. Legacy telemetry topics
             else if (isTelemetryMessage(raw)) {
               const parts = topic.split("/");
               if (parts.length >= 4) {
@@ -457,39 +524,33 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         ws.onclose = (event) => {
           if (isCleanedUpRef.current || !isCurrent) return;
 
-          const handling = handleWsCloseState(event.code);
-          setStatus(handling.status);
-          setIsTokenRequired(handling.isTokenRequired);
-
-          if (handling.isTokenRequired) {
-            // Do not reconnect to WebSocket. Activate 5s REST polling fallback!
-            setPollingActive(true);
-            pollLatestMachines(); // immediate fetch
-            if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
-            pollingIntervalRef.current = setInterval(
-              pollLatestMachines,
-              handling.fallbackPollingIntervalMs || 5000
-            );
+          if (event.code === 4401) {
+            handleAuthFailure("Viewer authentication failed (4401). Please re-enter token.");
             return;
           }
 
-          // Otherwise exponential backoff reconnect for normal disconnected states
-          setReconnectAttempt((prev) => prev + 1);
-          const delay = reconnectDelayRef.current;
-          reconnectDelayRef.current = Math.min(
-            reconnectDelayRef.current * 1.5,
-            MAX_RECONNECT_DELAY_MS
-          );
-
-          reconnectTimeoutRef.current = setTimeout(() => {
-            if (!isCleanedUpRef.current && isCurrent) {
-              connectWs();
-            }
-          }, delay);
+          scheduleReconnect();
         };
       } catch {
-        if (isCurrent) setStatus("disconnected");
+        if (isCurrent) scheduleReconnect();
       }
+    };
+
+    const scheduleReconnect = () => {
+      if (isCleanedUpRef.current || !isCurrent) return;
+      setStatus("reconnecting");
+      setReconnectAttempt((prev) => prev + 1);
+      const delay = reconnectDelayRef.current;
+      reconnectDelayRef.current = Math.min(
+        reconnectDelayRef.current * 1.5,
+        MAX_RECONNECT_DELAY_MS
+      );
+
+      reconnectTimeoutRef.current = setTimeout(() => {
+        if (!isCleanedUpRef.current && isCurrent) {
+          connectWs();
+        }
+      }, delay);
     };
 
     connectWs();
@@ -513,7 +574,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         wsRef.current = null;
       }
     };
-  }, [selectedPlantId]);
+  }, [selectedPlantId, tokenMap, plantsList]);
 
   return (
     <WebSocketContext.Provider
@@ -532,6 +593,9 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         dismissNotification,
         subscribeToTelemetry,
         isTokenRequired,
+        tokenError,
+        submitViewerToken,
+        clearViewerToken,
         pollingActive,
       }}
     >

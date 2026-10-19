@@ -13,6 +13,7 @@ venv/
 factory.db
 platform.db
 *.db
+*.db-*
 
 # IDE
 .vscode/

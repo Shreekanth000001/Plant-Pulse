@@ -8,6 +8,7 @@ import { OEEHeader } from "../components/telemetry/OEEHeader";
 import { ProductionFlowTopology } from "../components/telemetry/ProductionFlowTopology";
 import { StationInspectorModal } from "../components/telemetry/StationInspectorModal";
 import { LiveEventTicker } from "../components/telemetry/LiveEventTicker";
+import { TokenEntryCard } from "../components/telemetry/TokenEntryCard";
 import {
   shouldShowLineIsFillingBanner,
   isModuleEnabled,
@@ -23,7 +24,10 @@ export default function LiveOverviewPage() {
     plantDefinition,
     recentQcResults,
     isTokenRequired,
-    pollingActive,
+    tokenError,
+    submitViewerToken,
+    selectedPlantId,
+    plantsList,
   } = useFactoryWebSocket();
 
   // Selected machine for inspector modal
@@ -179,29 +183,18 @@ export default function LiveOverviewPage() {
         )}
       </div>
 
-      {/* Live View Needs Viewer Token Banner (Token Plant 4401 Fallback) */}
+      {/* Viewer Authentication Form */}
       {(isTokenRequired || status === "token_required") && (
-        <div
-          role="alert"
-          className="p-4.5 rounded-2xl bg-amber-50 border-2 border-amber-300 text-amber-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs"
-        >
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-amber-100 border border-amber-300 flex items-center justify-center text-amber-800 font-bold shrink-0 text-base">
-              🔒
-            </div>
-            <div>
-              <h3 className="text-xs font-bold text-amber-900">
-                Live view needs a viewer token
-              </h3>
-              <p className="text-xs text-amber-800 mt-0.5">
-                Operator authentication required for streaming WebSocket access. Operating in snapshot mode with REST polling every 5 seconds.
-              </p>
-            </div>
-          </div>
-          <span className="text-xs font-mono tabular-nums font-semibold px-3 py-1.5 rounded-lg bg-white border border-amber-200 text-amber-800 whitespace-nowrap shadow-2xs">
-            {pollingActive ? "Polling active (5s)" : "Token required"}
-          </span>
-        </div>
+        <TokenEntryCard
+          plantName={
+            plantsList.find((p) => p.plant_id === selectedPlantId)?.name ||
+            plantDefinition?.name ||
+            selectedPlantId
+          }
+          plantId={selectedPlantId}
+          onSubmit={submitViewerToken}
+          error={tokenError}
+        />
       )}
 
       {/* Disconnected Alert Banner (if offline and no machines loaded) */}

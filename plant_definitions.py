@@ -76,6 +76,7 @@ class PlantSummary(BaseModel):
     plant_id: str = Field(..., pattern=r"^[a-z0-9_]{3,64}$")
     name: str
     timezone: str = "UTC"
+    has_viewer_token: bool = False
     enabled_modules: list[
         Literal["core", "alarms", "product_traceability", "quality_inspection"]
     ] = ["core", "alarms"]
@@ -135,10 +136,14 @@ class PlantDefinition(BaseModel):
         return self
 
     def to_public(self) -> PublicPlantDefinition:
-        return PublicPlantDefinition.model_validate(self.model_dump())
+        dump = self.model_dump()
+        dump["has_viewer_token"] = bool(self.viewer_token)
+        return PublicPlantDefinition.model_validate(dump)
 
     def to_summary(self) -> PlantSummary:
-        return PlantSummary.model_validate(self.model_dump())
+        dump = self.model_dump()
+        dump["has_viewer_token"] = bool(self.viewer_token)
+        return PlantSummary.model_validate(dump)
 
 
 def load_plants(directory: Path) -> dict[str, PlantDefinition]:

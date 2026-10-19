@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 import sqlite3
 import time
@@ -58,6 +59,11 @@ def sync_plant_definitions(
     """Upsert plant, area, machine, and signal records into the database."""
     cursor = conn.cursor()
     for plant in plants.values():
+        viewer_token_hash = (
+            hashlib.sha256(plant.viewer_token.encode("utf-8")).hexdigest()
+            if plant.viewer_token
+            else None
+        )
         cursor.execute(
             """
             INSERT INTO plants (id, name, timezone, viewer_token_hash)
@@ -71,7 +77,7 @@ def sync_plant_definitions(
                 plant.plant_id,
                 plant.name,
                 plant.timezone,
-                plant.viewer_token,
+                viewer_token_hash,
             ),
         )
 

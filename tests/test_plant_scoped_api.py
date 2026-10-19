@@ -121,8 +121,11 @@ def test_criterion_3_get_plant_definition(server):
     assert status == 404, f"Expected 404 for unknown plant, got {status}: {data}"
 
 
-def http_get_raw(url: str) -> tuple[int, str]:
-    req = urllib.request.Request(url, headers={"User-Agent": "test-runner"})
+def http_get_raw(url: str, headers: dict | None = None) -> tuple[int, str]:
+    hdrs = {"User-Agent": "test-runner"}
+    if headers:
+        hdrs.update(headers)
+    req = urllib.request.Request(url, headers=hdrs)
     try:
         with urllib.request.urlopen(req, timeout=3.0) as resp:
             return resp.status, resp.read().decode("utf-8")
@@ -146,22 +149,28 @@ def test_endpoints_and_ws_frames_leak_no_secrets(server):
     status, plants_raw = http_get_raw(f"{server['base_url']}/api/plants")
     assert status == 200
     assert "mqtt_credentials" not in plants_raw
-    assert "viewer_token" not in plants_raw
+    assert '"viewer_token"' not in plants_raw
     for pwd in all_passwords:
         assert pwd not in plants_raw, f"GET /api/plants leaks password {pwd}"
     for token in all_viewer_tokens:
         assert token not in plants_raw, f"GET /api/plants leaks viewer_token {token}"
 
     # 2. Check GET /api/plants/{plant_id}/definition for every plant in plants/
-    for plant_id in plants:
+    for plant_id, plant in plants.items():
+        hdrs = (
+            {"Authorization": f"Bearer {plant.viewer_token}"}
+            if plant.viewer_token
+            else None
+        )
         status, raw_text = http_get_raw(
-            f"{server['base_url']}/api/plants/{plant_id}/definition"
+            f"{server['base_url']}/api/plants/{plant_id}/definition",
+            headers=hdrs,
         )
         assert status == 200, f"Failed fetching definition for {plant_id}: {raw_text}"
         assert "mqtt_credentials" not in raw_text, (
             f"Plant definition for {plant_id} leaks 'mqtt_credentials' key"
         )
-        assert "viewer_token" not in raw_text, (
+        assert '"viewer_token"' not in raw_text, (
             f"Plant definition for {plant_id} leaks 'viewer_token' key"
         )
         for token in all_viewer_tokens:
