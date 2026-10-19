@@ -111,7 +111,7 @@ export function StationInspectorModal({
         <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/80">
           <div className="flex items-center gap-3.5">
             <div className="w-11 h-11 rounded-2xl bg-blue-100/70 border border-blue-200 flex items-center justify-center text-blue-700 font-mono font-bold text-sm shadow-xs">
-              {machineId.toUpperCase()}
+              {(machineId || "").toUpperCase()}
             </div>
             <div>
               <div className="flex items-center gap-2.5">

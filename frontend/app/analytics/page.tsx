@@ -490,7 +490,7 @@ export default function AnalyticsPage() {
                         dataKey="stage"
                         stroke="#94a3b8"
                         tick={{ fill: "#1e293b", fontSize: 11, fontWeight: 600 }}
-                        tickFormatter={(v) => v.toUpperCase()}
+                        tickFormatter={(v) => (v ? String(v).toUpperCase() : "")}
                       />
                       <Tooltip
                         contentStyle={{
@@ -506,7 +506,11 @@ export default function AnalyticsPage() {
                         {stageData.map((entry, index) => (
                           <Cell
                             key={`stage-cell-${index}`}
-                            fill={STAGE_COLORS[entry.stage.toLowerCase()] || "#2563eb"}
+                            fill={
+                              STAGE_COLORS[
+                                entry.stage ? entry.stage.toLowerCase() : ""
+                              ] || "#2563eb"
+                            }
                           />
                         ))}
                       </Bar>

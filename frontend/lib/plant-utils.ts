@@ -275,3 +275,60 @@ export function safeSessionStorageRemove(
   }
 }
 
+/**
+ * Parse QC result payload supporting both canonical multi-plant envelope
+ * ({ payload: { unit_id, outcome, ... } }) and flat legacy payloads ({ unit_id, outcome, ... }).
+ */
+export function parseQcResultPayload(rawPayload: unknown): {
+  unit_id: string;
+  outcome: "pass" | "fail" | string;
+  probability?: number;
+  defect_type?: string | null;
+  attributed_stage?: string | null;
+} | null {
+  if (!rawPayload || typeof rawPayload !== "object") return null;
+
+  const obj = rawPayload as Record<string, unknown>;
+  const inner =
+    obj.payload && typeof obj.payload === "object"
+      ? (obj.payload as Record<string, unknown>)
+      : obj;
+
+  const unitId = (inner.unit_id as string) || (obj.unit_id as string);
+  const rawOutcome = (inner.outcome as string) || (obj.outcome as string);
+
+  if (!unitId || !rawOutcome) return null;
+
+  const outcome = String(rawOutcome).toLowerCase();
+  const probability =
+    typeof inner.probability === "number"
+      ? inner.probability
+      : typeof obj.probability === "number"
+      ? obj.probability
+      : undefined;
+
+  const defectType =
+    (inner.defect_type as string) || (obj.defect_type as string) || null;
+  const attributedStage =
+    (inner.attributed_stage as string) ||
+    (obj.attributed_stage as string) ||
+    null;
+
+  return {
+    unit_id: unitId,
+    outcome,
+    probability,
+    defect_type: defectType,
+    attributed_stage: attributedStage,
+  };
+}
+
+/**
+ * Format string to upper-case safely, handling null/undefined/non-strings.
+ */
+export function safeToUpperCase(val: unknown, fallback: string = ""): string {
+  if (val === null || val === undefined) return fallback;
+  return String(val).toUpperCase();
+}
+
+

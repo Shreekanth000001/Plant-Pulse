@@ -3,6 +3,7 @@
 import React, { useEffect } from "react";
 import Link from "next/link";
 import { useFactoryWebSocket, QCNotification } from "../../context/WebSocketContext";
+import { safeToUpperCase } from "../../lib/plant-utils";
 
 function ToastItem({
   item,
@@ -11,7 +12,7 @@ function ToastItem({
   item: QCNotification;
   onDismiss: (id: string) => void;
 }) {
-  const isPass = item.outcome === "pass";
+  const isPass = item.outcome?.toLowerCase() === "pass";
 
   useEffect(() => {
     // Keep failure alerts visible for 15s to allow reading root cause attribution; 6s for passes
@@ -69,7 +70,7 @@ function ToastItem({
             isPass ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-rose-100 text-rose-700 border-rose-300"
           }`}
         >
-          {item.outcome.toUpperCase()}
+          {safeToUpperCase(item.outcome, "UNKNOWN")}
         </span>
       </div>
 
