@@ -355,8 +355,9 @@ async def test_machine_state_upsert_newer_timestamp_only(test_db):
     plants = load_plants(PLANTS_DIR)
     engine = IngestEngine(test_db, plants=plants)
 
-    t_new = datetime(2026, 10, 18, 12, 10, 0, tzinfo=UTC)
-    t_old = datetime(2026, 10, 18, 12, 5, 0, tzinfo=UTC)
+    now = datetime.now(UTC)
+    t_new = now - timedelta(minutes=5)
+    t_old = now - timedelta(minutes=10)
 
     # 1. Send newer state message: FAULT at 12:10
     payload_new = {
