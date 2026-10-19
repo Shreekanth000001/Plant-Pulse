@@ -132,6 +132,44 @@ def connect_with_retry(client: mqtt.Client) -> bool:
     return False
 
 
+def publish_all_offline(
+    client: mqtt.Client,
+    simulator: DemoSimulator,
+    plant_id: str,
+    prev_states: dict[str, str],
+) -> None:
+    """Publish OFFLINE state for all machines and stations when cap is reached."""
+    log.warning(
+        "Runtime cap reached: publishing OFFLINE state for all machines in %s",
+        plant_id,
+    )
+    for m in simulator.line.machines:
+        prev = prev_states.get(m.machine_id, m.machine_state)
+        topic, payload = build_state_payload(
+            plant_id=plant_id,
+            machine_code=m.machine_id,
+            previous_status=prev,
+            status="OFFLINE",
+            sub_status=None,
+        )
+        client.publish(topic, json.dumps(payload), qos=QOS)
+        prev_states[m.machine_id] = "OFFLINE"
+        m.machine_state = "OFFLINE"
+
+    for q in simulator.line.qc_stations:
+        prev = prev_states.get(q.machine_id, q.machine_state)
+        topic, payload = build_state_payload(
+            plant_id=plant_id,
+            machine_code=q.machine_id,
+            previous_status=prev,
+            status="OFFLINE",
+            sub_status=None,
+        )
+        client.publish(topic, json.dumps(payload), qos=QOS)
+        prev_states[q.machine_id] = "OFFLINE"
+        q.machine_state = "OFFLINE"
+
+
 def main() -> None:
     def handle_shutdown(*_):
         global stop_event_set
@@ -175,6 +213,10 @@ def main() -> None:
     try:
         while not stop_event_set:
             if not watchdog.should_run():
+                if connected and watchdog.pop_just_capped():
+                    publish_all_offline(
+                        client, simulator, PLANT_ID, prev_machine_states
+                    )
                 time.sleep(0.5)
                 continue
 
