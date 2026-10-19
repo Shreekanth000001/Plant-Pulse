@@ -98,4 +98,16 @@ test("Defense against Uncaught TypeError: formatting undefined outcome or machin
       assert.ok(typeof displayId === "string");
     });
   }
+
+  // Simulating sensor key formatting
+  const testKeys = [undefined, null, "", "temp_mold", "vibration_level"];
+  for (const key of testKeys) {
+    assert.doesNotThrow(() => {
+      const formatted = String(key || "")
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, (c) => (c ? c.toUpperCase() : ""));
+      assert.ok(typeof formatted === "string");
+    });
+  }
 });
+

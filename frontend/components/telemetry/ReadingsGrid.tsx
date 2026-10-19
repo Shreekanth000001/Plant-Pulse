@@ -20,13 +20,15 @@ const UNIT_MAP: Record<string, { label: string; unit: string; std: number }> = {
 };
 
 function formatParamName(key: string): string {
+  if (!key) return "";
   if (UNIT_MAP[key]) return UNIT_MAP[key].label;
-  return key
+  return String(key)
     .replace(/_/g, " ")
-    .replace(/\b\w/g, (char) => char.toUpperCase());
+    .replace(/\b\w/g, (char) => (char ? char.toUpperCase() : ""));
 }
 
 function getParamUnit(key: string): string {
+  if (!key) return "";
   if (UNIT_MAP[key]) return UNIT_MAP[key].unit;
   if (key.includes("temp")) return "°C";
   if (key.includes("speed")) return "mm/s";

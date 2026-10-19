@@ -61,9 +61,12 @@ function formatParam(key: string): { label: string; unit: string } {
     decay_rate: { label: "Pressure Decay Rate", unit: "mbar/s" },
     leak_rate: { label: "Leak Rate", unit: "sccm" },
   };
+  if (!key) return { label: "", unit: "" };
   if (map[key]) return map[key];
   return {
-    label: key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+    label: String(key)
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (c) => (c ? c.toUpperCase() : "")),
     unit: "",
   };
 }
