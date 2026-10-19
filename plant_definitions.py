@@ -29,8 +29,16 @@ class MachineDefinition(BaseModel):
     signals: list[SignalDefinition]
 
     @model_validator(mode="after")
-    def validate_setpoints_exist(self) -> "MachineDefinition":
-        codes = {s.signal_code for s in self.signals}
+    def validate_signals_and_setpoints(self) -> "MachineDefinition":
+        seen_signals: set[str] = set()
+        for s in self.signals:
+            if s.signal_code in seen_signals:
+                raise ValueError(
+                    f"Machine '{self.machine_code}': duplicate signal_code '{s.signal_code}'"
+                )
+            seen_signals.add(s.signal_code)
+
+        codes = seen_signals
         for s in self.signals:
             if s.setpoint_signal_code and s.setpoint_signal_code not in codes:
                 raise ValueError(
@@ -45,6 +53,17 @@ class AreaDefinition(BaseModel):
     name: str
     display_order: int = 0
     machines: list[MachineDefinition]
+
+    @model_validator(mode="after")
+    def validate_unique_machines(self) -> "AreaDefinition":
+        seen: set[str] = set()
+        for m in self.machines:
+            if m.machine_code in seen:
+                raise ValueError(
+                    f"Area '{self.area_code}': duplicate machine_code '{m.machine_code}'"
+                )
+            seen.add(m.machine_code)
+        return self
 
 
 class MQTTCredential(BaseModel):
@@ -65,6 +84,25 @@ class PlantSummary(BaseModel):
 class PublicPlantDefinition(PlantSummary):
     areas: list[AreaDefinition]
 
+    @model_validator(mode="after")
+    def validate_unique_codes(self) -> "PublicPlantDefinition":
+        seen_areas: set[str] = set()
+        seen_machines: set[str] = set()
+        for area in self.areas:
+            if area.area_code in seen_areas:
+                raise ValueError(
+                    f"Plant '{self.plant_id}': duplicate area_code '{area.area_code}'"
+                )
+            seen_areas.add(area.area_code)
+
+            for m in area.machines:
+                if m.machine_code in seen_machines:
+                    raise ValueError(
+                        f"Plant '{self.plant_id}': duplicate machine_code '{m.machine_code}'"
+                    )
+                seen_machines.add(m.machine_code)
+        return self
+
 
 class PlantDefinition(BaseModel):
     plant_id: str = Field(..., pattern=r"^[a-z0-9_]{3,64}$")
@@ -76,6 +114,25 @@ class PlantDefinition(BaseModel):
     ] = ["core", "alarms"]
     mqtt_credentials: list[MQTTCredential]
     areas: list[AreaDefinition]
+
+    @model_validator(mode="after")
+    def validate_unique_codes(self) -> "PlantDefinition":
+        seen_areas: set[str] = set()
+        seen_machines: set[str] = set()
+        for area in self.areas:
+            if area.area_code in seen_areas:
+                raise ValueError(
+                    f"Plant '{self.plant_id}': duplicate area_code '{area.area_code}'"
+                )
+            seen_areas.add(area.area_code)
+
+            for m in area.machines:
+                if m.machine_code in seen_machines:
+                    raise ValueError(
+                        f"Plant '{self.plant_id}': duplicate machine_code '{m.machine_code}'"
+                    )
+                seen_machines.add(m.machine_code)
+        return self
 
     def to_public(self) -> PublicPlantDefinition:
         return PublicPlantDefinition.model_validate(self.model_dump())
