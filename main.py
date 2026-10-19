@@ -15,17 +15,30 @@ Config (environment variables):
 
 import asyncio
 import contextlib
+import hashlib
+import hmac
 import json
 import logging
 import os
+import re
+import secrets
 import sqlite3
+import threading
+import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
 import aiomqtt
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -68,6 +81,120 @@ logging.basicConfig(
 )
 log = logging.getLogger("factory-backend")
 DbSession = Annotated[Session, Depends(get_session)]
+
+
+class RedactSensitiveFilter(logging.Filter):
+    """Logging filter that removes sensitive tickets and bearer tokens from logs."""
+
+    _TICKET_RE = re.compile(r"ticket=[^\s&'\"]+", re.IGNORECASE)
+    _BEARER_RE = re.compile(r"Bearer\s+[^\s&'\"]+", re.IGNORECASE)
+
+    def _sanitize(self, text: str) -> str:
+        text = self._TICKET_RE.sub("ticket=[REDACTED]", text)
+        text = self._BEARER_RE.sub("Bearer [REDACTED]", text)
+        return text
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = self._sanitize(record.msg)
+        if hasattr(record, "message") and isinstance(record.message, str):
+            record.message = self._sanitize(record.message)
+        if record.args:
+            if isinstance(record.args, tuple):
+                record.args = tuple(
+                    self._sanitize(a) if isinstance(a, str) else a for a in record.args
+                )
+            elif isinstance(record.args, dict):
+                record.args = {
+                    k: (self._sanitize(v) if isinstance(v, str) else v)
+                    for k, v in record.args.items()
+                }
+        return True
+
+
+sensitive_filter = RedactSensitiveFilter()
+for _name in ("", "uvicorn", "uvicorn.access", "uvicorn.error", "factory-backend"):
+    logging.getLogger(_name).addFilter(sensitive_filter)
+
+
+class TicketStore:
+    """In-memory single-use ticket store for WebSocket connections.
+
+    Purges expired tickets on issue and enforces a capacity cap.
+    """
+
+    def __init__(
+        self,
+        max_capacity: int = 1000,
+        ttl_seconds: float = 30.0,
+        clock: Any = None,
+    ) -> None:
+        self.max_capacity = max_capacity
+        self.ttl_seconds = ttl_seconds
+        self.clock = clock or time.time
+        self._tickets: dict[str, dict[str, Any]] = {}
+        self._lock = threading.Lock()
+
+    def purge_expired(self, now: float | None = None) -> None:
+        current_time = self.clock() if now is None else now
+        expired = [
+            t for t, rec in self._tickets.items() if rec["expires_at"] < current_time
+        ]
+        for t in expired:
+            del self._tickets[t]
+
+    def issue(self, plant_id: str) -> str:
+        with self._lock:
+            now = self.clock()
+            self.purge_expired(now)
+            if len(self._tickets) >= self.max_capacity:
+                raise HTTPException(status_code=429, detail="Ticket capacity exceeded")
+            ticket = secrets.token_urlsafe(32)
+            self._tickets[ticket] = {
+                "plant_id": plant_id,
+                "expires_at": now + self.ttl_seconds,
+            }
+            return ticket
+
+    def validate_and_consume(self, plant_id: str, ticket: str | None) -> bool:
+        if not ticket:
+            return False
+        with self._lock:
+            record = self._tickets.pop(ticket, None)
+            if not record:
+                return False
+            now = self.clock()
+            if record["expires_at"] < now:
+                return False
+            return record["plant_id"] == plant_id
+
+
+ticket_store = TicketStore(max_capacity=1000, ttl_seconds=30.0)
+
+
+def verify_plant_viewer(
+    plant_id: str,
+    authorization: Annotated[str | None, Header()] = None,
+) -> None:
+    """Verify bearer token for plant-scoped endpoints if plant has a viewer token configured."""
+    plant = plants_registry.get(plant_id)
+    if not plant:
+        raise HTTPException(status_code=404, detail=f"Plant '{plant_id}' not found")
+
+    if not plant.viewer_token:
+        return
+
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    token = authorization[7:].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    expected_hash = hashlib.sha256(plant.viewer_token.encode("utf-8")).hexdigest()
+    if not hmac.compare_digest(token_hash, expected_hash):
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 class ConnectionManager:
@@ -534,7 +661,7 @@ app.add_middleware(
     allow_origins=os.getenv(
         "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
     ).split(","),
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -549,7 +676,11 @@ def list_plants() -> list[PlantSummary]:
     return [p.to_summary() for p in plants_registry.values()]
 
 
-@app.get("/api/plants/{plant_id}/definition", response_model=PublicPlantDefinition)
+@app.get(
+    "/api/plants/{plant_id}/definition",
+    response_model=PublicPlantDefinition,
+    dependencies=[Depends(verify_plant_viewer)],
+)
 def get_plant_definition(plant_id: str) -> PublicPlantDefinition:
     plant = plants_registry.get(plant_id)
     if not plant:
@@ -557,7 +688,19 @@ def get_plant_definition(plant_id: str) -> PublicPlantDefinition:
     return plant.to_public()
 
 
-@app.get("/api/plants/{plant_id}/machines/latest")
+@app.post(
+    "/api/plants/{plant_id}/ws-ticket",
+    dependencies=[Depends(verify_plant_viewer)],
+)
+def create_ws_ticket(plant_id: str) -> dict:
+    ticket = ticket_store.issue(plant_id)
+    return {"ticket": ticket, "expires_in": 30}
+
+
+@app.get(
+    "/api/plants/{plant_id}/machines/latest",
+    dependencies=[Depends(verify_plant_viewer)],
+)
 def get_latest_plant_machines(plant_id: str) -> list[dict]:
     plant = plants_registry.get(plant_id)
     if not plant:
@@ -638,12 +781,16 @@ def get_latest_plant_machines(plant_id: str) -> list[dict]:
 
 
 @app.websocket("/ws/{plant_id}/telemetry")
-async def plant_telemetry_ws(ws: WebSocket, plant_id: str) -> None:
+async def plant_telemetry_ws(
+    ws: WebSocket, plant_id: str, ticket: str | None = None
+) -> None:
     plant = plants_registry.get(plant_id)
     if not plant:
         raise HTTPException(status_code=404, detail=f"Plant '{plant_id}' not found")
 
-    if plant.viewer_token is not None:
+    if plant.viewer_token is not None and not ticket_store.validate_and_consume(
+        plant_id, ticket
+    ):
         await ws.accept()
         await ws.close(code=4401, reason="Unauthorized")
         return

@@ -225,3 +225,53 @@ export function safeLocalStorageSet(
     // Quota exceeded or private browsing security restrictions
   }
 }
+
+/**
+ * Safe sessionStorage wrappers with try/catch to protect against SSR or quota errors.
+ */
+export function safeSessionStorageGet<T>(
+  key: string,
+  fallback: T,
+  storage?: Storage
+): T {
+  try {
+    const store =
+      storage ?? (typeof window !== "undefined" ? window.sessionStorage : undefined);
+    if (!store) return fallback;
+    const item = store.getItem(key);
+    if (item === null) return fallback;
+    return item as unknown as T;
+  } catch {
+    return fallback;
+  }
+}
+
+export function safeSessionStorageSet(
+  key: string,
+  value: string,
+  storage?: Storage
+): void {
+  try {
+    const store =
+      storage ?? (typeof window !== "undefined" ? window.sessionStorage : undefined);
+    if (!store) return;
+    store.setItem(key, value);
+  } catch {
+    // Quota exceeded or private browsing security restrictions
+  }
+}
+
+export function safeSessionStorageRemove(
+  key: string,
+  storage?: Storage
+): void {
+  try {
+    const store =
+      storage ?? (typeof window !== "undefined" ? window.sessionStorage : undefined);
+    if (!store) return;
+    store.removeItem(key);
+  } catch {
+    // Ignore errors
+  }
+}
+

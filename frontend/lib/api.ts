@@ -28,8 +28,9 @@ export function getApiBaseUrl(): string {
 
 /**
  * Returns the sanitized WebSocket URL for a given plant or the legacy stream.
+ * Optionally appends single-use ws-ticket query param if provided.
  */
-export function getWsUrl(plantId?: string): string {
+export function getWsUrl(plantId?: string, ticket?: string | null): string {
   const envWs = process.env.NEXT_PUBLIC_WS_URL;
   let baseWs = "ws://localhost:8000";
   if (envWs) {
@@ -41,7 +42,11 @@ export function getWsUrl(plantId?: string): string {
   }
 
   if (plantId) {
-    return `${baseWs}/ws/${encodeURIComponent(plantId.trim())}/telemetry`;
+    let url = `${baseWs}/ws/${encodeURIComponent(plantId.trim())}/telemetry`;
+    if (ticket) {
+      url += `?ticket=${encodeURIComponent(ticket.trim())}`;
+    }
+    return url;
   }
   return `${baseWs}/ws/telemetry`;
 }
@@ -75,16 +80,68 @@ export async function fetchPlants(): Promise<PlantSummary[]> {
 }
 
 /**
+ * Request a single-use WebSocket ticket for a plant using the viewer token.
+ */
+export async function createWsTicket(
+  plantId: string,
+  token?: string | null
+): Promise<{ ticket: string; expires_in: number }> {
+  const baseUrl = getApiBaseUrl();
+  const cleanId = encodeURIComponent(plantId.trim());
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (token) {
+    headers["Authorization"] = `Bearer ${token.trim()}`;
+  }
+
+  const res = await fetch(`${baseUrl}/api/plants/${cleanId}/ws-ticket`, {
+    method: "POST",
+    headers,
+    cache: "no-store",
+    body: JSON.stringify({}),
+  });
+
+  if (res.status === 401) {
+    throw new ApiError("Unauthorized", 401);
+  }
+
+  if (res.status === 404) {
+    throw new ApiError(`Plant '${plantId}' not found`, 404);
+  }
+
+  if (!res.ok) {
+    throw new ApiError(
+      `Failed to issue WS ticket for plant '${plantId}': ${res.statusText}`,
+      res.status
+    );
+  }
+
+  return res.json();
+}
+
+/**
  * Fetch public plant definition (omits passwords and viewer tokens).
  */
 export async function fetchPlantDefinition(
-  plantId: string
+  plantId: string,
+  token?: string | null
 ): Promise<PublicPlantDefinition> {
   const baseUrl = getApiBaseUrl();
   const cleanId = encodeURIComponent(plantId.trim());
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token.trim()}`;
+  }
+
   const res = await fetch(`${baseUrl}/api/plants/${cleanId}/definition`, {
     cache: "no-store",
+    headers,
   });
+
+  if (res.status === 401) {
+    throw new ApiError("Unauthorized", 401);
+  }
 
   if (res.status === 404) {
     throw new ApiError(`Plant '${plantId}' not found`, 404);
@@ -104,13 +161,24 @@ export async function fetchPlantDefinition(
  * Fetch latest telemetry and states for all machines of a plant.
  */
 export async function fetchPlantMachinesLatest(
-  plantId: string
+  plantId: string,
+  token?: string | null
 ): Promise<PlantMachineLatest[]> {
   const baseUrl = getApiBaseUrl();
   const cleanId = encodeURIComponent(plantId.trim());
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token.trim()}`;
+  }
+
   const res = await fetch(`${baseUrl}/api/plants/${cleanId}/machines/latest`, {
     cache: "no-store",
+    headers,
   });
+
+  if (res.status === 401) {
+    throw new ApiError("Unauthorized", 401);
+  }
 
   if (res.status === 404) {
     throw new ApiError(`Plant '${plantId}' not found`, 404);
