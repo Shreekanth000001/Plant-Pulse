@@ -107,6 +107,107 @@ def test_watchdog_runtime_cap_stops_even_with_continuous_heartbeats():
     assert wd.cap_exceeded()
 
 
+def test_watchdog_heartbeats_while_capped_do_not_restart_early():
+    """Heartbeats while capped do not restart it early; requires idle silence."""
+    clock = SimulatedClock(0.0)
+    wd = Watchdog(
+        timeout_seconds=30.0,
+        max_runtime_seconds=100.0,
+        cap_reset_idle_seconds=600.0,
+        clock=clock.time,
+    )
+
+    wd.on_heartbeat()
+    clock.advance(105.0)
+    wd.on_heartbeat()
+    assert wd.cap_exceeded()
+    assert not wd.should_run()
+
+    # Heartbeats arrive every 60 seconds while capped (silence < 600s)
+    for _ in range(5):
+        clock.advance(60.0)
+        wd.on_heartbeat()
+        assert not wd.should_run()
+        assert not wd.is_running()
+        assert wd.cap_exceeded()
+
+
+def test_watchdog_cap_resets_after_idle_period_and_new_heartbeat():
+    """After configurable idle period (600s default) with no heartbeats, a new heartbeat starts fresh run."""
+    clock = SimulatedClock(0.0)
+    wd = Watchdog(
+        timeout_seconds=30.0,
+        max_runtime_seconds=100.0,
+        cap_reset_idle_seconds=600.0,
+        clock=clock.time,
+    )
+
+    # 1. Run until cap is hit
+    wd.on_heartbeat()
+    clock.advance(105.0)
+    wd.on_heartbeat()
+    assert not wd.should_run()
+    assert wd.cap_exceeded()
+
+    # 2. Heartbeat at t=110 while capped -> still capped
+    clock.advance(5.0)
+    wd.on_heartbeat()
+    assert not wd.should_run()
+
+    # 3. Idle period with NO heartbeats for 599s -> still cannot reset
+    clock.advance(599.0)
+    wd.on_heartbeat()
+    assert not wd.should_run()
+    assert wd.cap_exceeded()
+
+    # 4. Now idle period with NO heartbeats for full 600s
+    clock.advance(601.0)
+    # A new heartbeat arrives after 601s of silence!
+    wd.on_heartbeat()
+
+    # Should have started a fresh run with accumulated runtime reset!
+    assert wd.is_running()
+    assert wd.should_run()
+    assert not wd.cap_exceeded()
+    assert wd._total_runtime < 10.0
+
+
+def test_watchdog_cap_reset_idle_period_env_var(monkeypatch):
+    """Configurable idle period via SIMULATOR_CAP_RESET_IDLE_SECONDS env var."""
+    monkeypatch.setenv("SIMULATOR_CAP_RESET_IDLE_SECONDS", "300.0")
+    wd = Watchdog()
+    assert wd.cap_reset_idle_seconds == 300.0
+
+
+def test_cap_reached_publishes_offline_states_for_all_machines():
+    """When the cap is reached, OFFLINE states are published for all machines through existing state path."""
+    import json
+    from unittest.mock import MagicMock
+
+    from demo.simulator.mqtt_publisher import publish_all_offline
+    from demo.simulator.simulator import DemoSimulator
+    from topic_router import TopicRouter
+
+    sim = DemoSimulator(plant_id="plant_demo_membrane")
+    mock_client = MagicMock()
+    prev_states = {m.machine_id: "RUNNING" for m in sim.line.machines}
+    prev_states.update({q.machine_id: "IDLE" for q in sim.line.qc_stations})
+
+    publish_all_offline(mock_client, sim, "plant_demo_membrane", prev_states)
+
+    router = TopicRouter()
+    assert mock_client.publish.call_count == len(sim.line.machines) + len(
+        sim.line.qc_stations
+    )
+    for call in mock_client.publish.call_args_list:
+        topic, payload_str = call[0][0], call[0][1]
+        payload = json.loads(payload_str)
+        assert router.match(topic) is not None
+        assert topic.endswith("/state")
+        assert payload["payload_type"] == "state_change"
+        assert payload["payload"]["status"] == "OFFLINE"
+
+
 # ---------------------------------------------------------------------------
 # Criterion 2: Missing MQTT Credentials Fail Startup With Clear Error
 # ---------------------------------------------------------------------------
