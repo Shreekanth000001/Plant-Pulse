@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { useFactoryWebSocket } from "../../context/WebSocketContext";
 import { isTelemetryMessage } from "../../types/factory";
+import { parseQcResultPayload, safeToUpperCase } from "../../lib/plant-utils";
 
 interface EventItem {
   id: string;
@@ -24,54 +25,83 @@ export function LiveEventTicker() {
       const topic = msg.topic || "";
       const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
-      if (topic.endsWith("/result")) {
-        const payload = msg.payload as {
-          unit_id: string;
-          outcome: "pass" | "fail";
-          defect_type?: string;
-          attributed_stage?: string;
-        };
-        const isPass = payload.outcome === "pass";
+      if (topic.endsWith("/result") || topic.includes("/qc_result")) {
+        const parsedQc = parseQcResultPayload(msg.payload);
+        if (parsedQc) {
+          const isPass = parsedQc.outcome === "pass";
+          setEvents((prev) => [
+            {
+              id: `${Date.now()}-${Math.random()}`,
+              timestamp: now,
+              type: isPass ? "qc_pass" : "qc_fail",
+              title: isPass ? "QC Verification Passed" : "QC Defect Isolated",
+              detail: isPass
+                ? `Unit ${parsedQc.unit_id} verified zero integrity defects`
+                : `Unit ${parsedQc.unit_id} flagged: ${parsedQc.defect_type || "anomaly"} (${parsedQc.attributed_stage || "upstream"})`,
+              unitId: parsedQc.unit_id,
+            },
+            ...prev.slice(0, 19),
+          ]);
+        }
+      } else if (topic.endsWith("/stage_event")) {
+        const rawPayload = (msg.payload || {}) as Record<string, unknown>;
+        const inner =
+          rawPayload.payload && typeof rawPayload.payload === "object"
+            ? (rawPayload.payload as Record<string, unknown>)
+            : rawPayload;
+
+        const unitId =
+          (inner.unit_id as string) || (rawPayload.unit_id as string) || "unknown";
+        const subFacility =
+          (inner.area_code as string) ||
+          (inner.sub_facility as string) ||
+          (rawPayload.sub_facility as string) ||
+          "Station";
+        const machineId =
+          (inner.machine_code as string) ||
+          (inner.machine_id as string) ||
+          (rawPayload.machine_id as string) ||
+          (rawPayload.asset_id as string) ||
+          "";
+        const outcome =
+          (inner.outcome as string) || (rawPayload.outcome as string) || "ok";
 
         setEvents((prev) => [
           {
             id: `${Date.now()}-${Math.random()}`,
             timestamp: now,
-            type: isPass ? "qc_pass" : "qc_fail",
-            title: isPass ? "QC Verification Passed" : "QC Defect Isolated",
-            detail: isPass
-              ? `Unit ${payload.unit_id} verified zero integrity defects`
-              : `Unit ${payload.unit_id} flagged: ${payload.defect_type || "anomaly"} (${payload.attributed_stage || "upstream"})`,
-            unitId: payload.unit_id,
-          },
-          ...prev.slice(0, 19),
-        ]);
-      } else if (topic.endsWith("/stage_event")) {
-        const payload = msg.payload as {
-          unit_id: string;
-          sub_facility: string;
-          machine_id: string;
-          outcome?: string;
-        };
-        setEvents((prev) => [
-          {
-            id: `${Date.now()}-${Math.random()}`,
-            timestamp: now,
             type: "stage_event",
-            title: `Stage Completed: ${payload.sub_facility}`,
-            detail: `Unit ${payload.unit_id} exited ${payload.machine_id} (outcome: ${payload.outcome || "ok"})`,
-            unitId: payload.unit_id,
-            subFacility: payload.sub_facility,
+            title: `Stage Completed: ${subFacility}`,
+            detail: `Unit ${unitId} exited ${machineId} (outcome: ${outcome})`,
+            unitId: unitId,
+            subFacility: subFacility,
           },
           ...prev.slice(0, 19),
         ]);
       } else if (isTelemetryMessage(msg)) {
-        const payload = msg.payload;
-        if (payload.starved) {
+        const rawPayload = (msg.payload || {}) as Record<string, unknown>;
+        const inner =
+          rawPayload.payload && typeof rawPayload.payload === "object"
+            ? (rawPayload.payload as Record<string, unknown>)
+            : rawPayload;
+        const isStarved = Boolean(inner.is_starved || rawPayload.starved);
+
+        if (isStarved) {
           const parts = topic.split("/");
-          const machineId = parts[2] || payload.machine_id;
+          const machineId =
+            (inner.machine_code as string) ||
+            (rawPayload.machine_id as string) ||
+            (rawPayload.asset_id as string) ||
+            (parts.length >= 5 ? parts[3] : parts[2]) ||
+            "";
+
           setEvents((prev) => {
-            if (prev.length > 0 && prev[0].title.includes(machineId) && prev[0].detail.includes("Starved")) {
+            if (
+              machineId &&
+              prev.length > 0 &&
+              prev[0].title.includes(machineId) &&
+              prev[0].detail.includes("Starved")
+            ) {
               return prev;
             }
             return [
@@ -79,7 +109,7 @@ export function LiveEventTicker() {
                 id: `${Date.now()}-${Math.random()}`,
                 timestamp: now,
                 type: "telemetry",
-                title: `Station Starved: ${machineId.toUpperCase()}`,
+                title: `Station Starved: ${safeToUpperCase(machineId, "STATION")}`,
                 detail: `Machine waiting for upstream queue buffer delivery`,
               },
               ...prev.slice(0, 19),

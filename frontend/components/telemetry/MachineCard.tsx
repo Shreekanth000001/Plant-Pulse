@@ -94,7 +94,7 @@ export function MachineCard({ machine, machineDef, onInspect }: MachineCardProps
         <div>
           <div className="flex items-center gap-2">
             <span className="font-mono text-[11px] font-bold text-slate-700 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-lg tracking-wider">
-              {machine.machine_id.toUpperCase()}
+              {(machine.machine_id || "").toUpperCase()}
             </span>
             <h3 className="text-sm font-semibold text-slate-900 tracking-tight truncate max-w-[170px]">
               {displayName}

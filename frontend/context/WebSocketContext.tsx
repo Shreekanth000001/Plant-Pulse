@@ -23,10 +23,10 @@ import {
   safeSessionStorageGet,
   safeSessionStorageSet,
   safeSessionStorageRemove,
+  parseQcResultPayload,
 } from "../lib/plant-utils";
 import type {
   WebSocketMessage,
-  QCResultPayload,
   QueueHandoffs,
   BackendQueueDepths,
   MachineStatus,
@@ -450,24 +450,26 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
             }
             // 4. QC Result topic
             else if (topic.includes("/qc_result") || topic.endsWith("/result")) {
-              const qcPayload = raw.payload as QCResultPayload;
-              const uniqueSuffix = Math.random().toString(36).substring(2, 8);
-              const newNotification: QCNotification = {
-                id: `${qcPayload.unit_id}-${Date.now()}-${uniqueSuffix}`,
-                unit_id: qcPayload.unit_id,
-                outcome: qcPayload.outcome,
-                defect_type: qcPayload.defect_type,
-                attributed_stage: qcPayload.attributed_stage,
-                probability: qcPayload.probability,
-                timestamp: new Date().toLocaleTimeString(),
-              };
+              const parsedQc = parseQcResultPayload(raw.payload);
+              if (parsedQc && parsedQc.outcome) {
+                const uniqueSuffix = Math.random().toString(36).substring(2, 8);
+                const newNotification: QCNotification = {
+                  id: `${parsedQc.unit_id}-${Date.now()}-${uniqueSuffix}`,
+                  unit_id: parsedQc.unit_id,
+                  outcome: parsedQc.outcome as "pass" | "fail",
+                  defect_type: parsedQc.defect_type,
+                  attributed_stage: parsedQc.attributed_stage,
+                  probability: parsedQc.probability,
+                  timestamp: new Date().toLocaleTimeString(),
+                };
 
-              setRecentQcResults((prev) => {
-                if (prev.some((item) => item.unit_id === qcPayload.unit_id)) {
-                  return prev;
-                }
-                return [newNotification, ...prev.slice(0, 4)];
-              });
+                setRecentQcResults((prev) => {
+                  if (prev.some((item) => item.unit_id === parsedQc.unit_id)) {
+                    return prev;
+                  }
+                  return [newNotification, ...prev.slice(0, 4)];
+                });
+              }
             }
             // 5. Legacy telemetry topics
             else if (isTelemetryMessage(raw)) {
