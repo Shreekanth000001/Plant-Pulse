@@ -216,9 +216,13 @@ export interface QueueHandoffs {
 export function mapBackendQueueDepths(
   data: BackendQueueDepths
 ): QueueHandoffs {
+  const actual =
+    data && typeof (data as Record<string, unknown>).payload === "object"
+      ? ((data as Record<string, unknown>).payload as BackendQueueDepths)
+      : data || {};
   return {
-    housingToCasting: Number(data.casting ?? 0),
-    castingToAssembly: Number(data.assembly ?? 0),
-    assemblyToQc: Number(data.qc ?? 0),
+    housingToCasting: Number(actual.casting ?? 0),
+    castingToAssembly: Number(actual.assembly ?? 0),
+    assemblyToQc: Number(actual.qc ?? 0),
   };
 }
