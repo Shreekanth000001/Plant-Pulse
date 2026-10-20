@@ -19,6 +19,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -27,7 +28,7 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -851,6 +852,168 @@ def get_plant_queue_depths(plant_id: str) -> dict:
             detail=f"Product traceability module not enabled for plant '{plant_id}'",
         )
     return dict(plant_queue_depths.get(plant_id, {}))
+
+
+@app.get(
+    "/api/plants/{plant_id}/machines/{machine_code}/signals/{signal_code}/history",
+    dependencies=[Depends(verify_plant_viewer)],
+)
+def get_signal_history(
+    plant_id: str,
+    machine_code: str,
+    signal_code: str,
+    start: str | None = None,
+    end: str | None = None,
+    points: int = 300,
+) -> dict:
+    plant = plants_registry.get(plant_id)
+    if not plant:
+        raise HTTPException(status_code=404, detail=f"Plant '{plant_id}' not found")
+
+    machine = None
+    for area in plant.areas:
+        for m in area.machines:
+            if m.machine_code == machine_code:
+                machine = m
+                break
+        if machine:
+            break
+    if not machine:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Machine '{machine_code}' not found in plant '{plant_id}'",
+        )
+
+    signal = None
+    for s in machine.signals:
+        if s.signal_code == signal_code:
+            signal = s
+            break
+    if not signal:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Signal '{signal_code}' not found for machine '{machine_code}'",
+        )
+
+    if signal.data_type not in ("float", "int"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Signal '{signal_code}' has non-numeric data type '{signal.data_type}' and cannot be graphed",
+        )
+
+    def _parse_ts(raw: str | None, default: datetime) -> datetime:
+        if not raw:
+            return default
+        try:
+            clean = raw.strip()
+            if " " in clean and not clean.endswith("Z"):
+                parts = clean.rsplit(" ", 1)
+                if len(parts) == 2 and (":" in parts[1] or len(parts[1]) in (2, 4)):
+                    clean = f"{parts[0]}+{parts[1]}"
+            clean = clean.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(clean)
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=UTC)
+            return dt.astimezone(UTC)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(
+                status_code=400, detail="Invalid timestamp format"
+            ) from exc
+
+    now_utc = datetime.now(UTC)
+    end_dt = _parse_ts(end, now_utc)
+    start_dt = _parse_ts(start, end_dt - timedelta(hours=1))
+
+    if start_dt > end_dt:
+        raise HTTPException(
+            status_code=400, detail="start timestamp must be earlier than end timestamp"
+        )
+
+    duration_seconds = int((end_dt - start_dt).total_seconds())
+    if duration_seconds < 10:
+        raise HTTPException(
+            status_code=400, detail="Time range must be at least 10 seconds"
+        )
+    if duration_seconds > 86400:
+        raise HTTPException(
+            status_code=400,
+            detail="Time range exceeds maximum limit of 24 hours",
+        )
+
+    clamped_points = min(max(points, 10), 500)
+    bucket_sec = max(1, math.ceil(duration_seconds / (clamped_points - 1)))
+
+    if not Path(PLATFORM_DB_PATH).exists():
+        return {
+            "plant_id": plant_id,
+            "machine_code": machine_code,
+            "signal_code": signal_code,
+            "unit": signal.unit or "",
+            "start": start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end": end_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "bucket_seconds": bucket_sec,
+            "total_points": 0,
+            "data": [],
+        }
+
+    start_iso = start_dt.isoformat()
+    end_iso = end_dt.isoformat()
+
+    conn = sqlite3.connect(PLATFORM_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                strftime('%Y-%m-%dT%H:%M:%SZ', datetime((CAST(strftime('%s', device_timestamp) AS INTEGER) / :bucket_sec) * :bucket_sec, 'unixepoch')) AS timestamp,
+                ROUND(AVG(value_num), 2) AS avg,
+                ROUND(MIN(value_num), 2) AS min,
+                ROUND(MAX(value_num), 2) AS max,
+                COUNT(value_num) AS count
+            FROM telemetry_values
+            WHERE plant_id = :plant_id
+              AND machine_code = :machine_code
+              AND signal_code = :signal_code
+              AND value_num IS NOT NULL
+              AND device_timestamp >= :start_iso
+              AND device_timestamp <= :end_iso
+            GROUP BY (CAST(strftime('%s', device_timestamp) AS INTEGER) / :bucket_sec)
+            ORDER BY timestamp ASC
+            """,
+            {
+                "plant_id": plant_id,
+                "machine_code": machine_code,
+                "signal_code": signal_code,
+                "bucket_sec": bucket_sec,
+                "start_iso": start_iso,
+                "end_iso": end_iso,
+            },
+        ).fetchall()
+
+        data = [
+            {
+                "timestamp": r["timestamp"],
+                "avg": r["avg"],
+                "min": r["min"],
+                "max": r["max"],
+                "count": r["count"],
+            }
+            for r in rows
+        ]
+
+        return {
+            "plant_id": plant_id,
+            "machine_code": machine_code,
+            "signal_code": signal_code,
+            "unit": signal.unit or "",
+            "start": start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end": end_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "bucket_seconds": bucket_sec,
+            "total_points": len(data),
+            "data": data,
+        }
+    finally:
+        conn.close()
 
 
 @app.websocket("/ws/{plant_id}/telemetry")

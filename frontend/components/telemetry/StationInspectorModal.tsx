@@ -1,12 +1,29 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState, useMemo, useSyncExternalStore } from "react";
 import Link from "next/link";
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid,
+} from "recharts";
 import type { MachineStatus, MachineDefinition } from "../../types/factory";
 import { ReadingsGrid } from "./ReadingsGrid";
+import { fetchSignalHistory, getErrorMessage } from "../../lib/api";
+import {
+  buildHistoryQueryParams,
+  insertTimeGaps,
+  safeSessionStorageGet,
+  safeLocalStorageGet,
+} from "../../lib/plant-utils";
 
 interface StationInspectorModalProps {
   machineId: string | null;
   machine: MachineStatus | null;
   machineDef?: MachineDefinition;
+  plantId?: string;
   onClose: () => void;
 }
 
@@ -14,6 +31,7 @@ export function StationInspectorModal({
   machineId,
   machine,
   machineDef,
+  plantId,
   onClose,
 }: StationInspectorModalProps) {
   const modalRef = useRef<HTMLDivElement>(null);
@@ -69,11 +87,152 @@ export function StationInspectorModal({
     };
   }, [onClose]);
 
+  const effectivePlantId =
+    plantId || safeLocalStorageGet("plantpulse_active_plant", "plant_demo_membrane");
+
+  const numericSignals = useMemo(() => {
+    if (machineDef?.signals && machineDef.signals.length > 0) {
+      return machineDef.signals.filter(
+        (s) => s.data_type === "float" || s.data_type === "int"
+      );
+    }
+    const extraEntries = Object.entries(machine?.extra || {});
+    return extraEntries
+      .filter(([, val]) => typeof val === "number")
+      .map(([code]) => ({
+        signal_code: code,
+        name: code.replace(/_/g, " "),
+        unit: "",
+        data_type: "float",
+      }));
+  }, [machineDef, machine]);
+
+  const [manualSignalCode, setManualSignalCode] = useState<string | null>(null);
+  const selectedSignalCode =
+    manualSignalCode && numericSignals.some((s) => s.signal_code === manualSignalCode)
+      ? manualSignalCode
+      : numericSignals[0]?.signal_code || "";
+
+  const [rangePreset, setRangePreset] = useState<"1h" | "6h" | "12h" | "24h">("1h");
+
+  const isClient = useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false
+  );
+
+  const [historyData, setHistoryData] = useState<
+    Array<{
+      bucket_start?: string;
+      timeLabel: string;
+      count?: number | null;
+      avg: number | null;
+      min?: number | null;
+      max?: number | null;
+      last?: number | null;
+    }>
+  >([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyStats, setHistoryStats] = useState<{
+    min: number | null;
+    max: number | null;
+    avg: number | null;
+    last: number | null;
+    totalPoints: number;
+  } | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    if (!machineId || !selectedSignalCode) {
+      return () => {
+        isMounted = false;
+      };
+    }
+
+    const loadData = async () => {
+      setHistoryLoading(true);
+      setHistoryError(null);
+      try {
+        const token = safeSessionStorageGet(
+          `plantpulse_viewer_token_${effectivePlantId}`,
+          null
+        );
+        const params = buildHistoryQueryParams({ rangePreset, points: 300 });
+        const res = await fetchSignalHistory(
+          effectivePlantId,
+          machineId,
+          selectedSignalCode,
+          params,
+          token
+        );
+
+        if (!isMounted) return;
+
+        const gapped = insertTimeGaps(res.data, res.bucket_sec);
+        const formatted = gapped.map((pt) => {
+          const rawTs = pt.bucket_start || "";
+          const d = new Date(rawTs);
+          const timeLabel = isNaN(d.getTime())
+            ? rawTs
+            : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+          return {
+            ...pt,
+            timeLabel,
+          };
+        });
+
+        let sum = 0;
+        let count = 0;
+        let minVal: number | null = null;
+        let maxVal: number | null = null;
+        let lastVal: number | null = null;
+
+        for (const pt of res.data) {
+          if (pt.avg !== null && pt.count !== null && pt.count > 0) {
+            sum += pt.avg * pt.count;
+            count += pt.count;
+            if (minVal === null || (pt.min !== null && pt.min < minVal)) minVal = pt.min;
+            if (maxVal === null || (pt.max !== null && pt.max > maxVal)) maxVal = pt.max;
+            if (pt.last !== null) lastVal = pt.last;
+          }
+        }
+
+        setHistoryData(formatted);
+        setHistoryStats(
+          count > 0
+            ? {
+                min: minVal,
+                max: maxVal,
+                avg: Number((sum / count).toFixed(2)),
+                last: lastVal,
+                totalPoints: count,
+              }
+            : null
+        );
+      } catch (err: unknown) {
+        if (!isMounted) return;
+        setHistoryError(getErrorMessage(err, "Failed to load telemetry history"));
+      } finally {
+        if (isMounted) setHistoryLoading(false);
+      }
+    };
+
+    loadData();
+    return () => {
+      isMounted = false;
+    };
+  }, [effectivePlantId, machineId, selectedSignalCode, rangePreset]);
+
   if (!machineId || !machine) return null;
 
   const displayName = machine.name || machineId;
   const state = machine.machine_state?.toUpperCase() || "OFFLINE";
   const isStarved = machine.starved;
+  const selectedSignalDef = numericSignals.find(
+    (s) => s.signal_code === selectedSignalCode
+  );
 
   let stateColor = "text-slate-600 bg-slate-100 border-slate-200";
   if (state === "FAULT") {
@@ -234,6 +393,197 @@ export function StationInspectorModal({
               subFacility={machine.sub_facility}
               signalDefinitions={machineDef?.signals}
             />
+          </div>
+
+          {/* Signal Telemetry History Graph */}
+          <div className="bg-slate-50/70 rounded-2xl p-5 border border-slate-200 flex flex-col gap-4">
+            {/* Header: Title, Signal Select & Range Presets */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-bold text-slate-900 tracking-tight flex items-center gap-2">
+                  <span>Signal Telemetry History</span>
+                  <span className="text-[10px] text-slate-400 font-normal">
+                    (Aggregated time-series)
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Continuous process variable analysis and trend detection.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* Signal Selector */}
+                {numericSignals.length > 0 && (
+                  <select
+                    value={selectedSignalCode}
+                    onChange={(e) => setManualSignalCode(e.target.value)}
+                    aria-label="Select telemetry signal"
+                    className="text-xs font-medium bg-white text-slate-700 border border-slate-200 rounded-xl px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500/20 shadow-2xs cursor-pointer"
+                  >
+                    {numericSignals.map((s) => (
+                      <option key={s.signal_code} value={s.signal_code}>
+                        {s.name || s.signal_code} {s.unit ? `(${s.unit})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                )}
+
+                {/* Range Preset Buttons */}
+                <div
+                  className="flex items-center p-0.5 rounded-xl bg-slate-200/80 border border-slate-200 text-xs shadow-inner"
+                  role="group"
+                  aria-label="Time range presets"
+                >
+                  {(["1h", "6h", "12h", "24h"] as const).map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setRangePreset(preset)}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+                        rangePreset === preset
+                          ? "bg-white text-blue-700 shadow-2xs font-semibold"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                      aria-pressed={rangePreset === preset}
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Quick Stats Bar (Min / Avg / Max / Last) */}
+            {historyStats && (
+              <div className="grid grid-cols-4 gap-2 pt-1">
+                <div className="bg-white rounded-xl p-2.5 border border-slate-200/90 shadow-2xs">
+                  <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Min</span>
+                  <span className="text-xs font-mono font-bold text-slate-700 mt-0.5 block truncate">
+                    {historyStats.min !== null ? historyStats.min : "—"} {selectedSignalDef?.unit || ""}
+                  </span>
+                </div>
+                <div className="bg-white rounded-xl p-2.5 border border-slate-200/90 shadow-2xs">
+                  <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Avg</span>
+                  <span className="text-xs font-mono font-bold text-blue-700 mt-0.5 block truncate">
+                    {historyStats.avg !== null ? historyStats.avg : "—"} {selectedSignalDef?.unit || ""}
+                  </span>
+                </div>
+                <div className="bg-white rounded-xl p-2.5 border border-slate-200/90 shadow-2xs">
+                  <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Max</span>
+                  <span className="text-xs font-mono font-bold text-slate-700 mt-0.5 block truncate">
+                    {historyStats.max !== null ? historyStats.max : "—"} {selectedSignalDef?.unit || ""}
+                  </span>
+                </div>
+                <div className="bg-white rounded-xl p-2.5 border border-slate-200/90 shadow-2xs">
+                  <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Latest</span>
+                  <span className="text-xs font-mono font-bold text-slate-900 mt-0.5 block truncate">
+                    {historyStats.last !== null ? historyStats.last : "—"} {selectedSignalDef?.unit || ""}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Chart / Loading / Empty State Area */}
+            <div className="w-full">
+              {historyLoading ? (
+                <div
+                  className="h-44 w-full bg-white/70 border border-slate-200/80 rounded-2xl flex flex-col items-center justify-center text-xs text-slate-400 gap-2 animate-pulse"
+                  aria-busy="true"
+                  aria-live="polite"
+                >
+                  <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                  <span>Loading telemetry history...</span>
+                </div>
+              ) : historyError ? (
+                <div
+                  className="h-44 w-full bg-rose-50 border border-rose-200 rounded-2xl p-4 flex flex-col items-center justify-center text-xs text-rose-700 text-center"
+                  role="alert"
+                >
+                  <span className="font-semibold">Unable to load telemetry history</span>
+                  <span className="text-rose-500 mt-1">{historyError}</span>
+                </div>
+              ) : !selectedSignalCode || numericSignals.length === 0 ? (
+                <div className="h-44 w-full bg-white border border-dashed border-slate-200 rounded-2xl p-6 flex flex-col items-center justify-center text-center">
+                  <div className="text-xs font-semibold text-slate-600">No numeric signals available</div>
+                  <div className="text-[11px] text-slate-400 mt-1">
+                    This machine does not define continuous telemetry signals.
+                  </div>
+                </div>
+              ) : historyData.length === 0 || !historyStats ? (
+                <div
+                  className="h-44 w-full bg-white border border-dashed border-slate-200 rounded-2xl p-6 flex flex-col items-center justify-center text-center"
+                  role="status"
+                >
+                  <div className="w-8 h-8 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-400 text-sm mb-1.5 font-mono">
+                    ∅
+                  </div>
+                  <div className="text-xs font-semibold text-slate-700">No telemetry recorded in this time range</div>
+                  <div className="text-[11px] text-slate-400 mt-1 max-w-xs">
+                    Historical sensor readings will appear once data is published for this machine and signal.
+                  </div>
+                </div>
+              ) : isClient ? (
+                <div
+                  className="h-44 w-full bg-white rounded-2xl border border-slate-200 p-2 shadow-2xs"
+                  role="region"
+                  aria-label="Signal history chart"
+                >
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart
+                      data={historyData}
+                      margin={{ top: 8, right: 12, left: -22, bottom: 0 }}
+                    >
+                      <defs>
+                        <linearGradient id="signalHistoryGradient" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.35} />
+                          <stop offset="100%" stopColor="#3b82f6" stopOpacity={0.02} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                      <XAxis
+                        dataKey="timeLabel"
+                        stroke="#94a3b8"
+                        tick={{ fill: "#64748b", fontSize: 10 }}
+                        minTickGap={28}
+                      />
+                      <YAxis
+                        stroke="#94a3b8"
+                        tick={{ fill: "#64748b", fontSize: 10 }}
+                        domain={["auto", "auto"]}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: "#ffffff",
+                          borderColor: "#e2e8f0",
+                          borderRadius: "12px",
+                          fontSize: "12px",
+                          boxShadow: "0 10px 15px -3px rgba(0, 0, 0, 0.1)",
+                        }}
+                        formatter={(val: unknown) => [
+                          val !== null && typeof val === "number"
+                            ? `${val.toFixed(2)} ${selectedSignalDef?.unit || ""}`.trim()
+                            : "No data",
+                          selectedSignalDef?.name || selectedSignalCode,
+                        ]}
+                        labelFormatter={(label) => `Time: ${label}`}
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="avg"
+                        stroke="#2563eb"
+                        strokeWidth={2}
+                        fill="url(#signalHistoryGradient)"
+                        connectNulls={false}
+                        dot={false}
+                        activeDot={{ r: 4, stroke: "#1d4ed8" }}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <div className="h-44 w-full bg-white rounded-2xl border border-slate-200" />
+              )}
+            </div>
           </div>
 
           {/* Shift Production Counters */}

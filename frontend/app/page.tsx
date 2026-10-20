@@ -129,6 +129,7 @@ export default function LiveOverviewPage() {
           machineId={selectedMachineId}
           machine={selectedMachine}
           machineDef={selectedMachineDef}
+          plantId={selectedPlantId}
           onClose={() => setSelectedMachineId(null)}
         />
       )}
