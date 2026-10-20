@@ -11,7 +11,7 @@ import React, {
 import {
   getWsUrl,
   createWsTicket,
-  fetchQueueDepths,
+  fetchPlantQueueDepths,
   fetchPlants,
   fetchPlantDefinition,
   fetchPlantMachinesLatest,
@@ -297,13 +297,21 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         }
 
         if (def && def.enabled_modules?.includes("product_traceability")) {
-          fetchQueueDepths()
+          fetchPlantQueueDepths(selectedPlantId, cachedToken)
             .then((depths) => {
               if (isCurrent && depths) {
                 setHandoffs(mapBackendQueueDepths(depths));
               }
             })
             .catch(() => {});
+        } else {
+          if (isCurrent) {
+            setHandoffs({
+              housingToCasting: 0,
+              castingToAssembly: 0,
+              assemblyToQc: 0,
+            });
+          }
         }
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {

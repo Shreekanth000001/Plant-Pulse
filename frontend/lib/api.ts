@@ -278,6 +278,43 @@ export async function fetchDefectRateByStage(): Promise<DefectRateByStage[]> {
 }
 
 /**
+ * Fetch current queue sizes between production stages for a plant.
+ */
+export async function fetchPlantQueueDepths(
+  plantId: string,
+  token?: string | null
+): Promise<BackendQueueDepths> {
+  const baseUrl = getApiBaseUrl();
+  const cleanId = encodeURIComponent(plantId.trim());
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token.trim()}`;
+  }
+
+  const res = await fetch(`${baseUrl}/api/plants/${cleanId}/queue-depths`, {
+    cache: "no-store",
+    headers,
+  });
+
+  if (res.status === 401) {
+    throw new ApiError("Unauthorized", 401);
+  }
+
+  if (res.status === 404) {
+    throw new ApiError(`Queue depths not available for plant '${plantId}'`, 404);
+  }
+
+  if (!res.ok) {
+    throw new ApiError(
+      `Failed to fetch queue depths for plant '${plantId}': ${res.statusText}`,
+      res.status
+    );
+  }
+
+  return res.json();
+}
+
+/**
  * Fetch current queue sizes between production stages.
  */
 export async function fetchQueueDepths(): Promise<BackendQueueDepths> {

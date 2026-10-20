@@ -404,3 +404,59 @@ def test_criterion_9_legacy_endpoints_preserved(server):
 
     status, data = http_get(f"{server['base_url']}/api/units")
     assert status == 200, f"Legacy /api/units returned {status}: {data}"
+
+
+def test_plant_scoped_queue_depths_endpoint(server):
+    """GET /api/plants/{plant_id}/queue-depths verifies auth, module gating, and storage."""
+    import main
+
+    # 1. Unknown plant returns 404
+    status, body = http_get_raw(
+        f"{server['base_url']}/api/plants/unknown_plant_xyz/queue-depths"
+    )
+    assert status == 404
+
+    # 2. Water plant has viewer token -> without token returns 401
+    status, body = http_get_raw(
+        f"{server['base_url']}/api/plants/plant_water_district_9/queue-depths"
+    )
+    assert status == 401
+
+    # 3. Water plant with valid token but product_traceability disabled -> returns 404
+    status, body = http_get_raw(
+        f"{server['base_url']}/api/plants/plant_water_district_9/queue-depths",
+        headers={"Authorization": "Bearer district9_read_secret_token_889"},
+    )
+    assert status == 404
+
+    # 4. Demo plant (no token required, product_traceability enabled) -> returns 200 with queue depths
+    qd_payload = {
+        "schema_version": "1.0",
+        "message_id": "test-qd-001",
+        "plant_id": "plant_demo_membrane",
+        "device_timestamp": "2026-10-20T12:00:00Z",
+        "payload_type": "queue_depths",
+        "payload": {
+            "casting": 4,
+            "assembly": 2,
+            "qc": 1,
+        },
+    }
+    asyncio.run(
+        main.topic_router.dispatch(
+            "plants/plant_demo_membrane/modules/traceability/queue_depths",
+            qd_payload,
+        )
+    )
+
+    status, body = http_get_raw(
+        f"{server['base_url']}/api/plants/plant_demo_membrane/queue-depths"
+    )
+    assert status == 200
+    data = json.loads(body)
+    assert data == {"casting": 4, "assembly": 2, "qc": 1}
+
+    # 5. Legacy /api/queue-depths also reflects latest queue depths
+    status, leg_data = http_get(f"{server['base_url']}/api/queue-depths")
+    assert status == 200
+    assert leg_data == {"casting": 4, "assembly": 2, "qc": 1}

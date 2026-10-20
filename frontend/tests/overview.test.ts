@@ -14,6 +14,7 @@ import {
   fetchPlants,
   fetchPlantDefinition,
   fetchPlantMachinesLatest,
+  fetchPlantQueueDepths,
   getWsUrl,
 } from "../lib/api.ts";
 import type {
@@ -324,4 +325,50 @@ test("Criterion 8: Machine with no state reported defaults to 'OFFLINE'", () => 
 
   const overview = buildAreaOverview(definition, []);
   assert.equal(overview[0].machines[0].state, "OFFLINE");
+});
+
+test("fetchPlantQueueDepths sends Authorization header when token provided and handles 404/401", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedUrl = "";
+  let capturedHeaders: Record<string, string> = {};
+
+  try {
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      capturedUrl = url.toString();
+      capturedHeaders = (init?.headers as Record<string, string>) || {};
+      if (capturedUrl.includes("unauthorized_plant")) {
+        return new Response("Unauthorized", { status: 401, statusText: "Unauthorized" });
+      }
+      if (capturedUrl.includes("no_traceability")) {
+        return new Response("Not Found", { status: 404, statusText: "Not Found" });
+      }
+      return new Response(JSON.stringify({ casting: 5, assembly: 3, qc: 1 }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const res = await fetchPlantQueueDepths("plant_demo_membrane", "test-token");
+    assert.deepEqual(res, { casting: 5, assembly: 3, qc: 1 });
+    assert.equal(capturedUrl.endsWith("/api/plants/plant_demo_membrane/queue-depths"), true);
+    assert.equal(capturedHeaders["Authorization"], "Bearer test-token");
+
+    // Check 401 error throws ApiError
+    await assert.rejects(
+      async () => {
+        await fetchPlantQueueDepths("unauthorized_plant");
+      },
+      (err: unknown) => (err as { status?: number }).status === 401
+    );
+
+    // Check 404 error throws ApiError
+    await assert.rejects(
+      async () => {
+        await fetchPlantQueueDepths("no_traceability");
+      },
+      (err: unknown) => (err as { status?: number }).status === 404
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

@@ -269,6 +269,7 @@ topic_router = TopicRouter()
 # now" value that the publisher refreshes every tick, so storing history of
 # it would add rows nobody queries.
 latest_queue_depths: dict = {}
+plant_queue_depths: dict[str, dict[str, int]] = {}
 
 
 # Fields that are "common" columns on TelemetryReading — everything else
@@ -365,6 +366,7 @@ def handle_message(topic: str, payload: dict) -> None:
     if topic == "factory/queue_depths":
         latest_queue_depths.clear()
         latest_queue_depths.update(payload)
+        plant_queue_depths[DEMO_PLANT_ID] = dict(payload)
         return
 
     parts = topic.split("/")
@@ -440,6 +442,14 @@ async def handle_plant_stage_event(payload: dict, plant_id: str) -> None:
 
 @topic_router.on("queue_depths")
 async def handle_plant_queue_depths(payload: dict, plant_id: str) -> None:
+    depths = (
+        payload.get("payload") if isinstance(payload.get("payload"), dict) else payload
+    )
+    if isinstance(depths, dict):
+        plant_queue_depths[plant_id] = dict(depths)
+        if plant_id == DEMO_PLANT_ID:
+            latest_queue_depths.clear()
+            latest_queue_depths.update(depths)
     await manager.broadcast_to_plant(
         plant_id,
         json.dumps(
@@ -778,6 +788,22 @@ def get_latest_plant_machines(plant_id: str) -> list[dict]:
         return result
     finally:
         conn.close()
+
+
+@app.get(
+    "/api/plants/{plant_id}/queue-depths",
+    dependencies=[Depends(verify_plant_viewer)],
+)
+def get_plant_queue_depths(plant_id: str) -> dict:
+    plant = plants_registry.get(plant_id)
+    if not plant:
+        raise HTTPException(status_code=404, detail=f"Plant '{plant_id}' not found")
+    if "product_traceability" not in plant.enabled_modules:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Product traceability module not enabled for plant '{plant_id}'",
+        )
+    return dict(plant_queue_depths.get(plant_id, {}))
 
 
 @app.websocket("/ws/{plant_id}/telemetry")
