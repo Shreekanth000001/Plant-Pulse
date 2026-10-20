@@ -9,6 +9,8 @@ import {
   handleWsCloseState,
   safeLocalStorageGet,
   safeLocalStorageSet,
+  formatLastUpdated,
+  getConnectionModeLabel,
 } from "../lib/plant-utils.ts";
 import {
   fetchPlants,
@@ -371,4 +373,49 @@ test("fetchPlantQueueDepths sends Authorization header when token provided and h
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("Criterion 9: formatLastUpdated and getConnectionModeLabel correctly compute amber threshold and live/polled labels", () => {
+  const baseTime = 1700000000000;
+
+  // 1. No telemetry yet
+  const nullResult = formatLastUpdated(null, baseTime);
+  assert.equal(nullResult.isAmber, false);
+  assert.equal(nullResult.text, "No telemetry yet");
+
+  // 2. Telemetry arrived 3s ago -> not amber
+  const threeSec = new Date(baseTime - 3000).toISOString();
+  const threeSecResult = formatLastUpdated(threeSec, baseTime);
+  assert.equal(threeSecResult.secondsAgo, 3);
+  assert.equal(threeSecResult.text, "last updated 3s ago");
+  assert.equal(threeSecResult.isAmber, false);
+
+  // 3. Telemetry arrived 9s ago -> not amber
+  const nineSec = new Date(baseTime - 9000).toISOString();
+  const nineSecResult = formatLastUpdated(nineSec, baseTime);
+  assert.equal(nineSecResult.secondsAgo, 9);
+  assert.equal(nineSecResult.isAmber, false);
+
+  // 4. Telemetry arrived 10s ago -> amber!
+  const tenSec = new Date(baseTime - 10000).toISOString();
+  const tenSecResult = formatLastUpdated(tenSec, baseTime);
+  assert.equal(tenSecResult.secondsAgo, 10);
+  assert.equal(tenSecResult.text, "last updated 10s ago");
+  assert.equal(tenSecResult.isAmber, true);
+
+  // 5. Telemetry arrived 30s ago -> amber!
+  const thirtySec = new Date(baseTime - 30000).toISOString();
+  const thirtySecResult = formatLastUpdated(thirtySec, baseTime);
+  assert.equal(thirtySecResult.secondsAgo, 30);
+  assert.equal(thirtySecResult.text, "last updated 30s ago");
+  assert.equal(thirtySecResult.isAmber, true);
+
+  // Connection mode labels
+  assert.equal(getConnectionModeLabel("connected", false).label, "Live (WebSocket)");
+  assert.equal(getConnectionModeLabel("connected", false).isLive, true);
+  assert.equal(getConnectionModeLabel("connected", true).label, "Polled");
+  assert.equal(getConnectionModeLabel("connected", true).isPolled, true);
+  assert.equal(getConnectionModeLabel("token_required", true).label, "Polled (5s)");
+  assert.equal(getConnectionModeLabel("reconnecting", false).label, "Reconnecting");
+  assert.equal(getConnectionModeLabel("disconnected", false).label, "Offline");
 });

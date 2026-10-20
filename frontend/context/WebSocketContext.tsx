@@ -294,6 +294,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
 
         if (latest && latest.length > 0) {
           setMachinesLatest(latest);
+          setLastMessageAt(new Date().toISOString());
         }
 
         if (def && def.enabled_modules?.includes("product_traceability")) {

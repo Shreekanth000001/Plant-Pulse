@@ -401,5 +401,106 @@ export function parseTelemetryPayload(rawPayload: unknown): {
   };
 }
 
+export interface LastUpdatedInfo {
+  text: string;
+  secondsAgo: number | null;
+  isAmber: boolean;
+}
+
+/**
+ * Computes last updated relative string and whether it has exceeded 10s amber threshold.
+ */
+export function formatLastUpdated(
+  lastMessageAt: string | number | null | undefined,
+  now: number = Date.now()
+): LastUpdatedInfo {
+  if (!lastMessageAt) {
+    return {
+      text: "No telemetry yet",
+      secondsAgo: null,
+      isAmber: false,
+    };
+  }
+
+  const timestampMs =
+    typeof lastMessageAt === "number"
+      ? lastMessageAt
+      : new Date(lastMessageAt).getTime();
+
+  if (isNaN(timestampMs)) {
+    return {
+      text: "No telemetry yet",
+      secondsAgo: null,
+      isAmber: false,
+    };
+  }
+
+  const secondsAgo = Math.max(0, Math.floor((now - timestampMs) / 1000));
+  const isAmber = secondsAgo >= 10;
+
+  return {
+    text: `last updated ${secondsAgo}s ago`,
+    secondsAgo,
+    isAmber,
+  };
+}
+
+export interface ConnectionModeInfo {
+  mode: "live" | "polled" | "reconnecting" | "offline" | "token_required";
+  label: string;
+  isLive: boolean;
+  isPolled: boolean;
+}
+
+/**
+ * Returns user-facing connection state label stating whether data is live or polled.
+ */
+export function getConnectionModeLabel(
+  status: string,
+  pollingActive: boolean
+): ConnectionModeInfo {
+  if (status === "connected") {
+    if (pollingActive) {
+      return {
+        mode: "polled",
+        label: "Polled",
+        isLive: false,
+        isPolled: true,
+      };
+    }
+    return {
+      mode: "live",
+      label: "Live (WebSocket)",
+      isLive: true,
+      isPolled: false,
+    };
+  }
+
+  if (status === "token_required") {
+    return {
+      mode: "token_required",
+      label: pollingActive ? "Polled (5s)" : "Token Required",
+      isLive: false,
+      isPolled: pollingActive,
+    };
+  }
+
+  if (status === "reconnecting") {
+    return {
+      mode: "reconnecting",
+      label: "Reconnecting",
+      isLive: false,
+      isPolled: false,
+    };
+  }
+
+  return {
+    mode: "offline",
+    label: "Offline",
+    isLive: false,
+    isPolled: false,
+  };
+}
+
 
 
