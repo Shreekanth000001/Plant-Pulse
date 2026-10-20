@@ -23,11 +23,18 @@ export function getApiBaseUrl(): string {
   if (envUrl) {
     return envUrl.trim().replace(/\/+$/, "");
   }
+  if (typeof window !== "undefined" && window.location) {
+    const hostname = window.location.hostname || "localhost";
+    const protocol = window.location.protocol === "https:" ? "https:" : "http:";
+    return `${protocol}//${hostname}:8000`;
+  }
   return "http://localhost:8000";
 }
 
 /**
  * Returns the sanitized WebSocket URL for a given plant or the legacy stream.
+ * If NEXT_PUBLIC_WS_URL is unset, derives host from window.location at runtime
+ * (same hostname, port 8000, ws or wss matching the page protocol).
  * Optionally appends single-use ws-ticket query param if provided.
  */
 export function getWsUrl(plantId?: string, ticket?: string | null): string {
@@ -39,6 +46,10 @@ export function getWsUrl(plantId?: string, ticket?: string | null): string {
     if (baseWs.includes("/ws/")) {
       baseWs = baseWs.split("/ws/")[0].replace(/\/+$/, "");
     }
+  } else if (typeof window !== "undefined" && window.location) {
+    const hostname = window.location.hostname || "localhost";
+    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    baseWs = `${wsProtocol}//${hostname}:8000`;
   }
 
   if (plantId) {
@@ -270,6 +281,43 @@ export async function fetchDefectRateByStage(): Promise<DefectRateByStage[]> {
   if (!res.ok) {
     throw new ApiError(
       `Failed to fetch stage defect rate: ${res.statusText}`,
+      res.status
+    );
+  }
+
+  return res.json();
+}
+
+/**
+ * Fetch current queue sizes between production stages for a plant.
+ */
+export async function fetchPlantQueueDepths(
+  plantId: string,
+  token?: string | null
+): Promise<BackendQueueDepths> {
+  const baseUrl = getApiBaseUrl();
+  const cleanId = encodeURIComponent(plantId.trim());
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token.trim()}`;
+  }
+
+  const res = await fetch(`${baseUrl}/api/plants/${cleanId}/queue-depths`, {
+    cache: "no-store",
+    headers,
+  });
+
+  if (res.status === 401) {
+    throw new ApiError("Unauthorized", 401);
+  }
+
+  if (res.status === 404) {
+    throw new ApiError(`Queue depths not available for plant '${plantId}'`, 404);
+  }
+
+  if (!res.ok) {
+    throw new ApiError(
+      `Failed to fetch queue depths for plant '${plantId}': ${res.statusText}`,
       res.status
     );
   }

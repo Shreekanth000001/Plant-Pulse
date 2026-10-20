@@ -6,6 +6,7 @@ import {
   fetchPlantMachinesLatest,
   createWsTicket,
   getWsUrl,
+  getApiBaseUrl,
   ApiError,
 } from "../lib/api.ts";
 import {
@@ -248,5 +249,70 @@ test("Viewer Auth: Reconnects generate fresh ticket and never reuse consumed tic
     assert.notEqual(wsUrl1, wsUrl2, "Must not reuse ticket across reconnects");
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("WebSocket and API URL: derives host and protocol from window.location when env vars are unset and preserves overrides", () => {
+  const originalEnvApi = process.env.NEXT_PUBLIC_API_URL;
+  const originalEnvWs = process.env.NEXT_PUBLIC_WS_URL;
+  type GlobalWithWindow = typeof globalThis & {
+    window?: { location: { hostname: string; protocol: string } };
+  };
+  const target = globalThis as GlobalWithWindow;
+  const originalWindow = target.window;
+
+  try {
+    delete process.env.NEXT_PUBLIC_API_URL;
+    delete process.env.NEXT_PUBLIC_WS_URL;
+
+    // 1. Simulate http on a custom hostname
+    target.window = {
+      location: {
+        hostname: "192.168.1.100",
+        protocol: "http:",
+      },
+    };
+
+    assert.equal(getApiBaseUrl(), "http://192.168.1.100:8000");
+    assert.equal(
+      getWsUrl("plant_demo_membrane"),
+      "ws://192.168.1.100:8000/ws/plant_demo_membrane/telemetry"
+    );
+
+    // 2. Simulate https on another domain
+    target.window = {
+      location: {
+        hostname: "plantpulse.internal",
+        protocol: "https:",
+      },
+    };
+
+    assert.equal(getApiBaseUrl(), "https://plantpulse.internal:8000");
+    assert.equal(
+      getWsUrl("plant_water_district_9", "ticket_sec_1"),
+      "wss://plantpulse.internal:8000/ws/plant_water_district_9/telemetry?ticket=ticket_sec_1"
+    );
+
+    // 3. Env overrides take precedence over window.location
+    process.env.NEXT_PUBLIC_API_URL = "http://override-api:9000";
+    process.env.NEXT_PUBLIC_WS_URL = "ws://override-ws:9000";
+
+    assert.equal(getApiBaseUrl(), "http://override-api:9000");
+    assert.equal(
+      getWsUrl("plant_demo_membrane"),
+      "ws://override-ws:9000/ws/plant_demo_membrane/telemetry"
+    );
+  } finally {
+    if (originalEnvApi !== undefined) {
+      process.env.NEXT_PUBLIC_API_URL = originalEnvApi;
+    } else {
+      delete process.env.NEXT_PUBLIC_API_URL;
+    }
+    if (originalEnvWs !== undefined) {
+      process.env.NEXT_PUBLIC_WS_URL = originalEnvWs;
+    } else {
+      delete process.env.NEXT_PUBLIC_WS_URL;
+    }
+    target.window = originalWindow;
   }
 });

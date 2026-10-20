@@ -9,11 +9,14 @@ import {
   handleWsCloseState,
   safeLocalStorageGet,
   safeLocalStorageSet,
+  formatLastUpdated,
+  getConnectionModeLabel,
 } from "../lib/plant-utils.ts";
 import {
   fetchPlants,
   fetchPlantDefinition,
   fetchPlantMachinesLatest,
+  fetchPlantQueueDepths,
   getWsUrl,
 } from "../lib/api.ts";
 import type {
@@ -324,4 +327,95 @@ test("Criterion 8: Machine with no state reported defaults to 'OFFLINE'", () => 
 
   const overview = buildAreaOverview(definition, []);
   assert.equal(overview[0].machines[0].state, "OFFLINE");
+});
+
+test("fetchPlantQueueDepths sends Authorization header when token provided and handles 404/401", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedUrl = "";
+  let capturedHeaders: Record<string, string> = {};
+
+  try {
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      capturedUrl = url.toString();
+      capturedHeaders = (init?.headers as Record<string, string>) || {};
+      if (capturedUrl.includes("unauthorized_plant")) {
+        return new Response("Unauthorized", { status: 401, statusText: "Unauthorized" });
+      }
+      if (capturedUrl.includes("no_traceability")) {
+        return new Response("Not Found", { status: 404, statusText: "Not Found" });
+      }
+      return new Response(JSON.stringify({ casting: 5, assembly: 3, qc: 1 }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const res = await fetchPlantQueueDepths("plant_demo_membrane", "test-token");
+    assert.deepEqual(res, { casting: 5, assembly: 3, qc: 1 });
+    assert.equal(capturedUrl.endsWith("/api/plants/plant_demo_membrane/queue-depths"), true);
+    assert.equal(capturedHeaders["Authorization"], "Bearer test-token");
+
+    // Check 401 error throws ApiError
+    await assert.rejects(
+      async () => {
+        await fetchPlantQueueDepths("unauthorized_plant");
+      },
+      (err: unknown) => (err as { status?: number }).status === 401
+    );
+
+    // Check 404 error throws ApiError
+    await assert.rejects(
+      async () => {
+        await fetchPlantQueueDepths("no_traceability");
+      },
+      (err: unknown) => (err as { status?: number }).status === 404
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Criterion 9: formatLastUpdated and getConnectionModeLabel correctly compute amber threshold and live/polled labels", () => {
+  const baseTime = 1700000000000;
+
+  // 1. No telemetry yet
+  const nullResult = formatLastUpdated(null, baseTime);
+  assert.equal(nullResult.isAmber, false);
+  assert.equal(nullResult.text, "No telemetry yet");
+
+  // 2. Telemetry arrived 3s ago -> not amber
+  const threeSec = new Date(baseTime - 3000).toISOString();
+  const threeSecResult = formatLastUpdated(threeSec, baseTime);
+  assert.equal(threeSecResult.secondsAgo, 3);
+  assert.equal(threeSecResult.text, "last updated 3s ago");
+  assert.equal(threeSecResult.isAmber, false);
+
+  // 3. Telemetry arrived 9s ago -> not amber
+  const nineSec = new Date(baseTime - 9000).toISOString();
+  const nineSecResult = formatLastUpdated(nineSec, baseTime);
+  assert.equal(nineSecResult.secondsAgo, 9);
+  assert.equal(nineSecResult.isAmber, false);
+
+  // 4. Telemetry arrived 10s ago -> amber!
+  const tenSec = new Date(baseTime - 10000).toISOString();
+  const tenSecResult = formatLastUpdated(tenSec, baseTime);
+  assert.equal(tenSecResult.secondsAgo, 10);
+  assert.equal(tenSecResult.text, "last updated 10s ago");
+  assert.equal(tenSecResult.isAmber, true);
+
+  // 5. Telemetry arrived 30s ago -> amber!
+  const thirtySec = new Date(baseTime - 30000).toISOString();
+  const thirtySecResult = formatLastUpdated(thirtySec, baseTime);
+  assert.equal(thirtySecResult.secondsAgo, 30);
+  assert.equal(thirtySecResult.text, "last updated 30s ago");
+  assert.equal(thirtySecResult.isAmber, true);
+
+  // Connection mode labels
+  assert.equal(getConnectionModeLabel("connected", false).label, "Live (WebSocket)");
+  assert.equal(getConnectionModeLabel("connected", false).isLive, true);
+  assert.equal(getConnectionModeLabel("connected", true).label, "Polled");
+  assert.equal(getConnectionModeLabel("connected", true).isPolled, true);
+  assert.equal(getConnectionModeLabel("token_required", true).label, "Polled (5s)");
+  assert.equal(getConnectionModeLabel("reconnecting", false).label, "Reconnecting");
+  assert.equal(getConnectionModeLabel("disconnected", false).label, "Offline");
 });

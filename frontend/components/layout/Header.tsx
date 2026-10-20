@@ -4,7 +4,11 @@ import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useFactoryWebSocket } from "../../context/WebSocketContext";
-import { isModuleEnabled } from "../../lib/plant-utils";
+import {
+  isModuleEnabled,
+  formatLastUpdated,
+  getConnectionModeLabel,
+} from "../../lib/plant-utils";
 
 interface HeaderProps {
   onToggleSidebar?: () => void;
@@ -21,14 +25,17 @@ export function Header({ onToggleSidebar }: HeaderProps) {
     selectPlant,
     plantDefinition,
     pollingActive,
+    lastMessageAt,
   } = useFactoryWebSocket();
 
   const [unitSearch, setUnitSearch] = useState("");
   const [currentTime, setCurrentTime] = useState<string>("");
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
   useEffect(() => {
     const updateTime = () => {
       const now = new Date();
+      setNowMs(now.getTime());
       setCurrentTime(
         now.toLocaleTimeString([], {
           hour: "2-digit",
@@ -41,6 +48,9 @@ export function Header({ onToggleSidebar }: HeaderProps) {
     const interval = setInterval(updateTime, 1000);
     return () => clearInterval(interval);
   }, []);
+
+  const modeInfo = getConnectionModeLabel(status, pollingActive);
+  const lastUpdatedInfo = formatLastUpdated(lastMessageAt, nowMs);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -192,32 +202,68 @@ export function Header({ onToggleSidebar }: HeaderProps) {
             </form>
           )}
 
-          {/* Connection status pill */}
-          <div className="flex items-center">
+          {/* Connection status pill and Last Updated indicator */}
+          <div className="flex items-center gap-2">
             {status === "connected" && (
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-xs font-semibold text-emerald-700">
+              <div
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-xs font-semibold text-emerald-700"
+                title={modeInfo.isLive ? "Telemetry streaming via live WebSocket" : "Polled updates"}
+              >
                 <span className="w-2 h-2 rounded-full bg-emerald-500 ring-2 ring-emerald-200" />
-                <span className="hidden sm:inline">Sync Live</span>
+                <span className="hidden sm:inline">{modeInfo.label}</span>
               </div>
             )}
             {status === "token_required" && (
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-blue-50 border border-blue-200 text-xs font-semibold text-blue-700">
+              <div
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-blue-50 border border-blue-200 text-xs font-semibold text-blue-700"
+                title="Token required for live streaming"
+              >
                 <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-                <span className="hidden sm:inline">
-                  {pollingActive ? "Snapshot 5s" : "Token Required"}
-                </span>
+                <span className="hidden sm:inline">{modeInfo.label}</span>
               </div>
             )}
             {status === "reconnecting" && (
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-50 border border-amber-200 text-xs font-semibold text-amber-700">
+              <div
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-50 border border-amber-200 text-xs font-semibold text-amber-700"
+                title="Reconnecting to telemetry stream"
+              >
                 <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
                 <span className="hidden sm:inline">Reconnecting ({reconnectAttempt})</span>
               </div>
             )}
             {status === "disconnected" && (
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-50 border border-rose-200 text-xs font-semibold text-rose-700">
+              <div
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-50 border border-rose-200 text-xs font-semibold text-rose-700"
+                title="Disconnected from telemetry stream"
+              >
                 <span className="w-2 h-2 rounded-full bg-rose-500" />
                 <span className="hidden sm:inline">Offline</span>
+              </div>
+            )}
+
+            {/* Last updated N s ago indicator */}
+            {lastMessageAt && (
+              <div
+                data-testid="last-updated-indicator"
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-colors ${
+                  lastUpdatedInfo.isAmber
+                    ? "bg-amber-50 border-amber-300 text-amber-800"
+                    : "bg-slate-50 border-slate-200 text-slate-600"
+                }`}
+                title={
+                  lastUpdatedInfo.isAmber
+                    ? "Telemetry update delayed (>10s)"
+                    : "Telemetry stream active"
+                }
+              >
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    lastUpdatedInfo.isAmber
+                      ? "bg-amber-500 animate-pulse"
+                      : "bg-emerald-500"
+                  }`}
+                />
+                <span>{lastUpdatedInfo.text}</span>
               </div>
             )}
           </div>
