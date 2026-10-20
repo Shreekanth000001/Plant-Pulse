@@ -331,4 +331,75 @@ export function safeToUpperCase(val: unknown, fallback: string = ""): string {
   return String(val).toUpperCase();
 }
 
+/**
+ * Extract status, sub_status, and metrics from telemetry payload,
+ * supporting canonical envelope ({ payload: { status, sub_status, metrics } })
+ * with fallback to flat payload ({ status, sub_status, readings, ... }).
+ */
+export function parseTelemetryPayload(rawPayload: unknown): {
+  status?: string;
+  sub_status?: string;
+  readings: Record<string, unknown>;
+  vibration?: number;
+} {
+  if (!rawPayload || typeof rawPayload !== "object") {
+    return { readings: {} };
+  }
+
+  const outer = rawPayload as Record<string, unknown>;
+  const inner =
+    outer.payload && typeof outer.payload === "object"
+      ? (outer.payload as Record<string, unknown>)
+      : outer;
+
+  const status =
+    (inner.status as string) ||
+    (inner.state as string) ||
+    (outer.status as string) ||
+    (outer.state as string) ||
+    undefined;
+
+  const sub_status =
+    (inner.sub_status as string) !== undefined
+      ? (inner.sub_status as string)
+      : (inner.phase as string) !== undefined
+      ? (inner.phase as string)
+      : (outer.sub_status as string) !== undefined
+      ? (outer.sub_status as string)
+      : (outer.phase as string) !== undefined
+      ? (outer.phase as string)
+      : undefined;
+
+  const readingsObj =
+    (inner.metrics as Record<string, unknown>) ||
+    (outer.readings as Record<string, unknown>) ||
+    (inner.readings as Record<string, unknown>) ||
+    inner;
+
+  const vib =
+    typeof readingsObj.vibration_rms_mms === "number"
+      ? readingsObj.vibration_rms_mms
+      : typeof readingsObj.vibration === "number"
+      ? readingsObj.vibration
+      : typeof readingsObj.vibration_mms === "number"
+      ? readingsObj.vibration_mms
+      : typeof inner.vibration_mms === "number"
+      ? inner.vibration_mms
+      : typeof inner.vibration === "number"
+      ? inner.vibration
+      : typeof outer.vibration_mms === "number"
+      ? outer.vibration_mms
+      : typeof outer.vibration === "number"
+      ? outer.vibration
+      : undefined;
+
+  return {
+    status,
+    sub_status,
+    readings: readingsObj,
+    vibration: vib,
+  };
+}
+
+
 

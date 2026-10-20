@@ -24,6 +24,7 @@ import {
   safeSessionStorageSet,
   safeSessionStorageRemove,
   parseQcResultPayload,
+  parseTelemetryPayload,
 } from "../lib/plant-utils";
 import type {
   WebSocketMessage,
@@ -373,45 +374,32 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
             if (topic.includes("/assets/") && topic.endsWith("/telemetry")) {
               const parts = topic.split("/");
               const machineCode = parts[3];
-              const payload = (raw.payload || {}) as Record<string, unknown>;
-              const readingsObj =
-                (payload.readings as Record<string, unknown>) || payload;
+              const parsed = parseTelemetryPayload(raw.payload);
 
               setMachines((prev) => {
                 const existing = prev[machineCode];
                 if (!existing) return prev;
 
                 const mergedExtra: Readings = { ...(existing.extra || {}) };
-                for (const [k, v] of Object.entries(readingsObj)) {
+                for (const [k, v] of Object.entries(parsed.readings)) {
                   if (isReadingValue(v)) {
                     mergedExtra[k] = v;
                   }
                 }
 
-                const vib =
-                  typeof readingsObj.vibration_rms_mms === "number"
-                    ? readingsObj.vibration_rms_mms
-                    : typeof readingsObj.vibration === "number"
-                    ? readingsObj.vibration
-                    : typeof readingsObj.vibration_mms === "number"
-                    ? readingsObj.vibration_mms
-                    : existing.vibration;
-
                 return {
                   ...prev,
                   [machineCode]: {
                     ...existing,
-                    machine_state:
-                      (payload.status as string) ||
-                      (payload.state as string) ||
-                      existing.machine_state,
+                    machine_state: parsed.status || existing.machine_state,
                     phase:
-                      (payload.sub_status as string) !== undefined
-                        ? (payload.sub_status as string)
-                        : (payload.phase as string) !== undefined
-                        ? (payload.phase as string)
+                      parsed.sub_status !== undefined
+                        ? parsed.sub_status
                         : existing.phase,
-                    vibration: vib,
+                    vibration:
+                      parsed.vibration !== undefined
+                        ? parsed.vibration
+                        : existing.vibration,
                     extra: mergedExtra,
                     timestamp: new Date().toISOString(),
                   },
@@ -422,13 +410,22 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
             else if (topic.includes("/assets/") && topic.endsWith("/state")) {
               const parts = topic.split("/");
               const machineCode = parts[3];
-              const payload = (raw.payload || {}) as Record<string, unknown>;
+              const outerPayload = (raw.payload || {}) as Record<string, unknown>;
+              const innerPayload =
+                outerPayload.payload && typeof outerPayload.payload === "object"
+                  ? (outerPayload.payload as Record<string, unknown>)
+                  : outerPayload;
               const state =
-                (payload.state as string) ||
-                (payload.status as string) ||
+                (innerPayload.status as string) ||
+                (innerPayload.state as string) ||
+                (outerPayload.status as string) ||
+                (outerPayload.state as string) ||
                 "OFFLINE";
               const subState =
-                (payload.sub_status as string) || (payload.sub_state as string);
+                (innerPayload.sub_status as string) ||
+                (innerPayload.sub_state as string) ||
+                (outerPayload.sub_status as string) ||
+                (outerPayload.sub_state as string);
 
               setMachines((prev) => {
                 const existing = prev[machineCode];
