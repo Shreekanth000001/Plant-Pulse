@@ -206,8 +206,12 @@ def test_history_timestamp_formats_land_in_correct_bucket(history_server):
     assert status == 200, f"Expected 200 but got {status}: {data}"
     assert len(data["data"]) >= 1
     # Check that all 3 samples were aggregated together in the same UTC bucket
+    bucket_sec = data["bucket_seconds"]
+    expected_bucket_epoch = (int(base_dt.timestamp()) // bucket_sec) * bucket_sec
+    expected_iso_z = datetime.fromtimestamp(expected_bucket_epoch, tz=UTC).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
     matching_bucket = None
-    expected_iso_z = base_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     for b in data["data"]:
         if b["timestamp"] == expected_iso_z:
             matching_bucket = b
