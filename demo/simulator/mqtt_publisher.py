@@ -223,6 +223,78 @@ def publish_all_offline(
         q.machine_state = "OFFLINE"
 
 
+def publish_demo_tick(
+    client: mqtt.Client,
+    simulator: DemoSimulator,
+    plant_id: str,
+    prev_machine_states: dict[str, str],
+    stage_by_machine: dict[str, str],
+    tick_count: int = 0,
+) -> int:
+    """Execute one simulation tick for the demo line and publish all MQTT messages."""
+    readings = simulator.tick()
+    for reading in readings:
+        m_code = reading["machine_id"]
+        current_state = reading["machine_state"]
+        prev_state = prev_machine_states.get(m_code)
+
+        # State change event or first emission
+        if prev_state is None or prev_state != current_state:
+            s_topic, s_payload = build_state_payload(
+                plant_id,
+                m_code,
+                previous_status=prev_state or "IDLE",
+                status=current_state,
+                sub_status=reading.get("phase"),
+            )
+            client.publish(s_topic, json.dumps(s_payload), qos=QOS)
+        prev_machine_states[m_code] = current_state
+
+        # Core telemetry payload
+        t_topic, t_payload = build_telemetry_payload(reading, plant_id=plant_id)
+        client.publish(t_topic, json.dumps(t_payload), qos=QOS)
+
+        # Stage event if completed
+        if reading.get("stage_event"):
+            ev = reading["stage_event"]
+            se_topic, se_payload = build_stage_event_payload(
+                plant_id,
+                machine_code=m_code,
+                area_code=stage_by_machine.get(m_code, "housing"),
+                unit_id=ev["unit_id"],
+                outcome=ev["outcome"],
+                anomaly_score=ev["anomaly_score"],
+                readings=ev["readings"],
+                entered_at=ev.get("entered_at"),
+                exited_at=ev.get("exited_at"),
+            )
+            client.publish(se_topic, json.dumps(se_payload), qos=QOS)
+
+        # QC result if tested
+        if reading.get("last_result"):
+            res = reading["last_result"]
+            qc_topic, qc_payload = build_qc_result_payload(
+                plant_id,
+                machine_code=m_code,
+                unit_id=res["unit_id"],
+                outcome=res["outcome"],
+                probability=res["probability"],
+                defect_type=res.get("defect_type"),
+                attributed_stage=res.get("attributed_stage"),
+            )
+            client.publish(qc_topic, json.dumps(qc_payload), qos=QOS)
+
+    # Periodic queue depths
+    tick_count += 1
+    if tick_count % 5 == 0:
+        qd_topic, qd_payload = build_queue_depths_payload(
+            plant_id, simulator.queue_depths()
+        )
+        client.publish(qd_topic, json.dumps(qd_payload), qos=QOS)
+
+    return tick_count
+
+
 def main() -> None:
     def handle_shutdown(*_):
         global stop_event_set
@@ -290,69 +362,17 @@ def main() -> None:
                 continue
 
             # Watchdog active: generate simulation tick for demo manufacturing line
-            readings = simulator.tick()
-
             if connected:
-                for reading in readings:
-                    m_code = reading["machine_id"]
-                    current_state = reading["machine_state"]
-                    prev_state = prev_machine_states.get(m_code)
-
-                    # State change event
-                    if prev_state is not None and prev_state != current_state:
-                        s_topic, s_payload = build_state_payload(
-                            PLANT_ID,
-                            m_code,
-                            previous_status=prev_state,
-                            status=current_state,
-                            sub_status=reading.get("phase"),
-                        )
-                        client.publish(s_topic, json.dumps(s_payload), qos=QOS)
-                    prev_machine_states[m_code] = current_state
-
-                    # Core telemetry payload
-                    t_topic, t_payload = build_telemetry_payload(
-                        reading, plant_id=PLANT_ID
-                    )
-                    client.publish(t_topic, json.dumps(t_payload), qos=QOS)
-
-                    # Stage event if completed
-                    if reading.get("stage_event"):
-                        ev = reading["stage_event"]
-                        se_topic, se_payload = build_stage_event_payload(
-                            PLANT_ID,
-                            machine_code=m_code,
-                            area_code=stage_by_machine.get(m_code, "housing"),
-                            unit_id=ev["unit_id"],
-                            outcome=ev["outcome"],
-                            anomaly_score=ev["anomaly_score"],
-                            readings=ev["readings"],
-                            entered_at=ev.get("entered_at"),
-                            exited_at=ev.get("exited_at"),
-                        )
-                        client.publish(se_topic, json.dumps(se_payload), qos=QOS)
-
-                    # QC result if tested
-                    if reading.get("last_result"):
-                        res = reading["last_result"]
-                        qc_topic, qc_payload = build_qc_result_payload(
-                            PLANT_ID,
-                            machine_code=m_code,
-                            unit_id=res["unit_id"],
-                            outcome=res["outcome"],
-                            probability=res["probability"],
-                            defect_type=res.get("defect_type"),
-                            attributed_stage=res.get("attributed_stage"),
-                        )
-                        client.publish(qc_topic, json.dumps(qc_payload), qos=QOS)
-
-                # Periodic queue depths
-                tick_count += 1
-                if tick_count % 5 == 0:
-                    qd_topic, qd_payload = build_queue_depths_payload(
-                        PLANT_ID, simulator.queue_depths()
-                    )
-                    client.publish(qd_topic, json.dumps(qd_payload), qos=QOS)
+                tick_count = publish_demo_tick(
+                    client,
+                    simulator,
+                    PLANT_ID,
+                    prev_machine_states,
+                    stage_by_machine,
+                    tick_count,
+                )
+            else:
+                simulator.tick()
 
             # Water plant telemetry publishing (at 5s interval, only while watchdog should_run)
             now_mono = time.monotonic()

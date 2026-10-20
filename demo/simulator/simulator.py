@@ -583,8 +583,8 @@ def build_telemetry_payload(
 def build_state_payload(
     plant_id: str,
     machine_code: str,
-    previous_status: str,
-    status: str,
+    previous_status: str | None = None,
+    status: str = "IDLE",
     sub_status: str | None = None,
 ) -> tuple[str, dict]:
     topic = f"plants/{plant_id}/assets/{machine_code}/state"
@@ -596,7 +596,7 @@ def build_state_payload(
         "device_timestamp": datetime.now(UTC).isoformat(),
         "payload_type": "state_change",
         "payload": {
-            "previous_status": previous_status,
+            "previous_status": previous_status or "IDLE",
             "status": status,
         },
     }

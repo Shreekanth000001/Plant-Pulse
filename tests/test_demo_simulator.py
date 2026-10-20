@@ -502,3 +502,60 @@ def test_repair_delay_and_drift_scale_env_vars(monkeypatch):
     sim = DemoSimulator(plant_id="plant_demo_membrane")
     assert sim.repair_delay_seconds == 45.0
     assert sim.drift_scale == 0.05
+
+
+def test_housing_machines_emit_state_within_60_simulated_seconds():
+    """Condition 1: Housing machines emit IDLE to RUNNING (or first state) within 60 simulated seconds after first heartbeat."""
+    import json
+    from unittest.mock import MagicMock
+
+    from demo.simulator.mqtt_publisher import publish_demo_tick
+
+    clock = SimulatedClock(1000.0)
+    wd = Watchdog(clock=clock.time)
+    sim = DemoSimulator(plant_id="plant_demo_membrane", clock=clock.time)
+
+    # 1. First heartbeat arrives to start simulation
+    wd.on_heartbeat()
+    assert wd.should_run()
+
+    mock_client = MagicMock()
+    prev_machine_states: dict[str, str] = {}
+    stage_by_machine = {m.machine_id: m.sub_facility for m in sim.line.machines}
+    stage_by_machine.update({q.machine_id: "qc" for q in sim.line.qc_stations})
+
+    published_state_events = []
+
+    def mock_publish(topic, payload, qos=1):
+        if topic.endswith("/state"):
+            published_state_events.append((topic, json.loads(payload)))
+
+    mock_client.publish.side_effect = mock_publish
+
+    # Run simulator loop for 60 simulated seconds (30 ticks of 2s)
+    tick_count = 0
+    for _ in range(30):
+        clock.advance(2.0)
+        if not wd.should_run():
+            continue
+        tick_count = publish_demo_tick(
+            mock_client,
+            sim,
+            "plant_demo_membrane",
+            prev_machine_states,
+            stage_by_machine,
+            tick_count,
+        )
+
+    # Verify Housing machines (hm_01, hm_02) emitted state events leaving IDLE
+    housing_events = [
+        (t, p) for t, p in published_state_events if "hm_01" in t or "hm_02" in t
+    ]
+    assert len(housing_events) >= 2, (
+        f"Expected Housing machines to emit initial/transition state events within 60s, but got: {housing_events}"
+    )
+
+    # Verify payload format
+    hm01_event = next(p for t, p in housing_events if "hm_01" in t)
+    assert hm01_event["payload_type"] == "state_change"
+    assert hm01_event["payload"]["status"] == "RUNNING"
