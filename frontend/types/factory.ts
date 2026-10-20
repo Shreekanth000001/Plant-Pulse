@@ -226,3 +226,23 @@ export function mapBackendQueueDepths(
     assemblyToQc: Number(actual.qc ?? 0),
   };
 }
+
+export interface SignalHistoryPoint {
+  bucket_start: string;
+  count: number | null;
+  avg: number | null;
+  min: number | null;
+  max: number | null;
+  last: number | null;
+}
+
+export interface SignalHistoryResponse {
+  plant_id: string;
+  machine_code: string;
+  signal_code: string;
+  start: string;
+  end: string;
+  bucket_sec: number;
+  total_points: number;
+  data: SignalHistoryPoint[];
+}

@@ -502,5 +502,103 @@ export function getConnectionModeLabel(
   };
 }
 
+export interface HistoryQueryParamsOptions {
+  rangePreset?: "1h" | "6h" | "12h" | "24h";
+  start?: string | Date;
+  end?: string | Date;
+  points?: number;
+  now?: Date;
+}
+
+export function buildHistoryQueryParams(options: HistoryQueryParamsOptions = {}): {
+  start: string;
+  end: string;
+  points: number;
+} {
+  const points = Math.min(Math.max(options.points ?? 300, 10), 500);
+  const now = options.now ?? new Date();
+
+  let endDt: Date;
+  if (options.end) {
+    endDt = typeof options.end === "string" ? new Date(options.end) : options.end;
+  } else {
+    endDt = now;
+  }
+
+  let startDt: Date;
+  if (options.start) {
+    startDt = typeof options.start === "string" ? new Date(options.start) : options.start;
+  } else {
+    let hours = 1;
+    if (options.rangePreset === "6h") hours = 6;
+    else if (options.rangePreset === "12h") hours = 12;
+    else if (options.rangePreset === "24h") hours = 24;
+    startDt = new Date(endDt.getTime() - hours * 3600 * 1000);
+  }
+
+  const formatIso = (d: Date) => d.toISOString().replace(/\.000Z$/, "Z");
+
+  return {
+    start: formatIso(startDt),
+    end: formatIso(endDt),
+    points,
+  };
+}
+
+export interface TimePointWithGaps {
+  timestamp?: string;
+  bucket_start?: string;
+  avg: number | null;
+  min?: number | null;
+  max?: number | null;
+  last?: number | null;
+  count?: number | null;
+}
+
+export function insertTimeGaps<T extends TimePointWithGaps>(
+  data: T[],
+  bucketSeconds: number,
+  maxGapFactor: number = 1.5
+): T[] {
+  if (!data || data.length <= 1) {
+    return data ? [...data] : [];
+  }
+
+  const result: T[] = [];
+  const thresholdMs = bucketSeconds * maxGapFactor * 1000;
+
+  for (let i = 0; i < data.length; i++) {
+    result.push(data[i]);
+    if (i < data.length - 1) {
+      const currStr = data[i].bucket_start || data[i].timestamp || "";
+      const nextStr = data[i + 1].bucket_start || data[i + 1].timestamp || "";
+      const currTime = new Date(currStr).getTime();
+      const nextTime = new Date(nextStr).getTime();
+      if (!isNaN(currTime) && !isNaN(nextTime) && nextTime - currTime > thresholdMs) {
+        const gapTime = new Date(currTime + bucketSeconds * 1000).toISOString();
+        const gapPoint: T = {
+          ...data[i],
+          avg: null,
+          min: null,
+          max: null,
+          last: null,
+          count: 0,
+        };
+        const rec = gapPoint as unknown as Record<string, unknown>;
+        if (data[i].bucket_start !== undefined) {
+          rec.bucket_start = gapTime;
+        }
+        if (data[i].timestamp !== undefined) {
+          rec.timestamp = gapTime;
+        }
+        result.push(gapPoint);
+      }
+    }
+  }
+
+  return result;
+}
+
+
 
 

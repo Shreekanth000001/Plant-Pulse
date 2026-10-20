@@ -8,6 +8,7 @@ import type {
   PlantSummary,
   PublicPlantDefinition,
   PlantMachineLatest,
+  SignalHistoryResponse,
 } from "../types/factory";
 
 export function getErrorMessage(err: unknown, fallback: string): string {
@@ -362,3 +363,68 @@ export async function fetchRecentUnits(limit: number = 20): Promise<RecentUnitIt
 
   return res.json();
 }
+
+/**
+ * Fetch aggregated time-series history for a machine signal.
+ */
+export async function fetchSignalHistory(
+  plantId: string,
+  machineCode: string,
+  signalCode: string,
+  params: { start?: string; end?: string; points?: number } = {},
+  token?: string | null
+): Promise<SignalHistoryResponse> {
+  const baseUrl = getApiBaseUrl();
+  const cleanPlantId = encodeURIComponent(plantId.trim());
+  const cleanMachine = encodeURIComponent(machineCode.trim());
+  const cleanSignal = encodeURIComponent(signalCode.trim());
+
+  const searchParams = new URLSearchParams();
+  if (params.start) searchParams.set("start", params.start);
+  if (params.end) searchParams.set("end", params.end);
+  if (params.points !== undefined) searchParams.set("points", String(params.points));
+
+  const queryStr = searchParams.toString();
+  const url = `${baseUrl}/api/plants/${cleanPlantId}/machines/${cleanMachine}/signals/${cleanSignal}/history${
+    queryStr ? `?${queryStr}` : ""
+  }`;
+
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token.trim()}`;
+  }
+
+  const res = await fetch(url, {
+    cache: "no-store",
+    headers,
+  });
+
+  if (res.status === 401) {
+    throw new ApiError("Unauthorized", 401);
+  }
+
+  if (res.status === 404) {
+    throw new ApiError(
+      `Signal history not found for plant '${plantId}', machine '${machineCode}', signal '${signalCode}'`,
+      404
+    );
+  }
+
+  if (res.status === 400) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new ApiError(
+      errorData.detail || `Invalid history query parameters: ${res.statusText}`,
+      400
+    );
+  }
+
+  if (!res.ok) {
+    throw new ApiError(
+      `Failed to fetch signal history: ${res.statusText}`,
+      res.status
+    );
+  }
+
+  return res.json();
+}
+
