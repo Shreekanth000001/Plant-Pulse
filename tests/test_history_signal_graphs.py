@@ -288,16 +288,22 @@ def test_history_empty_range_returns_empty_list(history_server):
 
 
 def test_history_unknown_machine_or_signal_returns_404(history_server):
-    """Unknown machine or unknown signal returns 404 Not Found."""
+    """Unknown machine or unknown signal returns 404 Not Found with descriptive detail."""
     # Unknown machine
     url1 = f"{history_server['base_url']}/api/plants/plant_demo_membrane/machines/nonexistent_m/signals/mold_temperature_actual/history"
     status1, data1 = api_get(url1)
     assert status1 == 404, f"Expected 404 but got {status1}: {data1}"
+    assert "Machine 'nonexistent_m' not found" in data1.get("detail", ""), (
+        f"Expected machine not found message, got: {data1}"
+    )
 
     # Unknown signal
     url2 = f"{history_server['base_url']}/api/plants/plant_demo_membrane/machines/hm_01/signals/nonexistent_sig/history"
     status2, data2 = api_get(url2)
     assert status2 == 404, f"Expected 404 but got {status2}: {data2}"
+    assert "Signal 'nonexistent_sig' not found" in data2.get("detail", ""), (
+        f"Expected signal not found message, got: {data2}"
+    )
 
 
 def test_history_non_numeric_signal_returns_400(history_server):
