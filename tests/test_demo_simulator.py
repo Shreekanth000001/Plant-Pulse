@@ -370,6 +370,66 @@ async def test_heartbeat_emitter_silent_when_no_viewers():
     mock_publish.assert_not_called()
 
 
+@pytest.mark.anyio
+async def test_heartbeat_emitter_emits_with_water_plant_only_viewer():
+    """Watchdog heartbeat must be emitted while there is at least one viewer of ANY plant."""
+    mock_publish = AsyncMock()
+    test_manager = ConnectionManager()
+
+    # Fake a connected client to water plant ONLY (0 viewers on demo plant)
+    mock_ws = AsyncMock()
+    await test_manager.connect_plant("plant_water_district_9", mock_ws)
+
+    emitted = await emit_heartbeat_tick(test_manager, publish_fn=mock_publish)
+    assert emitted is True
+    mock_publish.assert_called_once()
+    args, _kwargs = mock_publish.call_args
+    topic, _ = args
+    assert topic == f"plants/{DEMO_PLANT_ID}/control/heartbeat"
+
+
+@pytest.mark.anyio
+async def test_heartbeat_emitter_emits_with_rest_polling_only_viewer():
+    """Watchdog heartbeat must be emitted for REST polling requests within a 15-second window."""
+    from main import ViewerTracker
+
+    fake_clock = SimulatedClock(1000.0)
+    tracker = ViewerTracker(window_seconds=15.0, clock=fake_clock.time)
+    mock_publish = AsyncMock()
+    test_manager = ConnectionManager()  # 0 WebSocket viewers
+
+    # 1. Before any poll: no heartbeat
+    emitted = await emit_heartbeat_tick(
+        test_manager, publish_fn=mock_publish, tracker=tracker
+    )
+    assert emitted is False
+    mock_publish.assert_not_called()
+
+    # 2. REST polling request occurs at t=1000.0
+    tracker.record_poll()
+    emitted = await emit_heartbeat_tick(
+        test_manager, publish_fn=mock_publish, tracker=tracker
+    )
+    assert emitted is True
+    assert mock_publish.call_count == 1
+
+    # 3. Advance clock by 10s (t=1010.0, still within 15s window) -> emits
+    fake_clock.advance(10.0)
+    emitted = await emit_heartbeat_tick(
+        test_manager, publish_fn=mock_publish, tracker=tracker
+    )
+    assert emitted is True
+    assert mock_publish.call_count == 2
+
+    # 4. Advance clock by 6s more (t=1016.0, 16s since last poll > 15s window) -> stops emitting
+    fake_clock.advance(6.0)
+    emitted = await emit_heartbeat_tick(
+        test_manager, publish_fn=mock_publish, tracker=tracker
+    )
+    assert emitted is False
+    assert mock_publish.call_count == 2
+
+
 # ---------------------------------------------------------------------------
 # Criterion 5 & 1 & 2: Monotonic Clock, Runner Entrypoint, Backend MQTT Auth
 # ---------------------------------------------------------------------------

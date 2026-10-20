@@ -25,6 +25,7 @@ import secrets
 import sqlite3
 import threading
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,6 +37,7 @@ from fastapi import (
     FastAPI,
     Header,
     HTTPException,
+    Request,
     WebSocket,
     WebSocketDisconnect,
 )
@@ -172,11 +174,36 @@ class TicketStore:
 ticket_store = TicketStore(max_capacity=1000, ttl_seconds=30.0)
 
 
+class ViewerTracker:
+    """Tracks active REST polling requests across all plants within a sliding time window."""
+
+    def __init__(
+        self,
+        window_seconds: float = 15.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.window_seconds = window_seconds
+        self.clock = clock
+        self._last_poll_at: float | None = None
+
+    def record_poll(self) -> None:
+        self._last_poll_at = self.clock()
+
+    def has_recent_poll(self) -> bool:
+        if self._last_poll_at is None:
+            return False
+        return (self.clock() - self._last_poll_at) <= self.window_seconds
+
+
+viewer_tracker = ViewerTracker(window_seconds=15.0)
+
+
 def verify_plant_viewer(
     plant_id: str,
     authorization: Annotated[str | None, Header()] = None,
 ) -> None:
     """Verify bearer token for plant-scoped endpoints if plant has a viewer token configured."""
+    viewer_tracker.record_poll()
     plant = plants_registry.get(plant_id)
     if not plant:
         raise HTTPException(status_code=404, detail=f"Plant '{plant_id}' not found")
@@ -495,11 +522,20 @@ async def emit_heartbeat_tick(
     conn_mgr: ConnectionManager | None = None,
     publish_fn: Any | None = None,
     plant_id: str = DEMO_PLANT_ID,
+    tracker: ViewerTracker | None = None,
 ) -> bool:
-    """Emits a heartbeat ping if the specified plant has active viewers connected."""
+    """Emits a watchdog heartbeat ping if there is at least one active viewer of ANY plant
+    (WebSocket room members across all plants, legacy clients, or recent REST polling requests within a 15-second window)."""
     mgr = conn_mgr or manager
-    viewers = len(mgr._rooms.get(plant_id, set()))
-    if viewers <= 0:
+    trk = tracker or viewer_tracker
+
+    has_ws_viewers = (
+        any(len(clients) > 0 for clients in mgr._rooms.values())
+        or len(mgr._clients) > 0
+    )
+    has_rest_viewers = trk.has_recent_poll()
+
+    if not has_ws_viewers and not has_rest_viewers:
         return False
 
     payload = json.dumps({"timestamp": datetime.now(UTC).isoformat()})
@@ -527,12 +563,16 @@ async def heartbeat_emitter(
     publish_fn: Any | None = None,
     interval: float = 5.0,
     plant_id: str = DEMO_PLANT_ID,
+    tracker: ViewerTracker | None = None,
 ) -> None:
-    """Background task emitting heartbeats every interval seconds while demo viewers exist."""
+    """Background task emitting heartbeats every interval seconds while any plant viewers exist."""
     while True:
         try:
             await emit_heartbeat_tick(
-                conn_mgr=conn_mgr, publish_fn=publish_fn, plant_id=plant_id
+                conn_mgr=conn_mgr,
+                publish_fn=publish_fn,
+                plant_id=plant_id,
+                tracker=tracker,
             )
         except Exception:
             log.exception("Error in heartbeat emitter tick")
@@ -674,6 +714,13 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def track_viewer_activity(request: Request, call_next):
+    if request.url.path.startswith("/api/"):
+        viewer_tracker.record_poll()
+    return await call_next(request)
 
 
 @app.get("/health")
