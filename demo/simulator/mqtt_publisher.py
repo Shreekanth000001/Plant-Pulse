@@ -42,14 +42,6 @@ try:
         load_water_credentials,
     )
 except ImportError:
-    from watchdog import Watchdog
-    from water_simulator import (
-        WaterPlantSimulator,
-        build_water_state_payload,
-        build_water_telemetry_payload,
-        load_water_credentials,
-    )
-
     from simulator import (
         DemoSimulator,
         build_qc_result_payload,
@@ -58,6 +50,13 @@ except ImportError:
         build_state_payload,
         build_telemetry_payload,
         load_simulator_credentials,
+    )
+    from watchdog import Watchdog
+    from water_simulator import (
+        WaterPlantSimulator,
+        build_water_state_payload,
+        build_water_telemetry_payload,
+        load_water_credentials,
     )
 
 logging.basicConfig(

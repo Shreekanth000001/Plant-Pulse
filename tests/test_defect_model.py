@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from defect_model import (
+from demo.simulator.defect_model import (
     SHIFT_CHANGE_BIAS,
     compute_defect_probability,
 )

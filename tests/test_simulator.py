@@ -2,9 +2,9 @@ import random
 
 import pytest
 
-import simulator
-from config import FACILITY
-from units import Unit
+from demo.simulator import simulator
+from demo.simulator.config import FACILITY
+from demo.simulator.units import Unit
 
 CYCLES = 50
 TOLERANCE = 0.15  # deviation allowed from the expected value

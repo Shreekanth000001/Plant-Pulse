@@ -36,7 +36,7 @@ jobs:
 
       # Fails if a dependency is missing from requirements.txt.
       - name: Smoke import
-        run: python -c "import config, units, defect_model, database, simulator, mqtt_publisher, main"
+        run: python -c "import database, main, retention; from demo.simulator import config, units, defect_model, simulator, mqtt_publisher"
 
       - name: Tests
         run: |
