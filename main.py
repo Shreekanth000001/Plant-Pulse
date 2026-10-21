@@ -26,6 +26,7 @@ import secrets
 import sqlite3
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -371,6 +372,8 @@ topic_router = TopicRouter()
 # it would add rows nobody queries.
 latest_queue_depths: dict = {}
 plant_queue_depths: dict[str, dict[str, int]] = {}
+active_machine_units: dict[tuple[str, str], str] = {}
+active_units: dict[str, dict[str, Any]] = {}
 
 
 # Fields that are "common" columns on TelemetryReading — everything else
@@ -389,9 +392,36 @@ COMMON_TELEMETRY_FIELDS = {
 }
 
 
+def _store_platform_unit_in_progress(plant_id: str, unit_id: str) -> None:
+    if not Path(PLATFORM_DB_PATH).exists():
+        return
+    try:
+        conn = get_db_connection(PLATFORM_DB_PATH)
+        with conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO units (plant_id, unit_id, status) VALUES (?, ?, 'in_progress');",
+                (plant_id, unit_id),
+            )
+    except Exception:
+        log.exception("Failed to store in-progress unit in platform.db for %s", unit_id)
+    finally:
+        conn.close()
+
+
 def _store_telemetry(db, sub_facility: str, payload: dict) -> None:
     excluded = COMMON_TELEMETRY_FIELDS | {"last_result", "stage_event"}
     extra = {k: v for k, v in payload.items() if k not in excluded}
+    curr_unit_id = payload.get("current_unit") or payload.get("current_unit_id")
+    if curr_unit_id:
+        active_units[curr_unit_id] = {
+            "plant_id": DEMO_PLANT_ID,
+            "machine_code": payload.get("machine_id", "hm_01"),
+            "seen_at": datetime.now(UTC).isoformat(),
+        }
+        if not db.query(Unit).filter(Unit.unit_id == curr_unit_id).first():
+            db.add(Unit(unit_id=curr_unit_id, status="in_progress"))
+        _store_platform_unit_in_progress(DEMO_PLANT_ID, curr_unit_id)
+
     reading = TelemetryReading(
         timestamp=datetime.now(UTC),
         machine_id=payload["machine_id"],
@@ -399,7 +429,7 @@ def _store_telemetry(db, sub_facility: str, payload: dict) -> None:
         machine_state=payload.get("machine_state"),
         phase=payload.get("phase"),
         starved=payload.get("starved", False),
-        current_unit_id=payload.get("current_unit"),
+        current_unit_id=curr_unit_id,
         vibration=payload.get("vibration"),
         vibration_wear_level=payload.get("vibration_wear_level"),
         good_count=payload.get("good_count"),
@@ -409,51 +439,170 @@ def _store_telemetry(db, sub_facility: str, payload: dict) -> None:
     db.add(reading)
 
 
+def _parse_event_dt(val: Any) -> datetime | None:
+    if not val:
+        return None
+    if isinstance(val, (int, float)):
+        return datetime.fromtimestamp(val, tz=UTC)
+    if isinstance(val, str):
+        try:
+            return datetime.fromisoformat(val)
+        except ValueError:
+            return None
+    return None
+
+
 def _store_stage_event(db, payload: dict) -> None:
     unit_id = payload["unit_id"]
 
     # First time we've seen this unit — Housing's stage_event is always
     # the first one to arrive for any given unit.
-    if not db.get(Unit, unit_id):
+    if not db.query(Unit).filter(Unit.unit_id == unit_id).first():
         db.add(Unit(unit_id=unit_id, status="in_progress"))
 
-    def _to_dt(epoch_seconds):
-        return datetime.fromtimestamp(epoch_seconds, tz=UTC) if epoch_seconds else None
+    machine_code = payload.get("machine_code") or payload.get("machine_id") or "hm_01"
+    readings = payload.get("readings") or payload.get("sensor_snapshot") or {}
 
     db.add(
         StageEvent(
             unit_id=unit_id,
-            sub_facility=payload["sub_facility"],
-            machine_id=payload["machine_id"],
-            entered_at=_to_dt(payload.get("entered_at")),
-            exited_at=_to_dt(payload.get("exited_at")),
-            outcome=payload.get("outcome"),
-            anomaly_score=payload.get("anomaly_score"),
-            readings=payload.get("readings"),
+            machine_code=machine_code,
+            entered_at=_parse_event_dt(payload.get("entered_at")),
+            exited_at=_parse_event_dt(payload.get("exited_at")),
+            outcome=payload.get("outcome") or "ok",
+            anomaly_score=float(payload.get("anomaly_score") or 0.0),
+            readings=readings,
         )
     )
 
 
 def _store_qc_result(db, machine_id: str, payload: dict) -> None:
     unit_id = payload["unit_id"]
+    outcome = payload.get("outcome") or "pass"
+    unit_status = "passed" if outcome in ("pass", "passed") else "failed"
 
-    existing = db.get(Unit, unit_id)
+    existing = db.query(Unit).filter(Unit.unit_id == unit_id).first()
     if not existing:
-        db.add(Unit(unit_id=unit_id, status=payload["outcome"]))
+        db.add(Unit(unit_id=unit_id, status=unit_status))
     else:
-        existing.status = "passed" if payload["outcome"] == "pass" else "failed"
+        existing.status = unit_status
 
     db.add(
         QCResult(
             unit_id=unit_id,
-            machine_id=machine_id,
+            machine_code=machine_id,
             tested_at=datetime.now(UTC),
-            outcome=payload["outcome"],
-            probability=payload.get("probability"),
+            outcome=outcome,
+            probability=float(payload.get("probability") or 1.0),
             defect_type=payload.get("defect_type"),
             attributed_stage=payload.get("attributed_stage"),
         )
     )
+
+
+def _store_platform_stage_event(plant_id: str, payload: dict, inner: dict) -> None:
+    if not Path(PLATFORM_DB_PATH).exists():
+        return
+    try:
+        conn = get_db_connection(PLATFORM_DB_PATH)
+        unit_id = inner["unit_id"]
+        machine_code = (
+            inner.get("machine_code")
+            or inner.get("machine_id")
+            or payload.get("asset_id")
+            or "hm_01"
+        )
+        message_id = payload.get("message_id") or str(uuid.uuid4())
+        is_starved = 1 if inner.get("is_starved") else 0
+        entered_at = inner.get("entered_at")
+        exited_at = inner.get("exited_at")
+        outcome = inner.get("outcome") or "ok"
+        anomaly_score = float(inner.get("anomaly_score") or 0.0)
+        readings_json = json.dumps(
+            inner.get("sensor_snapshot") or inner.get("readings") or {}
+        )
+
+        with conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO units (plant_id, unit_id, status) VALUES (?, ?, ?);",
+                (plant_id, unit_id, "in_progress"),
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO stage_events (
+                    plant_id, unit_id, machine_code, message_id, is_starved,
+                    entered_at, exited_at, outcome, anomaly_score, readings
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    plant_id,
+                    unit_id,
+                    machine_code,
+                    message_id,
+                    is_starved,
+                    entered_at,
+                    exited_at,
+                    outcome,
+                    anomaly_score,
+                    readings_json,
+                ),
+            )
+    except Exception:
+        log.exception(
+            "Failed to store stage_event in platform.db for unit %s",
+            inner.get("unit_id"),
+        )
+    finally:
+        conn.close()
+
+
+def _store_platform_qc_result(
+    plant_id: str, machine_code: str, payload: dict, inner: dict
+) -> None:
+    if not Path(PLATFORM_DB_PATH).exists():
+        return
+    try:
+        conn = get_db_connection(PLATFORM_DB_PATH)
+        unit_id = inner["unit_id"]
+        message_id = payload.get("message_id") or str(uuid.uuid4())
+        outcome = inner.get("outcome") or "pass"
+        status = "passed" if outcome in ("pass", "passed") else "failed"
+        probability = float(inner.get("probability") or 1.0)
+        defect_type = inner.get("defect_type")
+        attributed_stage = inner.get("attributed_stage")
+        tested_at = datetime.now(UTC).isoformat()
+
+        with conn:
+            conn.execute(
+                "INSERT INTO units (plant_id, unit_id, status) VALUES (?, ?, ?) "
+                "ON CONFLICT(plant_id, unit_id) DO UPDATE SET status = excluded.status, updated_at = CURRENT_TIMESTAMP;",
+                (plant_id, unit_id, status),
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO qc_results (
+                    plant_id, unit_id, machine_code, message_id, tested_at,
+                    outcome, probability, defect_type, attributed_stage
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    plant_id,
+                    unit_id,
+                    machine_code,
+                    message_id,
+                    tested_at,
+                    outcome,
+                    probability,
+                    defect_type,
+                    attributed_stage,
+                ),
+            )
+    except Exception:
+        log.exception(
+            "Failed to store qc_result in platform.db for unit %s", inner.get("unit_id")
+        )
+    finally:
+        conn.close()
 
 
 def handle_message(topic: str, payload: dict) -> None:
@@ -500,6 +649,34 @@ def handle_message(topic: str, payload: dict) -> None:
 async def handle_plant_telemetry(
     payload: dict, plant_id: str, machine_code: str
 ) -> None:
+    inner = (
+        payload.get("payload") if isinstance(payload.get("payload"), dict) else payload
+    )
+    if isinstance(inner, dict):
+        curr_unit_id = (
+            inner.get("current_unit_id")
+            or inner.get("current_unit")
+            or payload.get("current_unit_id")
+            or payload.get("current_unit")
+        )
+        if curr_unit_id:
+            old_unit_id = active_machine_units.get((plant_id, machine_code))
+            if old_unit_id and old_unit_id != curr_unit_id:
+                active_units.pop(old_unit_id, None)
+            active_machine_units[(plant_id, machine_code)] = curr_unit_id
+            active_units[curr_unit_id] = {
+                "plant_id": plant_id,
+                "machine_code": machine_code,
+                "seen_at": datetime.now(UTC).isoformat(),
+            }
+            await asyncio.to_thread(
+                _store_platform_unit_in_progress, plant_id, curr_unit_id
+            )
+        else:
+            old_unit_id = active_machine_units.pop((plant_id, machine_code), None)
+            if old_unit_id:
+                active_units.pop(old_unit_id, None)
+
     if ingest_engine:
         await ingest_engine.handle_telemetry(payload, plant_id, machine_code)
     await manager.broadcast_to_plant(
@@ -530,6 +707,12 @@ async def handle_plant_state(payload: dict, plant_id: str, machine_code: str) ->
 
 @topic_router.on("stage_event")
 async def handle_plant_stage_event(payload: dict, plant_id: str) -> None:
+    inner = (
+        payload.get("payload") if isinstance(payload.get("payload"), dict) else payload
+    )
+    if isinstance(inner, dict) and "unit_id" in inner:
+        await asyncio.to_thread(_store_platform_stage_event, plant_id, payload, inner)
+
     await manager.broadcast_to_plant(
         plant_id,
         json.dumps(
@@ -564,6 +747,22 @@ async def handle_plant_queue_depths(payload: dict, plant_id: str) -> None:
 
 @topic_router.on("qc_result")
 async def handle_plant_qc_result(payload: dict, plant_id: str) -> None:
+    inner = (
+        payload.get("payload") if isinstance(payload.get("payload"), dict) else payload
+    )
+    if isinstance(inner, dict) and "unit_id" in inner:
+        machine_code = (
+            inner.get("machine_code")
+            or inner.get("machine_id")
+            or payload.get("asset_id")
+            or "qc_01"
+        )
+        if machine_code and machine_code.lower() == "qc":
+            machine_code = "qc_01"
+        await asyncio.to_thread(
+            _store_platform_qc_result, plant_id, machine_code, payload, inner
+        )
+
     await manager.broadcast_to_plant(
         plant_id,
         json.dumps(
@@ -1208,6 +1407,29 @@ def recent_units(db: DbSession, limit: int = 20) -> list[dict]:
     """Most recently created units, newest first — feeds the unit-lookup
     page's 'recent units' list."""
     limit = max(1, min(limit, 100))
+    if Path(PLATFORM_DB_PATH).exists():
+        conn = get_db_connection(PLATFORM_DB_PATH)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT unit_id, status, created_at FROM units ORDER BY created_at DESC LIMIT ?;",
+                (limit,),
+            )
+            p_rows = cur.fetchall()
+            if p_rows:
+                return [
+                    {
+                        "unit_id": r["unit_id"],
+                        "status": r["status"],
+                        "created_at": r["created_at"],
+                    }
+                    for r in p_rows
+                ]
+        except Exception:
+            log.exception("Failed to query recent units from platform.db")
+        finally:
+            conn.close()
+
     rows = db.query(Unit).order_by(Unit.created_at.desc()).limit(limit).all()
     return [
         {
@@ -1224,50 +1446,170 @@ def unit_history(db: DbSession, unit_id: str) -> dict:
     """Full traceable journey for one unit — every stage it passed
     through, plus its QC verdict if tested. This is the payoff of the
     whole traceability design: a real answer to 'why did this fail?'"""
-    unit = db.get(Unit, unit_id)
-    if not unit:
-        raise HTTPException(status_code=404, detail="Unit not found")
+    if Path(PLATFORM_DB_PATH).exists():
+        conn = get_db_connection(PLATFORM_DB_PATH)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT unit_id, status, created_at FROM units WHERE unit_id = ? LIMIT 1;",
+                (unit_id,),
+            )
+            p_unit = cur.fetchone()
+            if p_unit:
+                cur.execute(
+                    """
+                    SELECT s.machine_code, s.outcome, s.anomaly_score, s.readings,
+                           s.entered_at, s.exited_at, coalesce(m.area_code, 'housing') as sub_facility
+                    FROM stage_events s
+                    LEFT JOIN machines m ON s.plant_id = m.plant_id AND s.machine_code = m.machine_code
+                    WHERE s.unit_id = ?
+                    ORDER BY s.entered_at;
+                    """,
+                    (unit_id,),
+                )
+                p_stages = cur.fetchall()
+                cur.execute(
+                    """
+                    SELECT outcome, probability, defect_type, attributed_stage, tested_at
+                    FROM qc_results WHERE unit_id = ? LIMIT 1;
+                    """,
+                    (unit_id,),
+                )
+                p_qc = cur.fetchone()
+                return {
+                    "unit_id": p_unit["unit_id"],
+                    "status": p_unit["status"],
+                    "created_at": p_unit["created_at"],
+                    "stages": [
+                        {
+                            "sub_facility": (
+                                s["sub_facility"]
+                                or {
+                                    "hm": "housing",
+                                    "cs": "casting",
+                                    "am": "assembly",
+                                    "qc": "qc",
+                                }.get(s["machine_code"].split("_")[0], "housing")
+                            ),
+                            "machine_id": s["machine_code"],
+                            "outcome": s["outcome"],
+                            "anomaly_score": s["anomaly_score"],
+                            "readings": (
+                                json.loads(s["readings"])
+                                if isinstance(s["readings"], str)
+                                else (s["readings"] or {})
+                            ),
+                            "entered_at": s["entered_at"],
+                            "exited_at": s["exited_at"],
+                        }
+                        for s in p_stages
+                    ],
+                    "qc_result": None
+                    if not p_qc
+                    else {
+                        "outcome": p_qc["outcome"],
+                        "probability": p_qc["probability"],
+                        "defect_type": p_qc["defect_type"],
+                        "attributed_stage": p_qc["attributed_stage"],
+                        "tested_at": p_qc["tested_at"],
+                    },
+                }
+        except Exception:
+            log.exception(
+                "Failed to query unit history from platform.db for %s", unit_id
+            )
+        finally:
+            conn.close()
 
-    stages = (
-        db.query(StageEvent)
-        .filter(StageEvent.unit_id == unit_id)
-        .order_by(StageEvent.entered_at)
-        .all()
-    )
-    qc = db.query(QCResult).filter(QCResult.unit_id == unit_id).first()
+    unit = db.query(Unit).filter(Unit.unit_id == unit_id).first()
+    if unit:
+        stages = (
+            db.query(StageEvent)
+            .filter(StageEvent.unit_id == unit_id)
+            .order_by(StageEvent.entered_at)
+            .all()
+        )
+        qc = db.query(QCResult).filter(QCResult.unit_id == unit_id).first()
 
-    return {
-        "unit_id": unit.unit_id,
-        "status": unit.status,
-        "created_at": unit.created_at.isoformat() if unit.created_at else None,
-        "stages": [
-            {
-                "sub_facility": s.sub_facility,
-                "machine_id": s.machine_id,
-                "outcome": s.outcome,
-                "anomaly_score": s.anomaly_score,
-                "readings": s.readings,
-                "entered_at": s.entered_at.isoformat() if s.entered_at else None,
-                "exited_at": s.exited_at.isoformat() if s.exited_at else None,
-            }
-            for s in stages
-        ],
-        "qc_result": None
-        if not qc
-        else {
-            "outcome": qc.outcome,
-            "probability": qc.probability,
-            "defect_type": qc.defect_type,
-            "attributed_stage": qc.attributed_stage,
-            "tested_at": qc.tested_at.isoformat() if qc.tested_at else None,
-        },
-    }
+        return {
+            "unit_id": unit.unit_id,
+            "status": unit.status,
+            "created_at": unit.created_at.isoformat() if unit.created_at else None,
+            "stages": [
+                {
+                    "sub_facility": s.sub_facility,
+                    "machine_id": s.machine_id,
+                    "outcome": s.outcome,
+                    "anomaly_score": s.anomaly_score,
+                    "readings": s.readings,
+                    "entered_at": s.entered_at.isoformat() if s.entered_at else None,
+                    "exited_at": s.exited_at.isoformat() if s.exited_at else None,
+                }
+                for s in stages
+            ],
+            "qc_result": None
+            if not qc
+            else {
+                "outcome": qc.outcome,
+                "probability": qc.probability,
+                "defect_type": qc.defect_type,
+                "attributed_stage": qc.attributed_stage,
+                "tested_at": qc.tested_at.isoformat() if qc.tested_at else None,
+            },
+        }
+
+    # If the unit is currently active on the manufacturing floor (e.g. Stage 1 Housing)
+    # but has not yet completed its first stage event:
+    active_info = active_units.get(unit_id)
+    if active_info:
+        return {
+            "unit_id": unit_id,
+            "status": "in_progress",
+            "created_at": active_info.get("seen_at", datetime.now(UTC).isoformat()),
+            "stages": [],
+            "qc_result": None,
+        }
+
+    raise HTTPException(status_code=404, detail="Unit not found")
 
 
 @app.get("/api/stats/defect-rate-by-hour")
 def defect_rate_by_hour(db: DbSession) -> list[dict]:
     """Defect rate grouped by hour-of-day — this is the metric that
     makes the shift-change bias in defect_model.py visible in real data."""
+    if Path(PLATFORM_DB_PATH).exists():
+        conn = get_db_connection(PLATFORM_DB_PATH)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT strftime('%H', tested_at) as hour, outcome FROM qc_results;"
+            )
+            p_rows = cur.fetchall()
+            if p_rows:
+                buckets: dict[str, dict[str, int]] = {}
+                for row in p_rows:
+                    hour = row["hour"] or "00"
+                    outcome = row["outcome"]
+                    b = buckets.setdefault(hour, {"total": 0, "failed": 0})
+                    b["total"] += 1
+                    if outcome in ("fail", "failed"):
+                        b["failed"] += 1
+                return [
+                    {
+                        "hour": hour,
+                        "total_tested": b["total"],
+                        "failed": b["failed"],
+                        "defect_rate": (
+                            round(b["failed"] / b["total"], 3) if b["total"] else 0
+                        ),
+                    }
+                    for hour, b in sorted(buckets.items())
+                ]
+        except Exception:
+            log.exception("Failed to query defect-rate-by-hour from platform.db")
+        finally:
+            conn.close()
+
     # Pull hour+outcome pairs and aggregate in Python — simpler and more
     # portable than a dialect-specific conditional-sum SQL expression,
     # and this table will never be large enough for that to matter.
@@ -1295,6 +1637,24 @@ def defect_rate_by_hour(db: DbSession) -> list[dict]:
 def defect_rate_by_stage(db: DbSession) -> list[dict]:
     """Of all failures, which stage gets attributed most often — points
     at where the process is actually struggling."""
+    if Path(PLATFORM_DB_PATH).exists():
+        conn = get_db_connection(PLATFORM_DB_PATH)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT attributed_stage, count(*) as cnt FROM qc_results WHERE outcome IN ('fail', 'failed') AND attributed_stage IS NOT NULL GROUP BY attributed_stage;"
+            )
+            p_rows = cur.fetchall()
+            if p_rows:
+                return [
+                    {"stage": row["attributed_stage"], "failures": row["cnt"]}
+                    for row in p_rows
+                ]
+        except Exception:
+            log.exception("Failed to query defect-rate-by-stage from platform.db")
+        finally:
+            conn.close()
+
     rows = (
         db.query(QCResult.attributed_stage, func.count(QCResult.id))
         .filter(QCResult.outcome == "fail")

@@ -350,7 +350,8 @@ function UnitDetailContent() {
             const recordedStage = stageMap.get(stageConfig.id);
             const isCurrentlyOnMachine =
               activeMachine &&
-              activeMachine.sub_facility.toLowerCase() === stageConfig.id;
+              (activeMachine.sub_facility?.toLowerCase() === stageConfig.id ||
+                activeMachine.area_code?.toLowerCase() === stageConfig.id);
 
             // Determine if previous stage completed
             const prevStageCompleted =

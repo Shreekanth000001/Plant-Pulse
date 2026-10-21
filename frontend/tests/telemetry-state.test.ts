@@ -15,6 +15,10 @@ test("Telemetry Envelope: extracts status, sub_status, vibration, and metrics fr
     payload: {
       status: "RUNNING",
       sub_status: "FORMING",
+      current_unit_id: "unit_demo_101",
+      starved: false,
+      good_count: 12,
+      reject_count: 1,
       metrics: {
         vibration_mms: 6.32,
         hydraulic_pressure_bar: 120.5,
@@ -26,6 +30,10 @@ test("Telemetry Envelope: extracts status, sub_status, vibration, and metrics fr
   const parsed = parseTelemetryPayload(canonicalEnvelope);
   assert.equal(parsed.status, "RUNNING");
   assert.equal(parsed.sub_status, "FORMING");
+  assert.equal(parsed.current_unit_id, "unit_demo_101");
+  assert.equal(parsed.starved, false);
+  assert.equal(parsed.good_count, 12);
+  assert.equal(parsed.reject_count, 1);
   assert.equal(parsed.vibration, 6.32);
   assert.equal(parsed.readings.hydraulic_pressure_bar, 120.5);
   assert.equal(parsed.readings.mold_temperature_actual, 68.4);

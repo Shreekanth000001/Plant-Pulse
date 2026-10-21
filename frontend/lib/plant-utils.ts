@@ -339,6 +339,10 @@ export function safeToUpperCase(val: unknown, fallback: string = ""): string {
 export function parseTelemetryPayload(rawPayload: unknown): {
   status?: string;
   sub_status?: string;
+  current_unit_id?: string | null;
+  starved?: boolean;
+  good_count?: number;
+  reject_count?: number;
   readings: Record<string, unknown>;
   vibration?: number;
 } {
@@ -370,6 +374,38 @@ export function parseTelemetryPayload(rawPayload: unknown): {
       ? (outer.phase as string)
       : undefined;
 
+  const current_unit_id =
+    (inner.current_unit_id as string) !== undefined
+      ? (inner.current_unit_id as string | null)
+      : (inner.current_unit as string) !== undefined
+      ? (inner.current_unit as string | null)
+      : (outer.current_unit_id as string) !== undefined
+      ? (outer.current_unit_id as string | null)
+      : (outer.current_unit as string) !== undefined
+      ? (outer.current_unit as string | null)
+      : undefined;
+
+  const starved =
+    inner.starved !== undefined
+      ? Boolean(inner.starved)
+      : outer.starved !== undefined
+      ? Boolean(outer.starved)
+      : undefined;
+
+  const good_count =
+    typeof inner.good_count === "number"
+      ? inner.good_count
+      : typeof outer.good_count === "number"
+      ? outer.good_count
+      : undefined;
+
+  const reject_count =
+    typeof inner.reject_count === "number"
+      ? inner.reject_count
+      : typeof outer.reject_count === "number"
+      ? outer.reject_count
+      : undefined;
+
   const readingsObj =
     (inner.metrics as Record<string, unknown>) ||
     (outer.readings as Record<string, unknown>) ||
@@ -396,6 +432,10 @@ export function parseTelemetryPayload(rawPayload: unknown): {
   return {
     status,
     sub_status,
+    ...(current_unit_id !== undefined ? { current_unit_id } : {}),
+    ...(starved !== undefined ? { starved } : {}),
+    ...(good_count !== undefined ? { good_count } : {}),
+    ...(reject_count !== undefined ? { reject_count } : {}),
     readings: readingsObj,
     vibration: vib,
   };
