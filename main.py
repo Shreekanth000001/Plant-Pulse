@@ -393,6 +393,8 @@ COMMON_TELEMETRY_FIELDS = {
 
 
 def _store_platform_unit_in_progress(plant_id: str, unit_id: str) -> None:
+    if plant_id not in plants_registry:
+        return
     if not Path(PLATFORM_DB_PATH).exists():
         return
     try:
@@ -501,6 +503,8 @@ def _store_qc_result(db, machine_id: str, payload: dict) -> None:
 
 
 def _store_platform_stage_event(plant_id: str, payload: dict, inner: dict) -> None:
+    if plant_id not in plants_registry:
+        return
     if not Path(PLATFORM_DB_PATH).exists():
         return
     try:
@@ -559,6 +563,8 @@ def _store_platform_stage_event(plant_id: str, payload: dict, inner: dict) -> No
 def _store_platform_qc_result(
     plant_id: str, machine_code: str, payload: dict, inner: dict
 ) -> None:
+    if plant_id not in plants_registry:
+        return
     if not Path(PLATFORM_DB_PATH).exists():
         return
     try:
@@ -1402,18 +1408,24 @@ def queue_depths() -> dict:
     return dict(latest_queue_depths)
 
 
-@app.get("/api/units")
-def recent_units(db: DbSession, limit: int = 20) -> list[dict]:
-    """Most recently created units, newest first — feeds the unit-lookup
+@app.get(
+    "/api/plants/{plant_id}/units",
+    dependencies=[Depends(verify_plant_viewer)],
+)
+def get_plant_recent_units(plant_id: str, db: DbSession, limit: int = 20) -> list[dict]:
+    """Most recently created units for a plant, newest first — feeds the unit-lookup
     page's 'recent units' list."""
+    plant = plants_registry.get(plant_id)
+    if not plant:
+        raise HTTPException(status_code=404, detail=f"Plant '{plant_id}' not found")
     limit = max(1, min(limit, 100))
     if Path(PLATFORM_DB_PATH).exists():
         conn = get_db_connection(PLATFORM_DB_PATH)
         try:
             cur = conn.cursor()
             cur.execute(
-                "SELECT unit_id, status, created_at FROM units ORDER BY created_at DESC LIMIT ?;",
-                (limit,),
+                "SELECT unit_id, status, created_at FROM units WHERE plant_id = ? ORDER BY created_at DESC LIMIT ?;",
+                (plant_id, limit),
             )
             p_rows = cur.fetchall()
             if p_rows:
@@ -1426,33 +1438,44 @@ def recent_units(db: DbSession, limit: int = 20) -> list[dict]:
                     for r in p_rows
                 ]
         except Exception:
-            log.exception("Failed to query recent units from platform.db")
+            log.exception(
+                "Failed to query recent units from platform.db for plant %s", plant_id
+            )
         finally:
             conn.close()
 
-    rows = db.query(Unit).order_by(Unit.created_at.desc()).limit(limit).all()
-    return [
-        {
-            "unit_id": u.unit_id,
-            "status": u.status,
-            "created_at": u.created_at.isoformat() if u.created_at else None,
-        }
-        for u in rows
-    ]
+    if plant_id == DEMO_PLANT_ID:
+        rows = db.query(Unit).order_by(Unit.created_at.desc()).limit(limit).all()
+        return [
+            {
+                "unit_id": u.unit_id,
+                "status": u.status,
+                "created_at": u.created_at.isoformat() if u.created_at else None,
+            }
+            for u in rows
+        ]
+    return []
 
 
-@app.get("/api/units/{unit_id}")
-def unit_history(db: DbSession, unit_id: str) -> dict:
-    """Full traceable journey for one unit — every stage it passed
+@app.get(
+    "/api/plants/{plant_id}/units/{unit_id}",
+    dependencies=[Depends(verify_plant_viewer)],
+)
+def get_plant_unit_history(plant_id: str, unit_id: str, db: DbSession) -> dict:
+    """Full traceable journey for one unit within a plant — every stage it passed
     through, plus its QC verdict if tested. This is the payoff of the
     whole traceability design: a real answer to 'why did this fail?'"""
+    plant = plants_registry.get(plant_id)
+    if not plant:
+        raise HTTPException(status_code=404, detail=f"Plant '{plant_id}' not found")
+
     if Path(PLATFORM_DB_PATH).exists():
         conn = get_db_connection(PLATFORM_DB_PATH)
         try:
             cur = conn.cursor()
             cur.execute(
-                "SELECT unit_id, status, created_at FROM units WHERE unit_id = ? LIMIT 1;",
-                (unit_id,),
+                "SELECT unit_id, status, created_at FROM units WHERE plant_id = ? AND unit_id = ? LIMIT 1;",
+                (plant_id, unit_id),
             )
             p_unit = cur.fetchone()
             if p_unit:
@@ -1462,18 +1485,18 @@ def unit_history(db: DbSession, unit_id: str) -> dict:
                            s.entered_at, s.exited_at, coalesce(m.area_code, 'housing') as sub_facility
                     FROM stage_events s
                     LEFT JOIN machines m ON s.plant_id = m.plant_id AND s.machine_code = m.machine_code
-                    WHERE s.unit_id = ?
+                    WHERE s.plant_id = ? AND s.unit_id = ?
                     ORDER BY s.entered_at;
                     """,
-                    (unit_id,),
+                    (plant_id, unit_id),
                 )
                 p_stages = cur.fetchall()
                 cur.execute(
                     """
                     SELECT outcome, probability, defect_type, attributed_stage, tested_at
-                    FROM qc_results WHERE unit_id = ? LIMIT 1;
+                    FROM qc_results WHERE plant_id = ? AND unit_id = ? LIMIT 1;
                     """,
-                    (unit_id,),
+                    (plant_id, unit_id),
                 )
                 p_qc = cur.fetchone()
                 return {
@@ -1516,52 +1539,17 @@ def unit_history(db: DbSession, unit_id: str) -> dict:
                 }
         except Exception:
             log.exception(
-                "Failed to query unit history from platform.db for %s", unit_id
+                "Failed to query unit history from platform.db for plant %s unit %s",
+                plant_id,
+                unit_id,
             )
         finally:
             conn.close()
 
-    unit = db.query(Unit).filter(Unit.unit_id == unit_id).first()
-    if unit:
-        stages = (
-            db.query(StageEvent)
-            .filter(StageEvent.unit_id == unit_id)
-            .order_by(StageEvent.entered_at)
-            .all()
-        )
-        qc = db.query(QCResult).filter(QCResult.unit_id == unit_id).first()
-
-        return {
-            "unit_id": unit.unit_id,
-            "status": unit.status,
-            "created_at": unit.created_at.isoformat() if unit.created_at else None,
-            "stages": [
-                {
-                    "sub_facility": s.sub_facility,
-                    "machine_id": s.machine_id,
-                    "outcome": s.outcome,
-                    "anomaly_score": s.anomaly_score,
-                    "readings": s.readings,
-                    "entered_at": s.entered_at.isoformat() if s.entered_at else None,
-                    "exited_at": s.exited_at.isoformat() if s.exited_at else None,
-                }
-                for s in stages
-            ],
-            "qc_result": None
-            if not qc
-            else {
-                "outcome": qc.outcome,
-                "probability": qc.probability,
-                "defect_type": qc.defect_type,
-                "attributed_stage": qc.attributed_stage,
-                "tested_at": qc.tested_at.isoformat() if qc.tested_at else None,
-            },
-        }
-
-    # If the unit is currently active on the manufacturing floor (e.g. Stage 1 Housing)
+    # If the unit is currently active on the manufacturing floor
     # but has not yet completed its first stage event:
     active_info = active_units.get(unit_id)
-    if active_info:
+    if active_info and active_info.get("plant_id") == plant_id:
         return {
             "unit_id": unit_id,
             "status": "in_progress",
@@ -1569,6 +1557,47 @@ def unit_history(db: DbSession, unit_id: str) -> dict:
             "stages": [],
             "qc_result": None,
         }
+
+    # Fallback for legacy demo database
+    if plant_id == DEMO_PLANT_ID:
+        unit = db.query(Unit).filter(Unit.unit_id == unit_id).first()
+        if unit:
+            stages = (
+                db.query(StageEvent)
+                .filter(StageEvent.unit_id == unit_id)
+                .order_by(StageEvent.entered_at)
+                .all()
+            )
+            qc = db.query(QCResult).filter(QCResult.unit_id == unit_id).first()
+
+            return {
+                "unit_id": unit.unit_id,
+                "status": unit.status,
+                "created_at": unit.created_at.isoformat() if unit.created_at else None,
+                "stages": [
+                    {
+                        "sub_facility": s.sub_facility,
+                        "machine_id": s.machine_id,
+                        "outcome": s.outcome,
+                        "anomaly_score": s.anomaly_score,
+                        "readings": s.readings,
+                        "entered_at": s.entered_at.isoformat()
+                        if s.entered_at
+                        else None,
+                        "exited_at": s.exited_at.isoformat() if s.exited_at else None,
+                    }
+                    for s in stages
+                ],
+                "qc_result": None
+                if not qc
+                else {
+                    "outcome": qc.outcome,
+                    "probability": qc.probability,
+                    "defect_type": qc.defect_type,
+                    "attributed_stage": qc.attributed_stage,
+                    "tested_at": qc.tested_at.isoformat() if qc.tested_at else None,
+                },
+            }
 
     raise HTTPException(status_code=404, detail="Unit not found")
 

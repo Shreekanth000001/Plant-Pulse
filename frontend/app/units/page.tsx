@@ -3,7 +3,9 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { fetchRecentUnits, getErrorMessage } from "../../lib/api";
+import { fetchRecentUnits, getErrorMessage, ApiError } from "../../lib/api";
+import { safeSessionStorageGet } from "../../lib/plant-utils";
+import { TokenEntryCard } from "../../components/telemetry/TokenEntryCard";
 import type { RecentUnitItem } from "../../types/factory";
 import { useFactoryWebSocket } from "../../context/WebSocketContext";
 
@@ -45,29 +47,54 @@ const STAGE_LABELS: Record<string, { label: string; icon: React.ReactNode }> = {
 
 export default function UnitsIndexPage() {
   const router = useRouter();
-  const { machines } = useFactoryWebSocket();
+  const {
+    machines,
+    selectedPlantId,
+    plantsList,
+    plantDefinition,
+    status,
+    isTokenRequired,
+    tokenError,
+    submitViewerToken,
+  } = useFactoryWebSocket();
 
   const [searchTerm, setSearchTerm] = useState("");
   const [recentUnits, setRecentUnits] = useState<RecentUnitItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [authRequired, setAuthRequired] = useState(false);
 
   const refreshRecent = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
-      const data = await fetchRecentUnits(30);
+      setAuthRequired(false);
+      const token = safeSessionStorageGet<string | null>(
+        `plantpulse_viewer_token_${selectedPlantId}`,
+        null
+      );
+      const data = await fetchRecentUnits(selectedPlantId, 30, token);
       setRecentUnits(data);
     } catch (err: unknown) {
-      setError(getErrorMessage(err, "Failed to load recent units"));
+      if (err instanceof ApiError && err.status === 401) {
+        setAuthRequired(true);
+        setError("Viewer token required to access units for this plant.");
+      } else {
+        setError(getErrorMessage(err, "Failed to load recent units"));
+      }
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectedPlantId]);
 
   useEffect(() => {
     let isMounted = true;
-    fetchRecentUnits(30)
+    const token = safeSessionStorageGet<string | null>(
+      `plantpulse_viewer_token_${selectedPlantId}`,
+      null
+    );
+
+    fetchRecentUnits(selectedPlantId, 30, token)
       .then((data) => {
         if (!isMounted) return;
         setRecentUnits(data);
@@ -75,14 +102,19 @@ export default function UnitsIndexPage() {
       })
       .catch((err: unknown) => {
         if (!isMounted) return;
-        setError(getErrorMessage(err, "Failed to load recent units"));
+        if (err instanceof ApiError && err.status === 401) {
+          setAuthRequired(true);
+          setError("Viewer token required to access units for this plant.");
+        } else {
+          setError(getErrorMessage(err, "Failed to load recent units"));
+        }
         setLoading(false);
       });
 
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [selectedPlantId]);
 
   // Extract currently active units from live machines telemetry
   const activeInFlightUnits = useMemo(() => {
@@ -166,6 +198,23 @@ export default function UnitsIndexPage() {
           </button>
         </form>
       </div>
+
+      {/* Viewer Authentication Form */}
+      {(isTokenRequired || status === "token_required" || authRequired) && (
+        <TokenEntryCard
+          plantName={
+            plantsList.find((p) => p.plant_id === selectedPlantId)?.name ||
+            plantDefinition?.name ||
+            selectedPlantId
+          }
+          plantId={selectedPlantId}
+          onSubmit={(token) => {
+            submitViewerToken(token);
+            setAuthRequired(false);
+          }}
+          error={tokenError}
+        />
+      )}
 
       {/* Section 1: Active In-Flight Units on Factory Floor */}
       <div className="bg-white rounded-3xl p-6 md:p-7 border border-slate-300 flex flex-col gap-4 shadow-sm">

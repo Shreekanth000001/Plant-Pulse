@@ -95,9 +95,13 @@ def test_retention_deletes_expired_rows_and_keeps_recent(test_db):
 
     conn = sqlite3.connect(test_db)
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM telemetry_values WHERE message_id LIKE 'old_msg_%'")
+    cur.execute(
+        "SELECT COUNT(*) FROM telemetry_values WHERE message_id LIKE 'old_msg_%'"
+    )
     old_count = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM telemetry_values WHERE message_id LIKE 'new_msg_%'")
+    cur.execute(
+        "SELECT COUNT(*) FROM telemetry_values WHERE message_id LIKE 'new_msg_%'"
+    )
     recent_count = cur.fetchone()[0]
     conn.close()
 
@@ -268,7 +272,9 @@ async def test_real_ingest_engine_writes_during_retention_cleanup(test_db):
     # Verify concurrent messages were committed into telemetry_values
     conn = sqlite3.connect(test_db)
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM telemetry_values WHERE message_id LIKE 'concurrent_msg_%'")
+    cur.execute(
+        "SELECT COUNT(*) FROM telemetry_values WHERE message_id LIKE 'concurrent_msg_%'"
+    )
     committed_concurrent = cur.fetchone()[0]
     conn.close()
     assert committed_concurrent >= 35 * 3  # each payload produces 3 metrics
@@ -307,4 +313,72 @@ async def test_retention_worker_loop_survives_exception(test_db):
         stop_event.set()
         await worker_task
 
-    assert len(calls) >= 2, f"Worker loop did not continue after exception! Calls: {calls}"
+    assert len(calls) >= 2, (
+        f"Worker loop did not continue after exception! Calls: {calls}"
+    )
+
+
+def test_retention_deletes_expired_traceability_and_keeps_recent(test_db):
+    """Retention cleanup deletes expired units, stage_events, and qc_results while keeping recent ones."""
+    now = datetime.now(UTC)
+    old_ts = (now - timedelta(days=45)).isoformat()
+    recent_ts = (now - timedelta(days=5)).isoformat()
+
+    conn = sqlite3.connect(test_db)
+    conn.execute("PRAGMA foreign_keys = ON")
+    # Insert old and recent units
+    conn.execute(
+        "INSERT INTO units (plant_id, unit_id, status, created_at, updated_at) VALUES (?, ?, 'passed', ?, ?)",
+        ("plant_demo_membrane", "unit_old_ret_1", old_ts, old_ts),
+    )
+    conn.execute(
+        "INSERT INTO units (plant_id, unit_id, status, created_at, updated_at) VALUES (?, ?, 'in_progress', ?, ?)",
+        ("plant_demo_membrane", "unit_recent_ret_1", recent_ts, recent_ts),
+    )
+    # Insert old and recent stage events
+    conn.execute(
+        "INSERT INTO stage_events (plant_id, unit_id, machine_code, message_id, outcome, readings, entered_at, exited_at) VALUES (?, ?, 'hm_01', 'msg_old_stg_1', 'ok', '{}', ?, ?)",
+        ("plant_demo_membrane", "unit_old_ret_1", old_ts, old_ts),
+    )
+    conn.execute(
+        "INSERT INTO stage_events (plant_id, unit_id, machine_code, message_id, outcome, readings, entered_at, exited_at) VALUES (?, ?, 'hm_01', 'msg_rec_stg_1', 'ok', '{}', ?, ?)",
+        ("plant_demo_membrane", "unit_recent_ret_1", recent_ts, recent_ts),
+    )
+    # Insert old and recent qc results
+    conn.execute(
+        "INSERT INTO qc_results (plant_id, unit_id, machine_code, message_id, outcome, probability, tested_at) VALUES (?, ?, 'qc_01', 'msg_old_qc_1', 'pass', 1.0, ?)",
+        ("plant_demo_membrane", "unit_old_ret_1", old_ts),
+    )
+    conn.execute(
+        "INSERT INTO qc_results (plant_id, unit_id, machine_code, message_id, outcome, probability, tested_at) VALUES (?, ?, 'qc_01', 'msg_rec_qc_1', 'pass', 1.0, ?)",
+        ("plant_demo_membrane", "unit_recent_ret_1", recent_ts),
+    )
+    conn.commit()
+    conn.close()
+
+    deleted, _vacuumed = run_retention_cleanup(
+        db_path=test_db, retention_days=30, batch_size=5
+    )
+    assert deleted == 3
+
+    conn = sqlite3.connect(test_db)
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM units WHERE unit_id = 'unit_old_ret_1'")
+    assert cur.fetchone()[0] == 0, "Expired unit was not deleted by retention cleanup"
+    cur.execute("SELECT COUNT(*) FROM units WHERE unit_id = 'unit_recent_ret_1'")
+    assert cur.fetchone()[0] == 1, "Recent unit was incorrectly deleted"
+
+    cur.execute("SELECT COUNT(*) FROM stage_events WHERE unit_id = 'unit_old_ret_1'")
+    assert cur.fetchone()[0] == 0, (
+        "Expired stage event was not deleted by retention cleanup"
+    )
+    cur.execute("SELECT COUNT(*) FROM stage_events WHERE unit_id = 'unit_recent_ret_1'")
+    assert cur.fetchone()[0] == 1, "Recent stage event was incorrectly deleted"
+
+    cur.execute("SELECT COUNT(*) FROM qc_results WHERE unit_id = 'unit_old_ret_1'")
+    assert cur.fetchone()[0] == 0, (
+        "Expired qc result was not deleted by retention cleanup"
+    )
+    cur.execute("SELECT COUNT(*) FROM qc_results WHERE unit_id = 'unit_recent_ret_1'")
+    assert cur.fetchone()[0] == 1, "Recent qc result was incorrectly deleted"
+    conn.close()

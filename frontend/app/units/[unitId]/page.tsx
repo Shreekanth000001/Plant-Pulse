@@ -4,6 +4,8 @@ import React, { useEffect, useState, useMemo, Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useParams } from "next/navigation";
 import { fetchUnitHistory, ApiError } from "../../../lib/api";
+import { safeSessionStorageGet } from "../../../lib/plant-utils";
+import { TokenEntryCard } from "../../../components/telemetry/TokenEntryCard";
 import type {
   UnitHistoryResponse,
   MachineStatus,
@@ -93,7 +95,16 @@ function UnitDetailContent() {
       ? rawParams.unitId[0]
       : "";
 
-  const { machines } = useFactoryWebSocket();
+  const {
+    machines,
+    selectedPlantId,
+    plantsList,
+    plantDefinition,
+    status,
+    isTokenRequired,
+    tokenError,
+    submitViewerToken,
+  } = useFactoryWebSocket();
 
   // Find if this unit is actively on any factory floor machine right now
   const activeMachine: MachineStatus | undefined = useMemo(() => {
@@ -107,6 +118,7 @@ function UnitDetailContent() {
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [authRequired, setAuthRequired] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
   const searchInput = draft ?? unitId;
 
@@ -114,17 +126,26 @@ function UnitDetailContent() {
     if (!unitId) return;
     let isMounted = true;
 
-    fetchUnitHistory(unitId)
+    const token = safeSessionStorageGet<string | null>(
+      `plantpulse_viewer_token_${selectedPlantId}`,
+      null
+    );
+
+    fetchUnitHistory(selectedPlantId, unitId, token)
       .then((data) => {
         if (!isMounted) return;
         setUnit(data);
         setNotFound(false);
         setErrorMessage(null);
+        setAuthRequired(false);
         setLoading(false);
       })
       .catch((err: unknown) => {
         if (!isMounted) return;
-        if (err instanceof ApiError && err.status === 404) {
+        if (err instanceof ApiError && err.status === 401) {
+          setAuthRequired(true);
+          setErrorMessage("Viewer authentication required for this plant.");
+        } else if (err instanceof ApiError && err.status === 404) {
           if (activeMachine) {
             setUnit({
               unit_id: unitId,
@@ -148,14 +169,18 @@ function UnitDetailContent() {
     return () => {
       isMounted = false;
     };
-  }, [unitId, activeMachine]);
+  }, [unitId, activeMachine, selectedPlantId]);
 
   // Polling for in-progress units to auto-update when stage finishes
   useEffect(() => {
     if (!unit || unit.status !== "in_progress") return;
 
     const interval = setInterval(() => {
-      fetchUnitHistory(unitId)
+      const token = safeSessionStorageGet<string | null>(
+        `plantpulse_viewer_token_${selectedPlantId}`,
+        null
+      );
+      fetchUnitHistory(selectedPlantId, unitId, token)
         .then((data) => {
           setUnit(data);
         })
@@ -165,7 +190,7 @@ function UnitDetailContent() {
     }, 3500);
 
     return () => clearInterval(interval);
-  }, [unit, unitId]);
+  }, [unit, unitId, selectedPlantId]);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -180,6 +205,31 @@ function UnitDetailContent() {
         <div className="w-8 h-8 rounded-full border-2 border-blue-600 border-t-transparent animate-spin" />
         <div className="text-xs text-slate-600 font-medium">
           Reconstructing traceability genealogy for {unitId}...
+        </div>
+      </div>
+    );
+  }
+
+  if (authRequired || isTokenRequired || status === "token_required") {
+    return (
+      <div className="max-w-2xl mx-auto my-8 flex flex-col gap-6">
+        <TokenEntryCard
+          plantName={
+            plantsList.find((p) => p.plant_id === selectedPlantId)?.name ||
+            plantDefinition?.name ||
+            selectedPlantId
+          }
+          plantId={selectedPlantId}
+          onSubmit={(token) => {
+            submitViewerToken(token);
+            setAuthRequired(false);
+          }}
+          error={tokenError}
+        />
+        <div className="text-center">
+          <Link href="/units" className="text-blue-600 hover:underline text-xs font-bold">
+            ← Return to Units Directory
+          </Link>
         </div>
       </div>
     );
