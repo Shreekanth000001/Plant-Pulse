@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -68,7 +69,7 @@ class AreaDefinition(BaseModel):
 
 class MQTTCredential(BaseModel):
     username: str
-    password: str
+    password: str | None = None
     client_id: str
 
 
@@ -180,6 +181,38 @@ class AdminPlantCreatedResponse(AdminPlantDetail):
     broker_reloaded: bool = True
 
 
+def get_plant_viewer_token_env(plant_id: str) -> str | None:
+    """Resolve viewer token for plant from environment variables."""
+    val = os.getenv(f"PLANT_{plant_id.upper()}_VIEWER_TOKEN")
+    if val:
+        return val
+    if plant_id.startswith("plant_"):
+        val = os.getenv(f"PLANT_{plant_id[6:].upper()}_VIEWER_TOKEN")
+        if val:
+            return val
+    else:
+        val = os.getenv(f"PLANT_PLANT_{plant_id.upper()}_VIEWER_TOKEN")
+        if val:
+            return val
+    return None
+
+
+def get_device_password_env(username: str) -> str | None:
+    """Resolve MQTT device password from environment variables."""
+    val = os.getenv(f"DEVICE_{username.upper()}_PASSWORD")
+    if val:
+        return val
+    if username.startswith("device_"):
+        val = os.getenv(f"DEVICE_{username[7:].upper()}_PASSWORD")
+        if val:
+            return val
+    if username == "device_plant_demo_membrane":
+        return os.getenv("MQTT_PASSWORD_DEMO") or os.getenv("MQTT_PASSWORD")
+    if username == "device_plant_water_district_9":
+        return os.getenv("WATER_MQTT_PASSWORD")
+    return None
+
+
 def load_plants(directory: Path) -> dict[str, PlantDefinition]:
     plants: dict[str, PlantDefinition] = {}
     for path in sorted(directory.glob("*.json")):
@@ -190,6 +223,14 @@ def load_plants(directory: Path) -> dict[str, PlantDefinition]:
             raise ValueError(f"Invalid plant definition {path.name}: {exc}") from exc
         if plant.plant_id in plants:
             raise ValueError(f"Duplicate plant_id '{plant.plant_id}' in {path.name}")
+
+        # Bind environment secrets if not present in definition
+        if not plant.viewer_token:
+            plant.viewer_token = get_plant_viewer_token_env(plant.plant_id)
+        for cred in plant.mqtt_credentials:
+            if not cred.password:
+                cred.password = get_device_password_env(cred.username)
+
         plants[plant.plant_id] = plant
     return plants
 

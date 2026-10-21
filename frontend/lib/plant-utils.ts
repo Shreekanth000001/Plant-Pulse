@@ -599,6 +599,37 @@ export function insertTimeGaps<T extends TimePointWithGaps>(
   return result;
 }
 
+export interface DemoHint {
+  plantId: string;
+  token: string;
+  message: string;
+}
 
+/**
+ * Returns demo access token hint for evaluating the water booster pump demo
+ * strictly when DEMO_HINTS is enabled.
+ */
+export function getDemoHintForPlant(
+  plantId: string,
+  demoHintsEnabled?: boolean | string
+): DemoHint | null {
+  const isEnabled =
+    demoHintsEnabled === true ||
+    demoHintsEnabled === "true" ||
+    demoHintsEnabled === "1";
 
+  if (!isEnabled) {
+    return null;
+  }
 
+  if (plantId === "plant_water_district_9") {
+    return {
+      plantId,
+      token: "district9_read_secret_token_889",
+      message:
+        "Demo Token: district9_read_secret_token_889 (configured via .env for evaluation)",
+    };
+  }
+
+  return null;
+}

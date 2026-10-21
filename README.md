@@ -69,6 +69,7 @@ flowchart LR
 ### Key Architectural Characteristics
 - **Heartbeat-as-Run Watchdog Protocol:** The simulator only runs while active browser viewers are connected. The API emits heartbeats every 5 seconds when viewers exist; after 30 seconds of silence, the simulator idles to prevent unconstrained SQLite database growth.
 - **Broker-Level Topic ACLs:** Edge credentials and topic access are compiled into Mosquitto password and ACL files (`plants/{plant_id}/#`) at boot. Broker port 1883 remains internal to the Docker network.
+- **Secret Seeding vs. Database Ownership:** Telemetry definition files (`plants/*.json`) contain zero plaintext secrets or device passwords. Environment variables (`PLANT_<ID>_VIEWER_TOKEN`, `DEVICE_<USERNAME>_PASSWORD`, etc.) seed the database on first boot. Once initialized, the database (`platform.db`) and the Admin API own plant secrets and viewer token hashes; environment variables only act as initial seeds and will not overwrite established database credentials.
 - **Narrow Telemetry Persistence:** Measurements are committed in batches (`telemetry_values`) with database-enforced idempotency (`UNIQUE(plant_id, message_id, signal_code)`).
 
 ---
@@ -160,7 +161,7 @@ npm run dev
 ## Testing & Quality Assurance
 
 ```bash
-# Backend pytest suite (62 tests)
+# Backend pytest suite
 pytest -v
 
 # Frontend unit tests
@@ -178,11 +179,10 @@ codespell --skip="*.db*,*.wal,*.shm,./venv,./frontend/node_modules,./frontend/.n
 
 This is a portfolio and learning project demonstrating distributed industrial IoT telemetry patterns. The following known limitations are intentionally documented:
 
-1. **Public Demo Plant Password in Git:** The MQTT device password for `plant_demo_membrane` (`demo_membrane_secure_token_123`) is stored in `plants/plant_demo_membrane.json` to allow the demo stack to boot and run out-of-the-box with zero setup. In real-world deployments, device tokens are injected via secret stores (e.g. HashiCorp Vault or AWS Secrets Manager) and never committed to source control.
-2. **REST Endpoints Not Protected by Viewer Token:** When a plant defines a `viewer_token` (`plant_water_district_9`), streaming WebSocket connections are refused with code 4401 (`token_required`), falling back to 5-second REST snapshot polling. However, `GET /api/plants/{plant_id}/machines/latest` is currently unauthenticated on the backend, exposing snapshot telemetry that the viewer token was intended to gate (cataloged for backend auth extension in issue #23).
-3. **SQLite Single-File Storage & No Retention Worker Yet:** Telemetry is persisted in a local SQLite file (`platform.db`) using WAL mode. The scheduled background task for 30-day retention cleanup is planned for a subsequent milestone; unconstrained long-term runs without retention will continuously grow the database file.
-4. **Faulted Machines Never Recover:** When a simulated machine's vibration exceeds the safety limit (7.0 mm/s), it transitions to `FAULT` permanently. Automated recovery and work-order clearing are not yet implemented.
-5. **No Backpressure in Simulator Queues:** Housing runs continuously with unlimited raw materials, so the queue in front of Membrane Casting grows without bound if upstream throughput exceeds downstream cycle times.
-6. **Weather Model is a Placeholder:** Ambient weather bias in defect modeling evaluates to a constant 0.0 until an external weather API integration is built.
-7. **Defect Patterns Exist by Construction:** QC defect probabilities are generated from mathematical formulas (shift-change bias + anomaly deviations) rather than real physical defect causes.
-8. **Viewer Token Removal:** The Admin API and UI do not support removing or clearing a viewer access token once configured on a plant (a blank token on update preserves the existing token hash). Making a protected plant public requires manual database intervention or recreation.
+1. **Secret Ownership & Environment Seeding:** Plant viewer tokens and device passwords are never stored in definition files (`plants/*.json`). Environment variables (`PLANT_<ID>_VIEWER_TOKEN`, `DEVICE_<USERNAME>_PASSWORD`, or demo fallbacks `MQTT_PASSWORD`/`WATER_MQTT_PASSWORD`) only provide initial seeds on first boot. After first boot, the platform database (`platform.db`) and the Admin API own the secrets and hashes; changing environment variables after the initial database sync will not overwrite existing credentials in the database unless updated via the Admin API.
+2. **Rate Limiting Behind Reverse Proxies (Shared IP):** Both the Admin and Viewer sliding-window rate limiters enforce throttling based on the client socket IP address without trusting `X-Forwarded-For` headers (to prevent IP spoofing attacks). When deploying behind a reverse proxy or load balancer without an upstream gateway that rewrites socket client addresses, all clients behind that proxy share the same rate-limiting bucket. Multiple failed attempts from one client behind a shared IP will lock out other clients on the same IP until the lockout duration expires.
+3. **Faulted Machines Never Recover:** When a simulated machine's vibration exceeds the safety limit (7.0 mm/s), it transitions to `FAULT` permanently. Automated recovery and work-order clearing are not yet implemented.
+4. **No Backpressure in Simulator Queues:** Housing runs continuously with unlimited raw materials, so the queue in front of Membrane Casting grows without bound if upstream throughput exceeds downstream cycle times.
+5. **Weather Model is a Placeholder:** Ambient weather bias in defect modeling evaluates to a constant 0.0 until an external weather API integration is built.
+6. **Defect Patterns Exist by Construction:** QC defect probabilities are generated from mathematical formulas (shift-change bias + anomaly deviations) rather than real physical defect causes.
+7. **Viewer Token Removal:** The Admin API and UI do not support removing or clearing a viewer access token once configured on a plant (a blank token on update preserves the existing token hash). Making a protected plant public requires manual database intervention or recreation.
