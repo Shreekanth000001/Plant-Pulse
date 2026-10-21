@@ -101,7 +101,14 @@ def verify_admin_token(
         )
 
     # 3. Header presence and format validation
-    if not authorization or not authorization.startswith("Bearer "):
+    if not authorization:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing or invalid Bearer token",
+        )
+
+    if not authorization.startswith("Bearer "):
+        admin_rate_limiter.record_failure(ip)
         raise HTTPException(
             status_code=401,
             detail="Missing or invalid Bearer token",
@@ -109,6 +116,7 @@ def verify_admin_token(
 
     token = authorization[7:].strip()
     if not token:
+        admin_rate_limiter.record_failure(ip)
         raise HTTPException(
             status_code=401,
             detail="Missing or invalid Bearer token",
