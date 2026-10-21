@@ -7,7 +7,6 @@
   "mqtt_credentials": [
     {
       "username": "device_plant_demo_membrane",
-      "password": "demo_membrane_secure_token_123",
       "client_id": "client_demo_membrane_sim"
     }
   ],

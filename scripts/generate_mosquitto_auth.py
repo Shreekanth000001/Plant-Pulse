@@ -98,7 +98,13 @@ def generate_auth_files(
 
     for plant in sorted(plants.values(), key=lambda p: p.plant_id):
         for cred in plant.mqtt_credentials:
-            passwd_lines.append(f"{cred.username}:{hash_password(cred.password)}")
+            pwd = cred.password
+            if not pwd:
+                raise ValueError(
+                    f"Missing MQTT password for device '{cred.username}' (plant '{plant.plant_id}'). "
+                    f"Configure DEVICE_{cred.username.upper()}_PASSWORD or appropriate environment variable."
+                )
+            passwd_lines.append(f"{cred.username}:{hash_password(pwd)}")
 
     _write_auth_file_atomic(passwd_path, "\n".join(passwd_lines) + "\n")
 

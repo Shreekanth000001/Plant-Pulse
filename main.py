@@ -48,7 +48,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from admin_auth import verify_admin_token
+from admin_auth import get_client_ip, verify_admin_token, viewer_rate_limiter
 from database import (
     QCResult,
     SessionLocal,
@@ -233,11 +233,25 @@ viewer_tracker = ViewerTracker(window_seconds=15.0)
 
 
 def verify_plant_viewer(
+    request: Request,
     plant_id: str,
     authorization: Annotated[str | None, Header()] = None,
 ) -> None:
-    """Verify bearer token for plant-scoped endpoints if plant has a viewer token configured."""
+    """Verify bearer token for plant-scoped endpoints if plant has a viewer token configured.
+    Enforces per-IP sliding-window lockout rate limiting on protected plants.
+    """
     viewer_tracker.record_poll()
+    ip = get_client_ip(request)
+
+    # 1. Lockout check runs before header parsing and token comparison
+    if viewer_rate_limiter.is_locked_out(ip):
+        retry_after = viewer_rate_limiter.retry_after(ip)
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed authentication attempts. Locked out.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     plant = plants_registry.get(plant_id)
     if not plant:
         raise HTTPException(status_code=404, detail=f"Plant '{plant_id}' not found")
@@ -254,16 +268,24 @@ def verify_plant_viewer(
     if not expected_hash:
         return
 
+    # 2. Header format validation - malformed headers count as failures
     if not authorization or not authorization.startswith("Bearer "):
+        viewer_rate_limiter.record_failure(ip)
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     token = authorization[7:].strip()
     if not token:
+        viewer_rate_limiter.record_failure(ip)
         raise HTTPException(status_code=401, detail="Unauthorized")
 
+    # 3. Constant-time token verification
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     if not hmac.compare_digest(token_hash, expected_hash):
+        viewer_rate_limiter.record_failure(ip)
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # 4. Success clears prior failures
+    viewer_rate_limiter.record_success(ip)
 
 
 class ConnectionManager:

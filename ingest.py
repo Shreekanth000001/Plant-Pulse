@@ -73,7 +73,7 @@ def sync_plant_definitions(
             ON CONFLICT (id) DO UPDATE SET
                 name = excluded.name,
                 timezone = excluded.timezone,
-                viewer_token_hash = excluded.viewer_token_hash
+                viewer_token_hash = COALESCE(excluded.viewer_token_hash, plants.viewer_token_hash)
             """,
             (
                 plant.plant_id,
@@ -84,21 +84,29 @@ def sync_plant_definitions(
         )
 
         for cred in plant.mqtt_credentials:
-            pwd = cred.password
-            p_hash = pwd if pwd.startswith("$7$") else hash_password_pbkdf2(pwd)
+            p_hash = (
+                (
+                    cred.password
+                    if cred.password.startswith("$7$")
+                    else hash_password_pbkdf2(cred.password)
+                )
+                if cred.password
+                else None
+            )
             cursor.execute(
                 """
                 INSERT INTO plant_credentials (plant_id, username, client_id, password_hash, is_active)
-                VALUES (?, ?, ?, ?, 1)
+                VALUES (?, ?, ?, COALESCE(?, ''), 1)
                 ON CONFLICT (plant_id, username) DO UPDATE SET
                     client_id = excluded.client_id,
-                    password_hash = excluded.password_hash,
+                    password_hash = COALESCE(?, plant_credentials.password_hash),
                     is_active = excluded.is_active
                 """,
                 (
                     plant.plant_id,
                     cred.username,
                     cred.client_id,
+                    p_hash,
                     p_hash,
                 ),
             )

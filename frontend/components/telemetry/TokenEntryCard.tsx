@@ -2,6 +2,8 @@
 
 import React, { useState } from "react";
 
+import { getDemoHintForPlant } from "../../lib/plant-utils";
+
 interface TokenEntryCardProps {
   plantName: string;
   plantId: string;
@@ -19,6 +21,11 @@ export function TokenEntryCard({
 }: TokenEntryCardProps) {
   const [tokenInput, setTokenInput] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+
+  const demoHint = getDemoHintForPlant(
+    plantId,
+    process.env.NEXT_PUBLIC_DEMO_HINTS
+  );
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -56,6 +63,30 @@ export function TokenEntryCard({
           Protected Plant
         </span>
       </div>
+
+      {demoHint && (
+        <div
+          role="status"
+          className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 font-medium"
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-amber-600 font-bold">💡</span>
+            <span>
+              Evaluation Hint: Use demo token{" "}
+              <code className="font-mono font-bold bg-amber-100 px-1.5 py-0.5 rounded text-amber-950">
+                {demoHint.token}
+              </code>
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setTokenInput(demoHint.token)}
+            className="text-2xs font-bold text-amber-800 hover:text-amber-950 underline cursor-pointer shrink-0 text-left"
+          >
+            Fill Demo Token
+          </button>
+        </div>
+      )}
 
       {error && (
         <div

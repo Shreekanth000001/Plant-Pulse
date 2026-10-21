@@ -9,8 +9,8 @@ from typing import Annotated, Any
 from fastapi import Header, HTTPException, Request
 
 
-class AdminRateLimiter:
-    """In-memory rate limiter and lockout tracker for admin endpoints."""
+class RateLimiter:
+    """In-memory rate limiter and lockout tracker."""
 
     def __init__(
         self,
@@ -67,10 +67,13 @@ class AdminRateLimiter:
             self._attempts.clear()
 
 
-admin_rate_limiter = AdminRateLimiter(max_attempts=5, lockout_seconds=60.0)
+AdminRateLimiter = RateLimiter
+admin_rate_limiter = RateLimiter(max_attempts=5, lockout_seconds=60.0)
+viewer_rate_limiter = RateLimiter(max_attempts=5, lockout_seconds=60.0)
 
 
 def get_client_ip(request: Request) -> str:
+    """Extract client socket host IP strictly, without trusting X-Forwarded-For."""
     if request.client and request.client.host:
         return request.client.host
     return "127.0.0.1"
