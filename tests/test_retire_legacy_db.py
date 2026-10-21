@@ -150,9 +150,10 @@ def test_grep_shows_zero_database_imports_and_import_main():
     # Check that database.py does not exist
     assert not os.path.exists("database.py"), "database.py should be deleted"
 
-    # Check grep across repo for 'from database import' and 'import database'
+    # Check grep across repo for importing database (excluding this test file)
+    pattern = "from " + "database import|" + "import " + "database"
     res = subprocess.run(
-        ["git", "grep", "-E", "from database import|import database"],
+        ["git", "grep", "-E", pattern, "--", ":!tests/test_retire_legacy_db.py"],
         check=False,
         capture_output=True,
         text=True,
