@@ -47,7 +47,9 @@ services:
         condition: service_healthy
     pid: "service:broker"
     ports:
-      - "8000:8000"
+      # Bind API port strictly to loopback (127.0.0.1) so reverse proxies / local browsers can connect,
+      # but prevent exposing backend endpoints directly on public network interfaces for VM deploys.
+      - "127.0.0.1:8000:8000"
     volumes:
       - platform_data:/app/data
       - mosquitto_auth:/mosquitto/auth
@@ -61,6 +63,8 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
       MOUNT_ADMIN_ENDPOINTS: ${MOUNT_ADMIN_ENDPOINTS:-false}
+      ENABLE_RETENTION_WORKER: ${ENABLE_RETENTION_WORKER:-true}
+      RETENTION_DAYS: ${RETENTION_DAYS:-30}
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
       interval: 5s

@@ -75,6 +75,12 @@ from plant_definitions import (
     load_plants,
     load_plants_from_db,
 )
+from retention import (
+    RetentionWorker,
+    get_retention_days,
+    get_retention_interval_seconds,
+    is_retention_worker_enabled,
+)
 from scripts.generate_mosquitto_auth import (
     hash_password_pbkdf2,
     sync_broker_auth_from_db,
@@ -755,9 +761,21 @@ async def lifespan(app: FastAPI):
 
     task = asyncio.create_task(mqtt_listener(), name="mqtt-listener")
     heartbeat_task = asyncio.create_task(heartbeat_emitter(), name="heartbeat-emitter")
+
+    retention_worker: RetentionWorker | None = None
+    if is_retention_worker_enabled():
+        retention_worker = RetentionWorker(
+            db_path=PLATFORM_DB_PATH,
+            retention_days=get_retention_days(),
+            interval_seconds=get_retention_interval_seconds(),
+        )
+        retention_worker.start()
+
     try:
         yield
     finally:
+        if retention_worker:
+            await retention_worker.stop()
         heartbeat_task.cancel()
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
