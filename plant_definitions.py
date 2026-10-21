@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
@@ -110,10 +110,11 @@ class PlantDefinition(BaseModel):
     name: str
     timezone: str = "UTC"
     viewer_token: str | None = None  # None indicates public demo plant
+    viewer_token_hash: str | None = None
     enabled_modules: list[
         Literal["core", "alarms", "product_traceability", "quality_inspection"]
     ] = ["core", "alarms"]
-    mqtt_credentials: list[MQTTCredential]
+    mqtt_credentials: list[MQTTCredential] = Field(default_factory=list)
     areas: list[AreaDefinition]
 
     @model_validator(mode="after")
@@ -137,12 +138,12 @@ class PlantDefinition(BaseModel):
 
     def to_public(self) -> PublicPlantDefinition:
         dump = self.model_dump()
-        dump["has_viewer_token"] = bool(self.viewer_token)
+        dump["has_viewer_token"] = bool(self.viewer_token or self.viewer_token_hash)
         return PublicPlantDefinition.model_validate(dump)
 
     def to_summary(self) -> PlantSummary:
         dump = self.model_dump()
-        dump["has_viewer_token"] = bool(self.viewer_token)
+        dump["has_viewer_token"] = bool(self.viewer_token or self.viewer_token_hash)
         return PlantSummary.model_validate(dump)
 
 
@@ -157,4 +158,118 @@ def load_plants(directory: Path) -> dict[str, PlantDefinition]:
         if plant.plant_id in plants:
             raise ValueError(f"Duplicate plant_id '{plant.plant_id}' in {path.name}")
         plants[plant.plant_id] = plant
+    return plants
+
+
+def load_plants_from_db(conn: Any) -> dict[str, PlantDefinition]:
+    """Load and reconstruct all plant definitions from the platform database."""
+    plants: dict[str, PlantDefinition] = {}
+    original_row_factory = conn.row_factory
+    import sqlite3
+
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, name, timezone, viewer_token_hash FROM plants ORDER BY id;"
+        )
+        plant_rows = cur.fetchall()
+
+        for p_row in plant_rows:
+            p_id = p_row["id"]
+            cur.execute(
+                "SELECT area_code, name, display_order FROM areas WHERE plant_id = ? ORDER BY display_order, area_code;",
+                (p_id,),
+            )
+            area_rows = cur.fetchall()
+            areas: list[AreaDefinition] = []
+            for a_row in area_rows:
+                a_code = a_row["area_code"]
+                cur.execute(
+                    "SELECT machine_code, name, machine_type, display_order FROM machines WHERE plant_id = ? AND area_code = ? ORDER BY display_order, machine_code;",
+                    (p_id, a_code),
+                )
+                machine_rows = cur.fetchall()
+                machines: list[MachineDefinition] = []
+                for m_row in machine_rows:
+                    m_code = m_row["machine_code"]
+                    cur.execute(
+                        """
+                        SELECT signal_code, name, unit, data_type, is_setpoint, setpoint_signal_code,
+                               normal_min, normal_max, warn_min, warn_max, alarm_min, alarm_max, display_order
+                        FROM signals
+                        WHERE plant_id = ? AND machine_code = ?
+                        ORDER BY display_order, signal_code;
+                        """,
+                        (p_id, m_code),
+                    )
+                    signal_rows = cur.fetchall()
+                    signals = [
+                        SignalDefinition(
+                            signal_code=s["signal_code"],
+                            name=s["name"],
+                            unit=s["unit"] or "",
+                            data_type=s["data_type"],
+                            is_setpoint=bool(s["is_setpoint"]),
+                            setpoint_signal_code=s["setpoint_signal_code"],
+                            normal_min=s["normal_min"],
+                            normal_max=s["normal_max"],
+                            warn_min=s["warn_min"],
+                            warn_max=s["warn_max"],
+                            alarm_min=s["alarm_min"],
+                            alarm_max=s["alarm_max"],
+                            display_order=s["display_order"],
+                        )
+                        for s in signal_rows
+                    ]
+                    machines.append(
+                        MachineDefinition(
+                            machine_code=m_code,
+                            name=m_row["name"],
+                            machine_type=m_row["machine_type"],
+                            display_order=m_row["display_order"],
+                            signals=signals,
+                        )
+                    )
+                areas.append(
+                    AreaDefinition(
+                        area_code=a_code,
+                        name=a_row["name"],
+                        display_order=a_row["display_order"],
+                        machines=machines,
+                    )
+                )
+
+            cur.execute(
+                "SELECT username, client_id, password_hash FROM plant_credentials WHERE plant_id = ?;",
+                (p_id,),
+            )
+            cred_rows = cur.fetchall()
+            creds = [
+                MQTTCredential(
+                    username=c["username"],
+                    password=c["password_hash"],
+                    client_id=c["client_id"],
+                )
+                for c in cred_rows
+            ]
+
+            enabled_modules = (
+                ["core", "alarms", "product_traceability", "quality_inspection"]
+                if p_id == "plant_demo_membrane"
+                else ["core", "alarms"]
+            )
+            plants[p_id] = PlantDefinition(
+                plant_id=p_id,
+                name=p_row["name"],
+                timezone=p_row["timezone"],
+                viewer_token=None,
+                viewer_token_hash=p_row["viewer_token_hash"],
+                enabled_modules=enabled_modules,
+                mqtt_credentials=creds,
+                areas=areas,
+            )
+    finally:
+        conn.row_factory = original_row_factory
+
     return plants
