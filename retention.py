@@ -8,14 +8,17 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from db import get_db_connection
+from db import ensure_partitions, forget_partition, get_db_connection
 
 logger = logging.getLogger("plantpulse.retention")
+
+PARTITION_PATTERN = re.compile(r"^telemetry_values_p(\d{4})_(\d{2})_(\d{2})$")
 
 DEFAULT_RETENTION_DAYS = 30
 DEFAULT_BATCH_SIZE = 50000
@@ -55,6 +58,61 @@ def check_free_page_ratio(conn: Any) -> tuple[int, int, float]:
     return 0, 0, 0.0
 
 
+def drop_expired_partitions(
+    conn: Any,
+    cutoff_date: date | None = None,
+    retention_days: int = DEFAULT_RETENTION_DAYS,
+) -> list[str]:
+    """Drop telemetry_values daily partitions strictly older than RETENTION_DAYS.
+
+    Only tables matching ^telemetry_values_p(\\d{4})_(\\d{2})_(\\d{2})$ that inherit
+    from telemetry_values in public schema are considered. Non-matching tables
+    are left completely untouched.
+    """
+    if not _table_exists(conn, "telemetry_values"):
+        return []
+
+    if cutoff_date is None:
+        cutoff_date = (datetime.now(UTC) - timedelta(days=retention_days)).date()
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT c.relname
+        FROM pg_inherits i
+        JOIN pg_class c ON c.oid = i.inhrelid
+        JOIN pg_class p ON p.oid = i.inhparent
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE p.relname = 'telemetry_values' AND n.nspname = 'public';
+        """
+    )
+    dropped: list[str] = []
+    rows = cur.fetchall()
+    for row in rows:
+        relname = row["relname"]
+        match = PARTITION_PATTERN.match(relname)
+        if not match:
+            continue
+        try:
+            year, month, day = (
+                int(match.group(1)),
+                int(match.group(2)),
+                int(match.group(3)),
+            )
+            part_date = date(year, month, day)
+        except ValueError:
+            continue
+
+        # Each daily partition covers [part_date, part_date + 1 day)
+        if part_date + timedelta(days=1) <= cutoff_date:
+            cur.execute(f'DROP TABLE IF EXISTS "public"."{relname}";')
+            dropped.append(relname)
+            forget_partition(relname)
+
+    conn.commit()
+    return dropped
+
+
 def _table_exists(conn: Any, table_name: str) -> bool:
     cur = conn.cursor()
     cur.execute(
@@ -64,33 +122,16 @@ def _table_exists(conn: Any, table_name: str) -> bool:
     return cur.fetchone() is not None
 
 
-def delete_expired_telemetry_batch(
-    conn: Any,
-    cutoff_iso: str,
-    batch_size: int = DEFAULT_BATCH_SIZE,
-) -> int:
-    """Delete a single batch of telemetry_values older than cutoff_iso."""
-    cur = conn.cursor()
-    cur.execute(
-        "DELETE FROM telemetry_values WHERE (device_timestamp, plant_id, message_id, signal_code) IN ("
-        "  SELECT device_timestamp, plant_id, message_id, signal_code FROM telemetry_values WHERE received_at < %s LIMIT %s"
-        ")",
-        (cutoff_iso, batch_size),
-    )
-    conn.commit()
-    return cur.rowcount
-
-
 def delete_expired_stage_events_batch(
     conn: Any,
     cutoff_iso: str,
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
-    """Delete a single batch of stage_events older than cutoff_iso."""
+    """Delete a single batch of stage_events older than cutoff_iso using composite keys."""
     cur = conn.cursor()
     cur.execute(
-        "DELETE FROM stage_events WHERE id IN ("
-        "  SELECT id FROM stage_events WHERE COALESCE(exited_at, entered_at) < %s LIMIT %s"
+        "DELETE FROM stage_events WHERE (plant_id, message_id) IN ("
+        "  SELECT plant_id, message_id FROM stage_events WHERE COALESCE(exited_at, entered_at) < %s LIMIT %s"
         ")",
         (cutoff_iso, batch_size),
     )
@@ -103,11 +144,11 @@ def delete_expired_qc_results_batch(
     cutoff_iso: str,
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
-    """Delete a single batch of qc_results older than cutoff_iso."""
+    """Delete a single batch of qc_results older than cutoff_iso using composite keys."""
     cur = conn.cursor()
     cur.execute(
-        "DELETE FROM qc_results WHERE id IN ("
-        "  SELECT id FROM qc_results WHERE tested_at < %s LIMIT %s"
+        "DELETE FROM qc_results WHERE (plant_id, message_id) IN ("
+        "  SELECT plant_id, message_id FROM qc_results WHERE tested_at < %s LIMIT %s"
         ")",
         (cutoff_iso, batch_size),
     )
@@ -120,7 +161,7 @@ def delete_expired_units_batch(
     cutoff_iso: str,
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
-    """Delete a single batch of units older than cutoff_iso."""
+    """Delete a single batch of units older than cutoff_iso using composite keys."""
     cur = conn.cursor()
     cur.execute(
         "DELETE FROM units WHERE (plant_id, unit_id) IN ("
@@ -138,33 +179,30 @@ def run_retention_cleanup(
     batch_size: int = DEFAULT_BATCH_SIZE,
     free_page_threshold: float = DEFAULT_FREE_PAGE_THRESHOLD,
     pause_between_batches: float = 0.02,
-) -> tuple[int, bool]:
+) -> tuple[int, list[str]]:
     """Execute retention policy cleanup on telemetry_values, stage_events, qc_results, and units.
 
-    Deletes expired rows in batches with brief pauses to avoid starvation of
-    concurrent writers. Returns (total_deleted, vacuum_executed).
+    Drops expired partitions of telemetry_values and deletes expired rows in batches from
+    stage_events, qc_results, and units. Pre-creates upcoming partitions daily.
+    Returns (total_deleted_rows, dropped_partitions).
     """
     cutoff = datetime.now(UTC) - timedelta(days=retention_days)
     cutoff_iso = cutoff.isoformat()
 
     total_deleted = 0
-    vacuum_executed = False
+    dropped_partitions: list[str] = []
 
     conn = get_db_connection(db_path)
     try:
-        # Purge telemetry values
-        if _table_exists(conn, "telemetry_values"):
-            while True:
-                deleted = delete_expired_telemetry_batch(
-                    conn, cutoff_iso, batch_size=batch_size
-                )
-                total_deleted += deleted
-                if deleted < batch_size:
-                    break
-                if pause_between_batches > 0:
-                    time.sleep(pause_between_batches)
+        # Pre-create upcoming partitions daily [today-1 .. today+7]
+        ensure_partitions(conn, days_behind=1, days_ahead=7)
 
-        # Purge stage events
+        # 1. Drop expired daily partitions of telemetry_values
+        dropped_partitions = drop_expired_partitions(
+            conn, cutoff_date=cutoff.date(), retention_days=retention_days
+        )
+
+        # 2. Purge stage events
         if _table_exists(conn, "stage_events"):
             while True:
                 deleted = delete_expired_stage_events_batch(
@@ -176,7 +214,7 @@ def run_retention_cleanup(
                 if pause_between_batches > 0:
                     time.sleep(pause_between_batches)
 
-        # Purge QC results
+        # 3. Purge QC results
         if _table_exists(conn, "qc_results"):
             while True:
                 deleted = delete_expired_qc_results_batch(
@@ -188,7 +226,7 @@ def run_retention_cleanup(
                 if pause_between_batches > 0:
                     time.sleep(pause_between_batches)
 
-        # Purge completed or failed units older than cutoff
+        # 4. Purge completed or failed units older than cutoff
         if _table_exists(conn, "units"):
             while True:
                 deleted = delete_expired_units_batch(
@@ -200,12 +238,17 @@ def run_retention_cleanup(
                 if pause_between_batches > 0:
                     time.sleep(pause_between_batches)
 
-        if total_deleted > 0:
-            logger.info("Retention deleted %d expired rows in batches.", total_deleted)
+        if total_deleted > 0 or dropped_partitions:
+            logger.info(
+                "Retention deleted %d expired rows and dropped %d partitions: %s",
+                total_deleted,
+                len(dropped_partitions),
+                dropped_partitions,
+            )
     finally:
         conn.close()
 
-    return total_deleted, vacuum_executed
+    return total_deleted, dropped_partitions
 
 
 async def retention_worker_loop(

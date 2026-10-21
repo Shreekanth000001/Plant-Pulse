@@ -85,11 +85,11 @@ def test_retention_deletes_expired_rows_and_keeps_recent(test_db):
     conn.commit()
     conn.close()
 
-    deleted, _vacuumed = run_retention_cleanup(
+    _deleted, dropped = run_retention_cleanup(
         db_path=test_db, retention_days=30, batch_size=5, free_page_threshold=0.20
     )
 
-    assert deleted == 15
+    assert len(dropped) >= 1
 
     conn = get_db_connection(str(test_db))
     cur = conn.cursor()
@@ -206,7 +206,7 @@ async def test_real_ingest_engine_writes_during_retention_cleanup(test_db):
     writer_task = asyncio.create_task(ingest_writer())
 
     # Run retention cleanup in background thread
-    deleted, _vacuumed = await asyncio.to_thread(
+    _deleted, dropped = await asyncio.to_thread(
         run_retention_cleanup,
         db_path=test_db,
         retention_days=30,
@@ -220,9 +220,11 @@ async def test_real_ingest_engine_writes_during_retention_cleanup(test_db):
 
     stop_event.set()
     await writer_task
+    # Allow engine worker to flush any in-flight queue items
+    await asyncio.sleep(0.1)
     await engine.stop()
 
-    assert deleted == 15000
+    assert len(dropped) >= 1
     assert len(write_errors) == 0, f"Ingest errors during cleanup: {write_errors}"
     assert len(write_latencies) >= 35
     max_latency_ms = max(write_latencies) * 1000
@@ -343,3 +345,154 @@ def test_retention_deletes_expired_traceability_and_keeps_recent(test_db):
     cur.execute("SELECT COUNT(*) as cnt FROM qc_results WHERE unit_id = 'unit_recent_ret_1'")
     assert cur.fetchone()["cnt"] == 1, "Recent qc result was incorrectly deleted"
     conn.close()
+
+
+def test_retention_drops_expired_partitions_and_keeps_recent(test_db):
+    """Criterion: Retention drops telemetry_values partitions older than RETENTION_DAYS and keeps recent partitions."""
+    now = datetime.now(UTC)
+    expired_dt = now - timedelta(days=45)
+    recent_dt = now - timedelta(days=5)
+
+    conn = get_db_connection(str(test_db))
+    expired_part = ensure_partition_for_timestamp(conn, expired_dt)
+    recent_part = ensure_partition_for_timestamp(conn, recent_dt)
+
+    # Insert data into both partitions
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO telemetry_values (plant_id, machine_code, signal_code, device_timestamp, received_at, message_id, value_num)
+        VALUES ('plant_demo_membrane', 'hm_01', 'mold_temp_actual', %s, %s, 'exp_msg', 42.0)
+        ON CONFLICT DO NOTHING;
+        """,
+        (expired_dt.isoformat(), expired_dt.isoformat()),
+    )
+    cur.execute(
+        """
+        INSERT INTO telemetry_values (plant_id, machine_code, signal_code, device_timestamp, received_at, message_id, value_num)
+        VALUES ('plant_demo_membrane', 'hm_01', 'mold_temp_actual', %s, %s, 'rec_msg', 43.0)
+        ON CONFLICT DO NOTHING;
+        """,
+        (recent_dt.isoformat(), recent_dt.isoformat()),
+    )
+    conn.commit()
+
+    # Verify both partitions exist before cleanup
+    cur.execute(
+        """
+        SELECT c.relname
+        FROM pg_inherits i
+        JOIN pg_class c ON c.oid = i.inhrelid
+        JOIN pg_class p ON p.oid = i.inhparent
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE p.relname = 'telemetry_values' AND n.nspname = 'public';
+        """
+    )
+    existing_parts = {r["relname"] for r in cur.fetchall()}
+    assert expired_part in existing_parts
+    assert recent_part in existing_parts
+    conn.close()
+
+    # Run cleanup
+    _deleted, dropped = run_retention_cleanup(
+        db_path=test_db, retention_days=30, batch_size=10
+    )
+
+    # Verify dropped list and partition presence in database
+    assert expired_part in dropped, f"Expected {expired_part} to be dropped, got: {dropped}"
+    assert recent_part not in dropped, f"Recent partition {recent_part} was dropped!"
+
+    conn = get_db_connection(str(test_db))
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = %s;",
+        (expired_part,),
+    )
+    assert cur.fetchone() is None, f"Expired partition table {expired_part} still exists!"
+
+    cur.execute(
+        "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = %s;",
+        (recent_part,),
+    )
+    assert cur.fetchone() is not None, f"Recent partition table {recent_part} was dropped!"
+
+    # Recent data is still queryable
+    cur.execute("SELECT COUNT(*) as cnt FROM telemetry_values WHERE message_id = 'rec_msg';")
+    assert cur.fetchone()["cnt"] == 1
+    conn.close()
+
+
+def test_retention_leaves_non_matching_tables_untouched(test_db):
+    """Criterion: Tables not strictly matching the partition naming pattern are left completely untouched."""
+    conn = get_db_connection(str(test_db))
+    cur = conn.cursor()
+
+    # Create tables that must never be dropped by retention
+    test_tables = [
+        "telemetry_values_backup",
+        "telemetry_values_p_manual_archive",
+        "other_table_p2020_01_01",
+        "telemetry_values_p9999_invalid_date",
+    ]
+    for tbl in test_tables:
+        cur.execute(f'CREATE TABLE IF NOT EXISTS "{tbl}" (id int);')
+    conn.commit()
+    conn.close()
+
+    # Run retention with strict 1-day retention
+    _deleted, dropped = run_retention_cleanup(
+        db_path=test_db, retention_days=1, batch_size=10
+    )
+
+    conn = get_db_connection(str(test_db))
+    cur = conn.cursor()
+    for tbl in test_tables:
+        assert tbl not in dropped, f"Non-matching table {tbl} was recorded as dropped!"
+        cur.execute(
+            "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = %s;",
+            (tbl,),
+        )
+        assert cur.fetchone() is not None, f"Non-matching table {tbl} was unexpectedly dropped!"
+
+    # Parent table telemetry_values itself must never be dropped
+    cur.execute(
+        "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'telemetry_values';"
+    )
+    assert cur.fetchone() is not None, "Parent table telemetry_values was dropped!"
+
+    # Clean up test tables
+    for tbl in test_tables:
+        cur.execute(f'DROP TABLE IF EXISTS "{tbl}";')
+    conn.commit()
+    conn.close()
+
+
+def test_retention_precreates_upcoming_partitions_daily(test_db):
+    """Criterion: Partition pre-creation runs daily for [today - 1 .. today + 7]."""
+    today = datetime.now(UTC).date()
+    expected_partitions = [
+        f"telemetry_values_p{(today + timedelta(days=i)).strftime('%Y_%m_%d')}"
+        for i in range(-1, 8)
+    ]
+
+    # Run retention cleanup
+    run_retention_cleanup(db_path=test_db, retention_days=30)
+
+    conn = get_db_connection(str(test_db))
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT c.relname
+        FROM pg_inherits i
+        JOIN pg_class c ON c.oid = i.inhrelid
+        JOIN pg_class p ON p.oid = i.inhparent
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE p.relname = 'telemetry_values' AND n.nspname = 'public';
+        """
+    )
+    existing_parts = {r["relname"] for r in cur.fetchall()}
+    conn.close()
+
+    for part in expected_partitions:
+        assert part in existing_parts, f"Partition {part} was not pre-created!"
+
