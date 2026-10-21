@@ -14,6 +14,9 @@ import {
   parse409Removals,
   canConfirmDelete,
   isSystemPlant,
+  parsePlantJson,
+  validatePlantDefinitionAdvisory,
+  exportPlantDefinitionJson,
   type FastApiValidationErrorDetail,
 } from "../lib/admin-api.ts";
 
@@ -412,4 +415,128 @@ test("deleteAdminPlant: sends DELETE request with Bearer header and returns stat
     globalThis.fetch = originalFetch;
   }
 });
+
+test("parsePlantJson: parses valid JSON fixture correctly", () => {
+  const fixturesDir = path.resolve(process.cwd(), "../tests/fixtures/plants");
+  const rawJson = fs.readFileSync(path.join(fixturesDir, "valid_minimal.json"), "utf-8");
+
+  const result = parsePlantJson(rawJson);
+  assert.strictEqual(result.success, true);
+  assert.strictEqual(result.error, null);
+  assert.strictEqual(result.data?.plant_id, "plant_minimal_fixture");
+  assert.strictEqual(Array.isArray(result.data?.areas), true);
+});
+
+test("parsePlantJson: extracts line and column position on syntax error", () => {
+  const malformedJson = `{\n  "plant_id": "bad_syntax",\n  "name": "Missing comma"\n  "areas": []\n}`;
+  const result = parsePlantJson(malformedJson);
+  assert.strictEqual(result.success, false);
+  assert.strictEqual(result.data, null);
+  assert.match(result.error || "", /line \d+|position \d+/i);
+});
+
+test("validatePlantDefinitionAdvisory: validates shared fixtures correctly", () => {
+  const fixturesDir = path.resolve(process.cwd(), "../tests/fixtures/plants");
+
+  // 1. valid_minimal -> valid
+  const valid = JSON.parse(
+    fs.readFileSync(path.join(fixturesDir, "valid_minimal.json"), "utf-8")
+  );
+  const validRes = validatePlantDefinitionAdvisory(valid);
+  assert.strictEqual(validRes.valid, true);
+  assert.deepStrictEqual(validRes.errors, {});
+
+  // 2. invalid_pattern -> pattern error on plant_id
+  const invPattern = JSON.parse(
+    fs.readFileSync(path.join(fixturesDir, "invalid_pattern.json"), "utf-8")
+  );
+  const patRes = validatePlantDefinitionAdvisory(invPattern);
+  assert.strictEqual(patRes.valid, false);
+  assert.match(patRes.errors["plant_id"] || "", /pattern|^[a-z0-9_]{3,64}$/i);
+
+  // 3. invalid_duplicate_signals -> error on duplicate signal
+  const invDup = JSON.parse(
+    fs.readFileSync(path.join(fixturesDir, "invalid_duplicate_signals.json"), "utf-8")
+  );
+  const dupRes = validatePlantDefinitionAdvisory(invDup);
+  assert.strictEqual(dupRes.valid, false);
+  assert.match(Object.values(dupRes.errors).join(" "), /duplicate|already defined/i);
+});
+
+test("Export Redaction: exported JSON raw string never contains sensitive token or password fields", () => {
+  const dirtyPlant = {
+    plant_id: "plant_secret_test",
+    name: "Secret Plant",
+    timezone: "UTC",
+    viewer_token: "super_secret_token_123",
+    viewer_token_hash: "hash_abcdef123456",
+    password: "secret_device_password",
+    password_hash: "pbkdf2_sha256$123456$hash",
+    device_usernames: ["device_plant_secret_test"],
+    mqtt_credentials: [
+      {
+        username: "device_plant_secret_test",
+        password: "secret_device_password",
+        password_hash: "pbkdf2_sha256$123456$hash",
+      },
+    ],
+    areas: [
+      {
+        area_code: "area_1",
+        name: "Area 1",
+        display_order: 1,
+        machines: [
+          {
+            machine_code: "mach_1",
+            name: "Machine 1",
+            machine_type: "standard",
+            display_order: 1,
+            signals: [
+              {
+                signal_code: "temp",
+                name: "Temp",
+                unit: "°C",
+                data_type: "float",
+                display_order: 1,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+
+  const exportedRaw = exportPlantDefinitionJson(dirtyPlant);
+
+  assert.strictEqual(typeof exportedRaw, "string");
+  // Check raw string directly:
+  assert.strictEqual(
+    /viewer_token/i.test(exportedRaw),
+    false,
+    "Raw string must not contain viewer_token"
+  );
+  assert.strictEqual(
+    /viewer_token_hash/i.test(exportedRaw),
+    false,
+    "Raw string must not contain viewer_token_hash"
+  );
+  assert.strictEqual(
+    /password/i.test(exportedRaw),
+    false,
+    "Raw string must not contain password"
+  );
+  assert.strictEqual(
+    /password_hash/i.test(exportedRaw),
+    false,
+    "Raw string must not contain password_hash"
+  );
+  assert.strictEqual(exportedRaw.includes("super_secret_token_123"), false);
+  assert.strictEqual(exportedRaw.includes("secret_device_password"), false);
+
+  const parsed = JSON.parse(exportedRaw);
+  assert.strictEqual(parsed.plant_id, "plant_secret_test");
+  assert.strictEqual(parsed.name, "Secret Plant");
+  assert.strictEqual(parsed.areas.length, 1);
+});
+
 
