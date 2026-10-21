@@ -245,6 +245,14 @@ class IngestEngine:
         """Total number of messages dropped due to queue saturation."""
         return self._dropped_total
 
+    def update_plant(self, plant: PlantDefinition) -> None:
+        """Update or register a plant definition in the in-memory plant set."""
+        self._plants[plant.plant_id] = plant
+
+    def remove_plant(self, plant_id: str) -> None:
+        """Remove a plant definition from the in-memory plant set."""
+        self._plants.pop(plant_id, None)
+
     async def start(self) -> None:
         """Start the background ingestion batch worker."""
         if self._running:
@@ -477,34 +485,52 @@ class IngestEngine:
             return 0
         cursor = self._conn.cursor()
         if metric_rows:
-            cursor.executemany(
-                """
-                INSERT OR IGNORE INTO telemetry_values (
-                    plant_id, machine_code, signal_code,
-                    device_timestamp, received_at, message_id,
-                    value_num, value_text
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                metric_rows,
+            sql = """
+            INSERT OR IGNORE INTO telemetry_values (
+                plant_id, machine_code, signal_code,
+                device_timestamp, received_at, message_id,
+                value_num, value_text
             )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            try:
+                cursor.executemany(sql, metric_rows)
+            except sqlite3.IntegrityError as exc:
+                if "FOREIGN KEY" in str(exc):
+                    for row in metric_rows:
+                        try:
+                            cursor.execute(sql, row)
+                        except sqlite3.IntegrityError:
+                            pass
+                else:
+                    raise
+
         if state_rows:
-            cursor.executemany(
-                """
-                INSERT INTO machine_states (
-                    plant_id, machine_code, state,
-                    sub_state, last_seen_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT (plant_id, machine_code) DO UPDATE SET
-                    state = excluded.state,
-                    sub_state = excluded.sub_state,
-                    last_seen_at = excluded.last_seen_at,
-                    updated_at = excluded.updated_at
-                WHERE excluded.last_seen_at > machine_states.last_seen_at;
-                """,
-                state_rows,
+            state_sql = """
+            INSERT INTO machine_states (
+                plant_id, machine_code, state,
+                sub_state, last_seen_at, updated_at
             )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (plant_id, machine_code) DO UPDATE SET
+                state = excluded.state,
+                sub_state = excluded.sub_state,
+                last_seen_at = excluded.last_seen_at,
+                updated_at = excluded.updated_at
+            WHERE excluded.last_seen_at > machine_states.last_seen_at;
+            """
+            try:
+                cursor.executemany(state_sql, state_rows)
+            except sqlite3.IntegrityError as exc:
+                if "FOREIGN KEY" in str(exc):
+                    for s_row in state_rows:
+                        try:
+                            cursor.execute(state_sql, s_row)
+                        except sqlite3.IntegrityError:
+                            pass
+                else:
+                    raise
+
         self._conn.commit()
         return len(metric_rows) + len(state_rows)
 

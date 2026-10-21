@@ -87,6 +87,7 @@ def get_mqtt_credentials() -> tuple[str | None, str | None]:
 
 PLATFORM_DB_PATH = os.getenv("PLATFORM_DB_PATH", "platform.db")
 PLANTS_DIR = Path(os.getenv("PLANTS_DIR", Path(__file__).resolve().parent / "plants"))
+SYSTEM_PLANT_IDS: frozenset[str] = frozenset({"plant_demo_membrane"})
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
@@ -179,6 +180,14 @@ class TicketStore:
             if record["expires_at"] < now:
                 return False
             return record["plant_id"] == plant_id
+
+    def revoke_plant(self, plant_id: str) -> None:
+        with self._lock:
+            to_del = [
+                t for t, rec in self._tickets.items() if rec.get("plant_id") == plant_id
+            ]
+            for t in to_del:
+                del self._tickets[t]
 
 
 ticket_store = TicketStore(max_capacity=1000, ttl_seconds=30.0)
@@ -302,6 +311,16 @@ class ConnectionManager:
                 self.disconnect_plant(plant_id, ws)
 
         await asyncio.gather(*(_send(ws) for ws in clients))
+
+    async def close_room(
+        self, plant_id: str, code: int = 4404, reason: str = "Plant deleted"
+    ) -> None:
+        clients = list(self._rooms.pop(plant_id, set()))
+        for ws in clients:
+            try:
+                await ws.close(code=code, reason=reason)
+            except (RuntimeError, OSError, ConnectionError, WebSocketDisconnect):
+                pass
 
 
 manager = ConnectionManager()
@@ -1260,100 +1279,484 @@ def admin_list_plants() -> list[AdminPlantSummary]:
         conn.close()
 
 
+def _batched_delete_telemetry(
+    conn: sqlite3.Connection,
+    plant_id: str,
+    machine_code: str | None = None,
+    signal_code: str | None = None,
+    batch_size: int = 5000,
+) -> int:
+    """Delete telemetry_values for a plant/machine/signal in batches to avoid write lock starvation."""
+    total_deleted = 0
+    cur = conn.cursor()
+
+    where_clauses = ["plant_id = ?"]
+    params: list[Any] = [plant_id]
+    if machine_code is not None:
+        where_clauses.append("machine_code = ?")
+        params.append(machine_code)
+    if signal_code is not None:
+        where_clauses.append("signal_code = ?")
+        params.append(signal_code)
+
+    where_sql = " AND ".join(where_clauses)
+    delete_sql = f"""
+    DELETE FROM telemetry_values
+    WHERE rowid IN (
+        SELECT rowid FROM telemetry_values
+        WHERE {where_sql}
+        LIMIT ?
+    )
+    """
+    while True:
+        cur.execute(delete_sql, params + [batch_size])
+        count = cur.rowcount
+        conn.commit()
+        total_deleted += count
+        if count < batch_size:
+            break
+        time.sleep(0.005)
+
+    return total_deleted
+
+
+def _sync_single_plant(
+    conn: sqlite3.Connection,
+    plant: PlantDefinition,
+    touch_credentials: bool = True,
+) -> None:
+    """Upsert plant, areas, machines, signals, and optionally credentials into platform.db."""
+    cursor = conn.cursor()
+    if plant.viewer_token:
+        viewer_token_hash = hashlib.sha256(
+            plant.viewer_token.encode("utf-8")
+        ).hexdigest()
+    elif plant.viewer_token_hash:
+        viewer_token_hash = plant.viewer_token_hash
+    else:
+        cursor.execute(
+            "SELECT viewer_token_hash FROM plants WHERE id = ?;", (plant.plant_id,)
+        )
+        row = cursor.fetchone()
+        viewer_token_hash = row["viewer_token_hash"] if row else None
+
+    cursor.execute(
+        """
+        INSERT INTO plants (id, name, timezone, viewer_token_hash)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT (id) DO UPDATE SET
+            name = excluded.name,
+            timezone = excluded.timezone,
+            viewer_token_hash = excluded.viewer_token_hash
+        """,
+        (
+            plant.plant_id,
+            plant.name,
+            plant.timezone,
+            viewer_token_hash,
+        ),
+    )
+
+    if touch_credentials:
+        for cred in plant.mqtt_credentials:
+            cursor.execute(
+                """
+                INSERT INTO plant_credentials (plant_id, username, client_id, password_hash, is_active)
+                VALUES (?, ?, ?, ?, 1)
+                ON CONFLICT (plant_id, username) DO UPDATE SET
+                    client_id = excluded.client_id,
+                    password_hash = excluded.password_hash,
+                    is_active = excluded.is_active
+                """,
+                (
+                    plant.plant_id,
+                    cred.username,
+                    cred.client_id,
+                    cred.password,
+                ),
+            )
+
+    for area in plant.areas:
+        cursor.execute(
+            """
+            INSERT INTO areas (plant_id, area_code, name, display_order)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT (plant_id, area_code) DO UPDATE SET
+                name = excluded.name,
+                display_order = excluded.display_order
+            """,
+            (plant.plant_id, area.area_code, area.name, area.display_order),
+        )
+
+        for machine in area.machines:
+            cursor.execute(
+                """
+                INSERT INTO machines (plant_id, machine_code, area_code, name, machine_type, display_order)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (plant_id, machine_code) DO UPDATE SET
+                    area_code = excluded.area_code,
+                    name = excluded.name,
+                    machine_type = excluded.machine_type,
+                    display_order = excluded.display_order
+                """,
+                (
+                    plant.plant_id,
+                    machine.machine_code,
+                    area.area_code,
+                    machine.name,
+                    machine.machine_type,
+                    machine.display_order,
+                ),
+            )
+
+            for sig in machine.signals:
+                cursor.execute(
+                    """
+                    INSERT INTO signals (
+                        plant_id, machine_code, signal_code, name, unit, data_type,
+                        is_setpoint, setpoint_signal_code, normal_min, normal_max,
+                        warn_min, warn_max, alarm_min, alarm_max, display_order
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (plant_id, machine_code, signal_code) DO UPDATE SET
+                        name = excluded.name,
+                        unit = excluded.unit,
+                        data_type = excluded.data_type,
+                        is_setpoint = excluded.is_setpoint,
+                        normal_min = excluded.normal_min,
+                        normal_max = excluded.normal_max,
+                        warn_min = excluded.warn_min,
+                        warn_max = excluded.warn_max,
+                        alarm_min = excluded.alarm_min,
+                        alarm_max = excluded.alarm_max,
+                        display_order = excluded.display_order
+                    """,
+                    (
+                        plant.plant_id,
+                        machine.machine_code,
+                        sig.signal_code,
+                        sig.name,
+                        sig.unit,
+                        sig.data_type,
+                        sig.is_setpoint,
+                        sig.normal_min,
+                        sig.normal_max,
+                        sig.warn_min,
+                        sig.warn_max,
+                        sig.alarm_min,
+                        sig.alarm_max,
+                        sig.display_order,
+                    ),
+                )
+
+            for sig in machine.signals:
+                if sig.setpoint_signal_code:
+                    cursor.execute(
+                        """
+                        UPDATE signals
+                        SET setpoint_signal_code = ?
+                        WHERE plant_id = ? AND machine_code = ? AND signal_code = ?
+                        """,
+                        (
+                            sig.setpoint_signal_code,
+                            plant.plant_id,
+                            machine.machine_code,
+                            sig.signal_code,
+                        ),
+                    )
+
+
+def _fetch_admin_plant_detail(
+    conn: sqlite3.Connection, plant_id: str
+) -> AdminPlantDetail:
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id, name, timezone, viewer_token_hash FROM plants WHERE id = ?;",
+        (plant_id,),
+    )
+    p_row = cur.fetchone()
+    if not p_row:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Plant '{plant_id}' not found",
+        )
+
+    cur.execute(
+        "SELECT area_code, name, display_order FROM areas WHERE plant_id = ? ORDER BY display_order, area_code;",
+        (plant_id,),
+    )
+    area_rows = cur.fetchall()
+    areas: list[AreaDefinition] = []
+    for a_row in area_rows:
+        a_code = a_row["area_code"]
+        cur.execute(
+            "SELECT machine_code, name, machine_type, display_order FROM machines WHERE plant_id = ? AND area_code = ? ORDER BY display_order, machine_code;",
+            (plant_id, a_code),
+        )
+        machine_rows = cur.fetchall()
+        machines: list[MachineDefinition] = []
+        for m_row in machine_rows:
+            m_code = m_row["machine_code"]
+            cur.execute(
+                """
+                SELECT signal_code, name, unit, data_type, is_setpoint, setpoint_signal_code,
+                       normal_min, normal_max, warn_min, warn_max, alarm_min, alarm_max, display_order
+                FROM signals
+                WHERE plant_id = ? AND machine_code = ?
+                ORDER BY display_order, signal_code;
+                """,
+                (plant_id, m_code),
+            )
+            signal_rows = cur.fetchall()
+            signals = [
+                SignalDefinition(
+                    signal_code=s["signal_code"],
+                    name=s["name"],
+                    unit=s["unit"] or "",
+                    data_type=s["data_type"],
+                    is_setpoint=bool(s["is_setpoint"]),
+                    setpoint_signal_code=s["setpoint_signal_code"],
+                    normal_min=s["normal_min"],
+                    normal_max=s["normal_max"],
+                    warn_min=s["warn_min"],
+                    warn_max=s["warn_max"],
+                    alarm_min=s["alarm_min"],
+                    alarm_max=s["alarm_max"],
+                    display_order=s["display_order"],
+                )
+                for s in signal_rows
+            ]
+            machines.append(
+                MachineDefinition(
+                    machine_code=m_code,
+                    name=m_row["name"],
+                    machine_type=m_row["machine_type"],
+                    display_order=m_row["display_order"],
+                    signals=signals,
+                )
+            )
+        areas.append(
+            AreaDefinition(
+                area_code=a_code,
+                name=a_row["name"],
+                display_order=a_row["display_order"],
+                machines=machines,
+            )
+        )
+
+    cur.execute(
+        "SELECT username FROM plant_credentials WHERE plant_id = ? ORDER BY username;",
+        (plant_id,),
+    )
+    cred_rows = cur.fetchall()
+    device_usernames = [c["username"] for c in cred_rows]
+
+    return AdminPlantDetail(
+        plant_id=p_row["id"],
+        name=p_row["name"],
+        timezone=p_row["timezone"],
+        has_viewer_token=bool(p_row["viewer_token_hash"]),
+        device_usernames=device_usernames,
+        areas=areas,
+    )
+
+
 @admin_router.get("/plants/{plant_id}", response_model=AdminPlantDetail)
 def admin_get_plant_detail(plant_id: str) -> AdminPlantDetail:
     conn = get_db_connection()
     try:
+        return _fetch_admin_plant_detail(conn, plant_id)
+    finally:
+        conn.close()
+
+
+@admin_router.post(
+    "/plants",
+    response_model=AdminPlantDetail,
+    status_code=201,
+)
+def admin_create_plant(plant: PlantDefinition) -> AdminPlantDetail:
+    conn = get_db_connection()
+    try:
         cur = conn.cursor()
-        cur.execute(
-            "SELECT id, name, timezone, viewer_token_hash FROM plants WHERE id = ?;",
-            (plant_id,),
+        cur.execute("SELECT 1 FROM plants WHERE id = ?;", (plant.plant_id,))
+        if cur.fetchone():
+            raise HTTPException(
+                status_code=409,
+                detail=f"Plant '{plant.plant_id}' already exists",
+            )
+
+        _sync_single_plant(conn, plant, touch_credentials=True)
+        conn.commit()
+
+        if plant.viewer_token and not plant.viewer_token_hash:
+            plant.viewer_token_hash = hashlib.sha256(
+                plant.viewer_token.encode("utf-8")
+            ).hexdigest()
+        plants_registry[plant.plant_id] = plant
+        if ingest_engine:
+            ingest_engine.update_plant(plant)
+
+        return _fetch_admin_plant_detail(conn, plant.plant_id)
+    finally:
+        conn.close()
+
+
+@admin_router.put(
+    "/plants/{plant_id}",
+    response_model=AdminPlantDetail,
+)
+async def admin_update_plant(
+    plant_id: str,
+    plant: PlantDefinition,
+    confirm_removals: bool = False,
+) -> AdminPlantDetail:
+    if plant.plant_id != plant_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Plant ID in path '{plant_id}' does not match body '{plant.plant_id}'",
         )
-        p_row = cur.fetchone()
-        if not p_row:
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM plants WHERE id = ?;", (plant_id,))
+        if not cur.fetchone():
             raise HTTPException(
                 status_code=404,
                 detail=f"Plant '{plant_id}' not found",
             )
 
+        cur.execute("SELECT area_code FROM areas WHERE plant_id = ?;", (plant_id,))
+        existing_areas = {r["area_code"] for r in cur.fetchall()}
+
         cur.execute(
-            "SELECT area_code, name, display_order FROM areas WHERE plant_id = ? ORDER BY display_order, area_code;",
+            "SELECT machine_code FROM machines WHERE plant_id = ?;", (plant_id,)
+        )
+        existing_machines = {r["machine_code"] for r in cur.fetchall()}
+
+        cur.execute(
+            "SELECT machine_code, signal_code FROM signals WHERE plant_id = ?;",
             (plant_id,),
         )
-        area_rows = cur.fetchall()
-        areas: list[AreaDefinition] = []
-        for a_row in area_rows:
-            a_code = a_row["area_code"]
-            cur.execute(
-                "SELECT machine_code, name, machine_type, display_order FROM machines WHERE plant_id = ? AND area_code = ? ORDER BY display_order, machine_code;",
-                (plant_id, a_code),
-            )
-            machine_rows = cur.fetchall()
-            machines: list[MachineDefinition] = []
-            for m_row in machine_rows:
-                m_code = m_row["machine_code"]
+        existing_signals = {
+            (r["machine_code"], r["signal_code"]) for r in cur.fetchall()
+        }
+
+        new_areas = {a.area_code for a in plant.areas}
+        new_machines = {m.machine_code for a in plant.areas for m in a.machines}
+        new_signals = {
+            (m.machine_code, s.signal_code)
+            for a in plant.areas
+            for m in a.machines
+            for s in m.signals
+        }
+
+        removed_areas = sorted(existing_areas - new_areas)
+        removed_machines = sorted(existing_machines - new_machines)
+        removed_signals = sorted(existing_signals - new_signals)
+
+        if removed_areas or removed_machines or removed_signals:
+            if not confirm_removals:
+                removals_summary = []
+                if removed_areas:
+                    removals_summary.append(f"areas: {removed_areas}")
+                if removed_machines:
+                    removals_summary.append(f"machines: {removed_machines}")
+                if removed_signals:
+                    removals_summary.append(
+                        f"signals: {[f'{m}:{s}' for m, s in removed_signals]}"
+                    )
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Updating plant would remove existing components ({', '.join(removals_summary)}). "
+                        "Pass ?confirm_removals=true to proceed."
+                    ),
+                )
+
+            for m_code, s_code in removed_signals:
+                if m_code not in removed_machines:
+                    await asyncio.to_thread(
+                        _batched_delete_telemetry, conn, plant_id, m_code, s_code
+                    )
+            for m_code in removed_machines:
+                await asyncio.to_thread(
+                    _batched_delete_telemetry, conn, plant_id, m_code
+                )
+
+            for m_code, s_code in removed_signals:
                 cur.execute(
-                    """
-                    SELECT signal_code, name, unit, data_type, is_setpoint, setpoint_signal_code,
-                           normal_min, normal_max, warn_min, warn_max, alarm_min, alarm_max, display_order
-                    FROM signals
-                    WHERE plant_id = ? AND machine_code = ?
-                    ORDER BY display_order, signal_code;
-                    """,
+                    "DELETE FROM signals WHERE plant_id = ? AND machine_code = ? AND signal_code = ?;",
+                    (plant_id, m_code, s_code),
+                )
+            for m_code in removed_machines:
+                cur.execute(
+                    "DELETE FROM machines WHERE plant_id = ? AND machine_code = ?;",
                     (plant_id, m_code),
                 )
-                signal_rows = cur.fetchall()
-                signals = [
-                    SignalDefinition(
-                        signal_code=s["signal_code"],
-                        name=s["name"],
-                        unit=s["unit"] or "",
-                        data_type=s["data_type"],
-                        is_setpoint=bool(s["is_setpoint"]),
-                        setpoint_signal_code=s["setpoint_signal_code"],
-                        normal_min=s["normal_min"],
-                        normal_max=s["normal_max"],
-                        warn_min=s["warn_min"],
-                        warn_max=s["warn_max"],
-                        alarm_min=s["alarm_min"],
-                        alarm_max=s["alarm_max"],
-                        display_order=s["display_order"],
-                    )
-                    for s in signal_rows
-                ]
-                machines.append(
-                    MachineDefinition(
-                        machine_code=m_code,
-                        name=m_row["name"],
-                        machine_type=m_row["machine_type"],
-                        display_order=m_row["display_order"],
-                        signals=signals,
-                    )
+            for a_code in removed_areas:
+                cur.execute(
+                    "DELETE FROM areas WHERE plant_id = ? AND area_code = ?;",
+                    (plant_id, a_code),
                 )
-            areas.append(
-                AreaDefinition(
-                    area_code=a_code,
-                    name=a_row["name"],
-                    display_order=a_row["display_order"],
-                    machines=machines,
-                )
+            conn.commit()
+
+        _sync_single_plant(conn, plant, touch_credentials=False)
+        conn.commit()
+
+        if plant.viewer_token:
+            plant.viewer_token_hash = hashlib.sha256(
+                plant.viewer_token.encode("utf-8")
+            ).hexdigest()
+        elif not plant.viewer_token_hash:
+            cur.execute(
+                "SELECT viewer_token_hash FROM plants WHERE id = ?;", (plant_id,)
+            )
+            v_row = cur.fetchone()
+            plant.viewer_token_hash = v_row["viewer_token_hash"] if v_row else None
+
+        plants_registry[plant.plant_id] = plant
+        if ingest_engine:
+            ingest_engine.update_plant(plant)
+
+        return _fetch_admin_plant_detail(conn, plant.plant_id)
+    finally:
+        conn.close()
+
+
+@admin_router.delete("/plants/{plant_id}")
+async def admin_delete_plant(plant_id: str) -> dict:
+    if plant_id in SYSTEM_PLANT_IDS:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot delete system plant '{plant_id}'",
+        )
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM plants WHERE id = ?;", (plant_id,))
+        if not cur.fetchone():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Plant '{plant_id}' not found",
             )
 
-        cur.execute(
-            "SELECT username FROM plant_credentials WHERE plant_id = ? ORDER BY username;",
-            (plant_id,),
-        )
-        cred_rows = cur.fetchall()
-        device_usernames = [c["username"] for c in cred_rows]
+        plants_registry.pop(plant_id, None)
+        if ingest_engine:
+            ingest_engine.remove_plant(plant_id)
+        plant_queue_depths.pop(plant_id, None)
+        ticket_store.revoke_plant(plant_id)
 
-        return AdminPlantDetail(
-            plant_id=p_row["id"],
-            name=p_row["name"],
-            timezone=p_row["timezone"],
-            has_viewer_token=bool(p_row["viewer_token_hash"]),
-            device_usernames=device_usernames,
-            areas=areas,
-        )
+        await manager.close_room(plant_id, code=4404, reason="Plant deleted")
+
+        await asyncio.to_thread(_batched_delete_telemetry, conn, plant_id)
+
+        cur.execute("DELETE FROM plants WHERE id = ?;", (plant_id,))
+        conn.commit()
+
+        return {"status": "deleted", "plant_id": plant_id}
     finally:
         conn.close()
 
