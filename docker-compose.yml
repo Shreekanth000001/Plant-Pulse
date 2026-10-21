@@ -43,6 +43,21 @@ services:
       start_period: 3s
     restart: unless-stopped
 
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-plantpulse}
+      POSTGRES_USER: ${POSTGRES_USER:-plantpulse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-plantpulse}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-plantpulse} -d $${POSTGRES_DB:-plantpulse}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   api:
     build:
       context: .
@@ -50,13 +65,14 @@ services:
     depends_on:
       broker:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     pid: "service:broker"
     ports:
       # Bind API port strictly to loopback (127.0.0.1) so reverse proxies / local browsers can connect,
       # but prevent exposing backend endpoints directly on public network interfaces for VM deploys.
       - "127.0.0.1:8000:8000"
     volumes:
-      - platform_data:/app/data
       - mosquitto_auth:/mosquitto/auth
     environment:
       MQTT_HOST: broker
@@ -68,8 +84,7 @@ services:
       DEVICE_DEVICE_PLANT_WATER_DISTRICT_9_PASSWORD: ${WATER_MQTT_PASSWORD:?WATER_MQTT_PASSWORD is required in .env}
       WATER_MQTT_PASSWORD: ${WATER_MQTT_PASSWORD:?WATER_MQTT_PASSWORD is required in .env}
       PLANT_WATER_DISTRICT_9_VIEWER_TOKEN: ${PLANT_WATER_DISTRICT_9_VIEWER_TOKEN:?PLANT_WATER_DISTRICT_9_VIEWER_TOKEN is required in .env}
-      PLATFORM_DB_PATH: /app/data/platform.db
-      DATABASE_URL: sqlite:////app/data/platform.db
+      DATABASE_URL: ${DATABASE_URL:-postgresql://plantpulse:plantpulse@postgres:5432/plantpulse}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
       MOUNT_ADMIN_ENDPOINTS: ${MOUNT_ADMIN_ENDPOINTS:-false}
@@ -134,4 +149,5 @@ services:
 volumes:
   mosquitto_auth:
   mosquitto_data:
-  platform_data:
+  postgres_data:
+

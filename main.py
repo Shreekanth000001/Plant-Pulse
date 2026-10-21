@@ -23,7 +23,6 @@ import math
 import os
 import re
 import secrets
-import sqlite3
 import threading
 import time
 import uuid
@@ -48,7 +47,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 
 from admin_auth import get_client_ip, verify_admin_token, viewer_rate_limiter
-from db import get_db_connection
+from db import ensure_partitions, get_database_url, get_db_connection
 from ingest import IngestEngine, sync_plant_definitions
 from plant_definitions import (
     AdminCredentialRotateResponse,
@@ -341,17 +340,15 @@ active_units: dict[str, dict[str, Any]] = {}
 def _store_platform_unit_in_progress(plant_id: str, unit_id: str) -> None:
     if plant_id not in plants_registry:
         return
-    if not Path(PLATFORM_DB_PATH).exists():
-        return
     try:
-        conn = get_db_connection(PLATFORM_DB_PATH)
+        conn = get_db_connection()
         with conn:
             conn.execute(
-                "INSERT OR IGNORE INTO units (plant_id, unit_id, status) VALUES (?, ?, 'in_progress');",
+                "INSERT INTO units (plant_id, unit_id, status) VALUES (%s, %s, 'in_progress') ON CONFLICT DO NOTHING;",
                 (plant_id, unit_id),
             )
     except Exception:
-        log.exception("Failed to store in-progress unit in platform.db for %s", unit_id)
+        log.exception("Failed to store in-progress unit in database for %s", unit_id)
     finally:
         conn.close()
 
@@ -359,10 +356,8 @@ def _store_platform_unit_in_progress(plant_id: str, unit_id: str) -> None:
 def _store_platform_stage_event(plant_id: str, payload: dict, inner: dict) -> None:
     if plant_id not in plants_registry:
         return
-    if not Path(PLATFORM_DB_PATH).exists():
-        return
     try:
-        conn = get_db_connection(PLATFORM_DB_PATH)
+        conn = get_db_connection()
         unit_id = inner["unit_id"]
         machine_code = (
             inner.get("machine_code")
@@ -371,7 +366,7 @@ def _store_platform_stage_event(plant_id: str, payload: dict, inner: dict) -> No
             or "hm_01"
         )
         message_id = payload.get("message_id") or str(uuid.uuid4())
-        is_starved = 1 if inner.get("is_starved") else 0
+        is_starved = bool(inner.get("is_starved"))
         entered_at = inner.get("entered_at")
         exited_at = inner.get("exited_at")
         outcome = inner.get("outcome") or "ok"
@@ -382,15 +377,16 @@ def _store_platform_stage_event(plant_id: str, payload: dict, inner: dict) -> No
 
         with conn:
             conn.execute(
-                "INSERT OR IGNORE INTO units (plant_id, unit_id, status) VALUES (?, ?, ?);",
+                "INSERT INTO units (plant_id, unit_id, status) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING;",
                 (plant_id, unit_id, "in_progress"),
             )
             conn.execute(
                 """
-                INSERT OR IGNORE INTO stage_events (
+                INSERT INTO stage_events (
                     plant_id, unit_id, machine_code, message_id, is_starved,
                     entered_at, exited_at, outcome, anomaly_score, readings
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (plant_id, message_id) DO NOTHING;
                 """,
                 (
                     plant_id,
@@ -407,7 +403,7 @@ def _store_platform_stage_event(plant_id: str, payload: dict, inner: dict) -> No
             )
     except Exception:
         log.exception(
-            "Failed to store stage_event in platform.db for unit %s",
+            "Failed to store stage_event in database for unit %s",
             inner.get("unit_id"),
         )
     finally:
@@ -419,10 +415,8 @@ def _store_platform_qc_result(
 ) -> None:
     if plant_id not in plants_registry:
         return
-    if not Path(PLATFORM_DB_PATH).exists():
-        return
     try:
-        conn = get_db_connection(PLATFORM_DB_PATH)
+        conn = get_db_connection()
         unit_id = inner["unit_id"]
         message_id = payload.get("message_id") or str(uuid.uuid4())
         outcome = inner.get("outcome") or "pass"
@@ -434,16 +428,17 @@ def _store_platform_qc_result(
 
         with conn:
             conn.execute(
-                "INSERT INTO units (plant_id, unit_id, status) VALUES (?, ?, ?) "
-                "ON CONFLICT(plant_id, unit_id) DO UPDATE SET status = excluded.status, updated_at = CURRENT_TIMESTAMP;",
+                "INSERT INTO units (plant_id, unit_id, status) VALUES (%s, %s, %s) "
+                "ON CONFLICT (plant_id, unit_id) DO UPDATE SET status = excluded.status, updated_at = CURRENT_TIMESTAMP;",
                 (plant_id, unit_id, status),
             )
             conn.execute(
                 """
-                INSERT OR IGNORE INTO qc_results (
+                INSERT INTO qc_results (
                     plant_id, unit_id, machine_code, message_id, tested_at,
                     outcome, probability, defect_type, attributed_stage
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (plant_id, message_id) DO NOTHING;
                 """,
                 (
                     plant_id,
@@ -459,7 +454,7 @@ def _store_platform_qc_result(
             )
     except Exception:
         log.exception(
-            "Failed to store qc_result in platform.db for unit %s", inner.get("unit_id")
+            "Failed to store qc_result in database for unit %s", inner.get("unit_id")
         )
     finally:
         conn.close()
@@ -715,43 +710,48 @@ async def mqtt_listener() -> None:
             delay = min(delay * 2, RECONNECT_MAX_S)
 
 
-def init_platform_db(db_path: Path | str = PLATFORM_DB_PATH) -> None:
-    """Ensure platform database schema exists via Alembic migrations."""
-    db_file = Path(db_path)
-    if db_file.exists():
-        try:
-            conn = get_db_connection(str(db_file))
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='machines';"
-            )
-            has_table = cursor.fetchone() is not None
-            conn.close()
-            if has_table:
-                return
-        except sqlite3.Error:
-            pass
-
+def init_platform_db(database_url: str | None = None) -> None:
+    """Ensure platform database schema exists via Alembic migrations and pre-create partitions."""
     from alembic import command
     from alembic.config import Config
 
+    if isinstance(database_url, str) and database_url.startswith(
+        ("postgresql://", "postgres://")
+    ):
+        url = database_url
+    else:
+        url = get_database_url()
+
     repo_root = Path(__file__).resolve().parent
     ini_path = repo_root / "alembic.ini"
-    if ini_path.exists():
-        alembic_cfg = Config(str(ini_path))
-        alembic_cfg.set_main_option("script_location", str(repo_root / "migrations"))
-        alembic_cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_file.resolve()}")
-        command.upgrade(alembic_cfg, "head")
+    alembic_url = url
+    if alembic_url.startswith("postgresql://") and not alembic_url.startswith("postgresql+psycopg://"):
+        alembic_url = alembic_url.replace("postgresql://", "postgresql+psycopg://", 1)
+
+    alembic_cfg = Config(str(ini_path))
+    alembic_cfg.set_main_option("script_location", str(repo_root / "migrations"))
+    alembic_cfg.set_main_option("sqlalchemy.url", alembic_url)
+    command.upgrade(alembic_cfg, "head")
+
+    if database_url is not None:
+        with get_db_connection(url) as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM plants;")
+                cur.execute("DELETE FROM telemetry_values;")
+            conn.commit()
+
+    ensure_partitions()
 
 
-def seed_plants_if_empty(conn: sqlite3.Connection, plants_dir: Path) -> bool:
-    """Seed plants from plants_dir into platform.db only if plants table is empty.
+def seed_plants_if_empty(conn: Any, plants_dir: Path) -> bool:
+    """Seed plants from plants_dir into database only if plants table is empty.
 
     Returns True if seeded, False if skipped. Never writes back to plants_dir.
     """
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM plants;")
-    count = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) as cnt FROM plants;")
+    row = cursor.fetchone()
+    count = row["cnt"] if isinstance(row, dict) else row[0]
     if count == 0 and plants_dir.exists():
         loaded = load_plants(plants_dir)
         sync_plant_definitions(conn, loaded)
@@ -762,9 +762,9 @@ def seed_plants_if_empty(conn: sqlite3.Connection, plants_dir: Path) -> bool:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global ingest_engine
-    init_platform_db(PLATFORM_DB_PATH)
+    init_platform_db()
 
-    conn = get_db_connection(PLATFORM_DB_PATH)
+    conn = get_db_connection()
     try:
         seed_plants_if_empty(conn, PLANTS_DIR)
         loaded = load_plants_from_db(conn)
@@ -783,16 +783,27 @@ async def lifespan(app: FastAPI):
     finally:
         conn.close()
 
-    ingest_engine = IngestEngine(db_path=PLATFORM_DB_PATH, plants=plants_registry)
+    ingest_engine = IngestEngine(plants=plants_registry)
     await ingest_engine.start()
 
     task = asyncio.create_task(mqtt_listener(), name="mqtt-listener")
     heartbeat_task = asyncio.create_task(heartbeat_emitter(), name="heartbeat-emitter")
 
+    async def partition_maintenance_worker():
+        while True:
+            try:
+                await asyncio.sleep(86400)
+                await asyncio.to_thread(ensure_partitions)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                log.exception("Daily partition maintenance failed")
+
+    part_task = asyncio.create_task(partition_maintenance_worker(), name="partition-worker")
+
     retention_worker: RetentionWorker | None = None
     if is_retention_worker_enabled():
         retention_worker = RetentionWorker(
-            db_path=PLATFORM_DB_PATH,
             retention_days=get_retention_days(),
             interval_seconds=get_retention_interval_seconds(),
         )
@@ -803,8 +814,11 @@ async def lifespan(app: FastAPI):
     finally:
         if retention_worker:
             await retention_worker.stop()
+        part_task.cancel()
         heartbeat_task.cancel()
         task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await part_task
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat_task
         with contextlib.suppress(asyncio.CancelledError):
@@ -878,10 +892,7 @@ def get_latest_plant_machines(plant_id: str) -> list[dict]:
     if not plant:
         raise HTTPException(status_code=404, detail=f"Plant '{plant_id}' not found")
 
-    if not Path(PLATFORM_DB_PATH).exists():
-        return []
-
-    conn = get_db_connection(PLATFORM_DB_PATH)
+    conn = get_db_connection()
     try:
         try:
             machines_rows = conn.execute(
@@ -891,12 +902,12 @@ def get_latest_plant_machines(plant_id: str) -> list[dict]:
                 FROM machines m
                 LEFT JOIN machine_states s
                   ON m.plant_id = s.plant_id AND m.machine_code = s.machine_code
-                WHERE m.plant_id = ?
+                WHERE m.plant_id = %s
                 ORDER BY m.display_order
                 """,
                 (plant_id,),
             ).fetchall()
-        except sqlite3.OperationalError:
+        except Exception:  # noqa: BLE001
             return []
 
         telemetry_rows = conn.execute(
@@ -905,10 +916,10 @@ def get_latest_plant_machines(plant_id: str) -> list[dict]:
                 SELECT machine_code, signal_code, device_timestamp, value_num, value_text,
                        ROW_NUMBER() OVER (
                            PARTITION BY machine_code, signal_code
-                           ORDER BY device_timestamp DESC, id DESC
+                           ORDER BY device_timestamp DESC, received_at DESC
                        ) as rn
                 FROM telemetry_values
-                WHERE plant_id = ?
+                WHERE plant_id = %s
             )
             SELECT machine_code, signal_code, device_timestamp, value_num, value_text
             FROM ranked_telemetry
@@ -1056,51 +1067,40 @@ def get_signal_history(
     clamped_points = min(max(points, 10), 500)
     bucket_sec = max(1, math.ceil(duration_seconds / (clamped_points - 1)))
 
-    if not Path(PLATFORM_DB_PATH).exists():
-        return {
-            "plant_id": plant_id,
-            "machine_code": machine_code,
-            "signal_code": signal_code,
-            "unit": signal.unit or "",
-            "start": start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "end": end_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "bucket_seconds": bucket_sec,
-            "total_points": 0,
-            "data": [],
-        }
-
     start_iso = start_dt.isoformat()
     end_iso = end_dt.isoformat()
 
-    conn = get_db_connection(PLATFORM_DB_PATH)
+    conn = get_db_connection()
     try:
-        rows = conn.execute(
+        cur = conn.cursor()
+        cur.execute(
             """
             SELECT
-                strftime('%Y-%m-%dT%H:%M:%SZ', datetime((CAST(strftime('%s', device_timestamp) AS INTEGER) / :bucket_sec) * :bucket_sec, 'unixepoch')) AS timestamp,
-                ROUND(AVG(value_num), 2) AS avg,
-                ROUND(MIN(value_num), 2) AS min,
-                ROUND(MAX(value_num), 2) AS max,
+                to_char(date_bin(MAKE_INTERVAL(secs => %s), device_timestamp, '1970-01-01 00:00:00+00'::timestamptz) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS timestamp,
+                ROUND(AVG(value_num)::numeric, 2)::float AS avg,
+                ROUND(MIN(value_num)::numeric, 2)::float AS min,
+                ROUND(MAX(value_num)::numeric, 2)::float AS max,
                 COUNT(value_num) AS count
             FROM telemetry_values
-            WHERE plant_id = :plant_id
-              AND machine_code = :machine_code
-              AND signal_code = :signal_code
+            WHERE plant_id = %s
+              AND machine_code = %s
+              AND signal_code = %s
               AND value_num IS NOT NULL
-              AND device_timestamp >= :start_iso
-              AND device_timestamp <= :end_iso
-            GROUP BY (CAST(strftime('%s', device_timestamp) AS INTEGER) / :bucket_sec)
-            ORDER BY timestamp ASC
+              AND device_timestamp >= %s
+              AND device_timestamp <= %s
+            GROUP BY 1
+            ORDER BY 1 ASC
             """,
-            {
-                "plant_id": plant_id,
-                "machine_code": machine_code,
-                "signal_code": signal_code,
-                "bucket_sec": bucket_sec,
-                "start_iso": start_iso,
-                "end_iso": end_iso,
-            },
-        ).fetchall()
+            (
+                bucket_sec,
+                plant_id,
+                machine_code,
+                signal_code,
+                start_iso,
+                end_iso,
+            ),
+        )
+        rows = cur.fetchall()
 
         data = [
             {
@@ -1166,30 +1166,33 @@ def get_plant_recent_units(plant_id: str, limit: int = 20) -> list[dict]:
     if not plant:
         raise HTTPException(status_code=404, detail=f"Plant '{plant_id}' not found")
     limit = max(1, min(limit, 100))
-    if Path(PLATFORM_DB_PATH).exists():
-        conn = get_db_connection(PLATFORM_DB_PATH)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT unit_id, status, created_at FROM units WHERE plant_id = ? ORDER BY created_at DESC LIMIT ?;",
-                (plant_id, limit),
-            )
-            p_rows = cur.fetchall()
-            if p_rows:
-                return [
-                    {
-                        "unit_id": r["unit_id"],
-                        "status": r["status"],
-                        "created_at": r["created_at"],
-                    }
-                    for r in p_rows
-                ]
-        except Exception:
-            log.exception(
-                "Failed to query recent units from platform.db for plant %s", plant_id
-            )
-        finally:
-            conn.close()
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT unit_id, status, created_at FROM units WHERE plant_id = %s ORDER BY created_at DESC LIMIT %s;",
+            (plant_id, limit),
+        )
+        p_rows = cur.fetchall()
+        if p_rows:
+            return [
+                {
+                    "unit_id": r["unit_id"],
+                    "status": r["status"],
+                    "created_at": (
+                        r["created_at"].isoformat()
+                        if hasattr(r["created_at"], "isoformat")
+                        else str(r["created_at"])
+                    ),
+                }
+                for r in p_rows
+            ]
+    except Exception:
+        log.exception(
+            "Failed to query recent units from database for plant %s", plant_id
+        )
+    finally:
+        conn.close()
 
     return []
 
@@ -1206,82 +1209,97 @@ def get_plant_unit_history(plant_id: str, unit_id: str) -> dict:
     if not plant:
         raise HTTPException(status_code=404, detail=f"Plant '{plant_id}' not found")
 
-    if Path(PLATFORM_DB_PATH).exists():
-        conn = get_db_connection(PLATFORM_DB_PATH)
-        try:
-            cur = conn.cursor()
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT unit_id, status, created_at FROM units WHERE plant_id = %s AND unit_id = %s LIMIT 1;",
+            (plant_id, unit_id),
+        )
+        p_unit = cur.fetchone()
+        if p_unit:
             cur.execute(
-                "SELECT unit_id, status, created_at FROM units WHERE plant_id = ? AND unit_id = ? LIMIT 1;",
+                """
+                SELECT s.machine_code, s.outcome, s.anomaly_score, s.readings,
+                       s.entered_at, s.exited_at, coalesce(m.area_code, 'housing') as sub_facility
+                FROM stage_events s
+                LEFT JOIN machines m ON s.plant_id = m.plant_id AND s.machine_code = m.machine_code
+                WHERE s.plant_id = %s AND s.unit_id = %s
+                ORDER BY s.entered_at;
+                """,
                 (plant_id, unit_id),
             )
-            p_unit = cur.fetchone()
-            if p_unit:
-                cur.execute(
-                    """
-                    SELECT s.machine_code, s.outcome, s.anomaly_score, s.readings,
-                           s.entered_at, s.exited_at, coalesce(m.area_code, 'housing') as sub_facility
-                    FROM stage_events s
-                    LEFT JOIN machines m ON s.plant_id = m.plant_id AND s.machine_code = m.machine_code
-                    WHERE s.plant_id = ? AND s.unit_id = ?
-                    ORDER BY s.entered_at;
-                    """,
-                    (plant_id, unit_id),
-                )
-                p_stages = cur.fetchall()
-                cur.execute(
-                    """
-                    SELECT outcome, probability, defect_type, attributed_stage, tested_at
-                    FROM qc_results WHERE plant_id = ? AND unit_id = ? LIMIT 1;
-                    """,
-                    (plant_id, unit_id),
-                )
-                p_qc = cur.fetchone()
-                return {
-                    "unit_id": p_unit["unit_id"],
-                    "status": p_unit["status"],
-                    "created_at": p_unit["created_at"],
-                    "stages": [
-                        {
-                            "sub_facility": (
-                                s["sub_facility"]
-                                or {
-                                    "hm": "housing",
-                                    "cs": "casting",
-                                    "am": "assembly",
-                                    "qc": "qc",
-                                }.get(s["machine_code"].split("_")[0], "housing")
-                            ),
-                            "machine_id": s["machine_code"],
-                            "outcome": s["outcome"],
-                            "anomaly_score": s["anomaly_score"],
-                            "readings": (
-                                json.loads(s["readings"])
-                                if isinstance(s["readings"], str)
-                                else (s["readings"] or {})
-                            ),
-                            "entered_at": s["entered_at"],
-                            "exited_at": s["exited_at"],
-                        }
-                        for s in p_stages
-                    ],
-                    "qc_result": None
-                    if not p_qc
-                    else {
-                        "outcome": p_qc["outcome"],
-                        "probability": p_qc["probability"],
-                        "defect_type": p_qc["defect_type"],
-                        "attributed_stage": p_qc["attributed_stage"],
-                        "tested_at": p_qc["tested_at"],
-                    },
-                }
-        except Exception:
-            log.exception(
-                "Failed to query unit history from platform.db for plant %s unit %s",
-                plant_id,
-                unit_id,
+            p_stages = cur.fetchall()
+            cur.execute(
+                """
+                SELECT outcome, probability, defect_type, attributed_stage, tested_at
+                FROM qc_results WHERE plant_id = %s AND unit_id = %s LIMIT 1;
+                """,
+                (plant_id, unit_id),
             )
-        finally:
-            conn.close()
+            p_qc = cur.fetchone()
+            return {
+                "unit_id": p_unit["unit_id"],
+                "status": p_unit["status"],
+                "created_at": (
+                    p_unit["created_at"].isoformat()
+                    if hasattr(p_unit["created_at"], "isoformat")
+                    else str(p_unit["created_at"])
+                ),
+                "stages": [
+                    {
+                        "sub_facility": (
+                            s["sub_facility"]
+                            or {
+                                "hm": "housing",
+                                "cs": "casting",
+                                "am": "assembly",
+                                "qc": "qc",
+                            }.get(s["machine_code"].split("_")[0], "housing")
+                        ),
+                        "machine_id": s["machine_code"],
+                        "outcome": s["outcome"],
+                        "anomaly_score": s["anomaly_score"],
+                        "readings": (
+                            json.loads(s["readings"])
+                            if isinstance(s["readings"], str)
+                            else (s["readings"] or {})
+                        ),
+                        "entered_at": (
+                            s["entered_at"].isoformat()
+                            if hasattr(s["entered_at"], "isoformat")
+                            else s["entered_at"]
+                        ),
+                        "exited_at": (
+                            s["exited_at"].isoformat()
+                            if hasattr(s["exited_at"], "isoformat")
+                            else s["exited_at"]
+                        ),
+                    }
+                    for s in p_stages
+                ],
+                "qc_result": None
+                if not p_qc
+                else {
+                    "outcome": p_qc["outcome"],
+                    "probability": p_qc["probability"],
+                    "defect_type": p_qc["defect_type"],
+                    "attributed_stage": p_qc["attributed_stage"],
+                    "tested_at": (
+                        p_qc["tested_at"].isoformat()
+                        if hasattr(p_qc["tested_at"], "isoformat")
+                        else p_qc["tested_at"]
+                    ),
+                },
+            }
+    except Exception:
+        log.exception(
+            "Failed to query unit history from database for plant %s unit %s",
+            plant_id,
+            unit_id,
+        )
+    finally:
+        conn.close()
 
     # If the unit is currently active on the manufacturing floor
     # but has not yet completed its first stage event:
@@ -1309,29 +1327,28 @@ def plant_defect_rate_by_hour(plant_id: str) -> list[dict]:
         raise HTTPException(status_code=404, detail=f"Plant '{plant_id}' not found")
 
     buckets: dict[str, dict[str, int]] = {}
-    if Path(PLATFORM_DB_PATH).exists():
-        conn = get_db_connection(PLATFORM_DB_PATH)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT strftime('%H', tested_at) as hour, outcome FROM qc_results WHERE plant_id = ?;",
-                (plant_id,),
-            )
-            p_rows = cur.fetchall()
-            for row in p_rows:
-                hour = row["hour"] or "00"
-                outcome = row["outcome"]
-                b = buckets.setdefault(hour, {"total": 0, "failed": 0})
-                b["total"] += 1
-                if outcome in ("fail", "failed"):
-                    b["failed"] += 1
-        except Exception:
-            log.exception(
-                "Failed to query defect-rate-by-hour from platform.db for plant %s",
-                plant_id,
-            )
-        finally:
-            conn.close()
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT to_char(tested_at, 'HH24') as hour, outcome FROM qc_results WHERE plant_id = %s;",
+            (plant_id,),
+        )
+        p_rows = cur.fetchall()
+        for row in p_rows:
+            hour = row["hour"] or "00"
+            outcome = row["outcome"]
+            b = buckets.setdefault(hour, {"total": 0, "failed": 0})
+            b["total"] += 1
+            if outcome in ("fail", "failed"):
+                b["failed"] += 1
+    except Exception:
+        log.exception(
+            "Failed to query defect-rate-by-hour from database for plant %s",
+            plant_id,
+        )
+    finally:
+        conn.close()
 
     return [
         {
@@ -1356,27 +1373,26 @@ def plant_defect_rate_by_stage(plant_id: str) -> list[dict]:
     if not plant:
         raise HTTPException(status_code=404, detail=f"Plant '{plant_id}' not found")
 
-    if Path(PLATFORM_DB_PATH).exists():
-        conn = get_db_connection(PLATFORM_DB_PATH)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT attributed_stage, count(*) as cnt FROM qc_results WHERE plant_id = ? AND outcome IN ('fail', 'failed') AND attributed_stage IS NOT NULL GROUP BY attributed_stage;",
-                (plant_id,),
-            )
-            p_rows = cur.fetchall()
-            if p_rows:
-                return [
-                    {"stage": row["attributed_stage"], "failures": row["cnt"]}
-                    for row in p_rows
-                ]
-        except Exception:
-            log.exception(
-                "Failed to query defect-rate-by-stage from platform.db for plant %s",
-                plant_id,
-            )
-        finally:
-            conn.close()
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT attributed_stage, count(*) as cnt FROM qc_results WHERE plant_id = %s AND outcome IN ('fail', 'failed') AND attributed_stage IS NOT NULL GROUP BY attributed_stage;",
+            (plant_id,),
+        )
+        p_rows = cur.fetchall()
+        if p_rows:
+            return [
+                {"stage": row["attributed_stage"], "failures": row["cnt"]}
+                for row in p_rows
+            ]
+    except Exception:
+        log.exception(
+            "Failed to query defect-rate-by-stage from database for plant %s",
+            plant_id,
+        )
+    finally:
+        conn.close()
 
     return []
 
@@ -1416,7 +1432,7 @@ def admin_list_plants() -> list[AdminPlantSummary]:
 
 
 def _batched_delete_telemetry(
-    conn: sqlite3.Connection,
+    conn: Any,
     plant_id: str,
     machine_code: str | None = None,
     signal_code: str | None = None,
@@ -1426,22 +1442,22 @@ def _batched_delete_telemetry(
     total_deleted = 0
     cur = conn.cursor()
 
-    where_clauses = ["plant_id = ?"]
+    where_clauses = ["plant_id = %s"]
     params: list[Any] = [plant_id]
     if machine_code is not None:
-        where_clauses.append("machine_code = ?")
+        where_clauses.append("machine_code = %s")
         params.append(machine_code)
     if signal_code is not None:
-        where_clauses.append("signal_code = ?")
+        where_clauses.append("signal_code = %s")
         params.append(signal_code)
 
     where_sql = " AND ".join(where_clauses)
     delete_sql = f"""
     DELETE FROM telemetry_values
-    WHERE rowid IN (
-        SELECT rowid FROM telemetry_values
+    WHERE (device_timestamp, plant_id, message_id, signal_code) IN (
+        SELECT device_timestamp, plant_id, message_id, signal_code FROM telemetry_values
         WHERE {where_sql}
-        LIMIT ?
+        LIMIT %s
     )
     """
     while True:
@@ -1457,11 +1473,11 @@ def _batched_delete_telemetry(
 
 
 def _sync_single_plant(
-    conn: sqlite3.Connection,
+    conn: Any,
     plant: PlantDefinition,
     touch_credentials: bool = True,
 ) -> list[AdminDeviceCredential]:
-    """Upsert plant, areas, machines, signals, and optionally credentials into platform.db."""
+    """Upsert plant, areas, machines, signals, and optionally credentials into database."""
     cursor = conn.cursor()
     if plant.viewer_token:
         viewer_token_hash = hashlib.sha256(
@@ -1471,7 +1487,7 @@ def _sync_single_plant(
         viewer_token_hash = plant.viewer_token_hash
     else:
         cursor.execute(
-            "SELECT viewer_token_hash FROM plants WHERE id = ?;", (plant.plant_id,)
+            "SELECT viewer_token_hash FROM plants WHERE id = %s;", (plant.plant_id,)
         )
         row = cursor.fetchone()
         viewer_token_hash = row["viewer_token_hash"] if row else None
@@ -1479,7 +1495,7 @@ def _sync_single_plant(
     cursor.execute(
         """
         INSERT INTO plants (id, name, timezone, viewer_token_hash)
-        VALUES (?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s)
         ON CONFLICT (id) DO UPDATE SET
             name = excluded.name,
             timezone = excluded.timezone,
@@ -1502,7 +1518,7 @@ def _sync_single_plant(
                 cursor.execute(
                     """
                     INSERT INTO plant_credentials (plant_id, username, client_id, password_hash, is_active)
-                    VALUES (?, ?, ?, ?, 1)
+                    VALUES (%s, %s, %s, %s, true)
                     ON CONFLICT (plant_id, username) DO UPDATE SET
                         client_id = excluded.client_id,
                         password_hash = excluded.password_hash,
@@ -1523,7 +1539,7 @@ def _sync_single_plant(
             cursor.execute(
                 """
                 INSERT INTO plant_credentials (plant_id, username, client_id, password_hash, is_active)
-                VALUES (?, ?, ?, ?, 1)
+                VALUES (%s, %s, %s, %s, true)
                 ON CONFLICT (plant_id, username) DO UPDATE SET
                     client_id = excluded.client_id,
                     password_hash = excluded.password_hash,
@@ -1544,7 +1560,7 @@ def _sync_single_plant(
         cursor.execute(
             """
             INSERT INTO areas (plant_id, area_code, name, display_order)
-            VALUES (?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s)
             ON CONFLICT (plant_id, area_code) DO UPDATE SET
                 name = excluded.name,
                 display_order = excluded.display_order
@@ -1556,7 +1572,7 @@ def _sync_single_plant(
             cursor.execute(
                 """
                 INSERT INTO machines (plant_id, machine_code, area_code, name, machine_type, display_order)
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT (plant_id, machine_code) DO UPDATE SET
                     area_code = excluded.area_code,
                     name = excluded.name,
@@ -1581,7 +1597,7 @@ def _sync_single_plant(
                         is_setpoint, setpoint_signal_code, normal_min, normal_max,
                         warn_min, warn_max, alarm_min, alarm_max, display_order
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (plant_id, machine_code, signal_code) DO UPDATE SET
                         name = excluded.name,
                         unit = excluded.unit,
@@ -1618,8 +1634,8 @@ def _sync_single_plant(
                     cursor.execute(
                         """
                         UPDATE signals
-                        SET setpoint_signal_code = ?
-                        WHERE plant_id = ? AND machine_code = ? AND signal_code = ?
+                        SET setpoint_signal_code = %s
+                        WHERE plant_id = %s AND machine_code = %s AND signal_code = %s
                         """,
                         (
                             sig.setpoint_signal_code,
@@ -1632,11 +1648,11 @@ def _sync_single_plant(
 
 
 def _fetch_admin_plant_detail(
-    conn: sqlite3.Connection, plant_id: str
+    conn: Any, plant_id: str
 ) -> AdminPlantDetail:
     cur = conn.cursor()
     cur.execute(
-        "SELECT id, name, timezone, viewer_token_hash FROM plants WHERE id = ?;",
+        "SELECT id, name, timezone, viewer_token_hash FROM plants WHERE id = %s;",
         (plant_id,),
     )
     p_row = cur.fetchone()
@@ -1647,7 +1663,7 @@ def _fetch_admin_plant_detail(
         )
 
     cur.execute(
-        "SELECT area_code, name, display_order FROM areas WHERE plant_id = ? ORDER BY display_order, area_code;",
+        "SELECT area_code, name, display_order FROM areas WHERE plant_id = %s ORDER BY display_order, area_code;",
         (plant_id,),
     )
     area_rows = cur.fetchall()
@@ -1655,7 +1671,7 @@ def _fetch_admin_plant_detail(
     for a_row in area_rows:
         a_code = a_row["area_code"]
         cur.execute(
-            "SELECT machine_code, name, machine_type, display_order FROM machines WHERE plant_id = ? AND area_code = ? ORDER BY display_order, machine_code;",
+            "SELECT machine_code, name, machine_type, display_order FROM machines WHERE plant_id = %s AND area_code = %s ORDER BY display_order, machine_code;",
             (plant_id, a_code),
         )
         machine_rows = cur.fetchall()
@@ -1667,7 +1683,7 @@ def _fetch_admin_plant_detail(
                 SELECT signal_code, name, unit, data_type, is_setpoint, setpoint_signal_code,
                        normal_min, normal_max, warn_min, warn_max, alarm_min, alarm_max, display_order
                 FROM signals
-                WHERE plant_id = ? AND machine_code = ?
+                WHERE plant_id = %s AND machine_code = %s
                 ORDER BY display_order, signal_code;
                 """,
                 (plant_id, m_code),
@@ -1710,7 +1726,7 @@ def _fetch_admin_plant_detail(
         )
 
     cur.execute(
-        "SELECT username FROM plant_credentials WHERE plant_id = ? ORDER BY username;",
+        "SELECT username FROM plant_credentials WHERE plant_id = %s ORDER BY username;",
         (plant_id,),
     )
     cred_rows = cur.fetchall()
@@ -1748,7 +1764,7 @@ async def admin_create_plant(
     conn = get_db_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT 1 FROM plants WHERE id = ?;", (plant.plant_id,))
+        cur.execute("SELECT 1 FROM plants WHERE id = %s;", (plant.plant_id,))
         if cur.fetchone():
             raise HTTPException(
                 status_code=409,
@@ -1807,23 +1823,23 @@ async def admin_update_plant(
     conn = get_db_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id FROM plants WHERE id = ?;", (plant_id,))
+        cur.execute("SELECT id FROM plants WHERE id = %s;", (plant_id,))
         if not cur.fetchone():
             raise HTTPException(
                 status_code=404,
                 detail=f"Plant '{plant_id}' not found",
             )
 
-        cur.execute("SELECT area_code FROM areas WHERE plant_id = ?;", (plant_id,))
+        cur.execute("SELECT area_code FROM areas WHERE plant_id = %s;", (plant_id,))
         existing_areas = {r["area_code"] for r in cur.fetchall()}
 
         cur.execute(
-            "SELECT machine_code FROM machines WHERE plant_id = ?;", (plant_id,)
+            "SELECT machine_code FROM machines WHERE plant_id = %s;", (plant_id,)
         )
         existing_machines = {r["machine_code"] for r in cur.fetchall()}
 
         cur.execute(
-            "SELECT machine_code, signal_code FROM signals WHERE plant_id = ?;",
+            "SELECT machine_code, signal_code FROM signals WHERE plant_id = %s;",
             (plant_id,),
         )
         existing_signals = {
@@ -1874,17 +1890,17 @@ async def admin_update_plant(
 
             for m_code, s_code in removed_signals:
                 cur.execute(
-                    "DELETE FROM signals WHERE plant_id = ? AND machine_code = ? AND signal_code = ?;",
+                    "DELETE FROM signals WHERE plant_id = %s AND machine_code = %s AND signal_code = %s;",
                     (plant_id, m_code, s_code),
                 )
             for m_code in removed_machines:
                 cur.execute(
-                    "DELETE FROM machines WHERE plant_id = ? AND machine_code = ?;",
+                    "DELETE FROM machines WHERE plant_id = %s AND machine_code = %s;",
                     (plant_id, m_code),
                 )
             for a_code in removed_areas:
                 cur.execute(
-                    "DELETE FROM areas WHERE plant_id = ? AND area_code = ?;",
+                    "DELETE FROM areas WHERE plant_id = %s AND area_code = %s;",
                     (plant_id, a_code),
                 )
             conn.commit()
@@ -1898,7 +1914,7 @@ async def admin_update_plant(
             ).hexdigest()
         elif not plant.viewer_token_hash:
             cur.execute(
-                "SELECT viewer_token_hash FROM plants WHERE id = ?;", (plant_id,)
+                "SELECT viewer_token_hash FROM plants WHERE id = %s;", (plant_id,)
             )
             v_row = cur.fetchone()
             plant.viewer_token_hash = v_row["viewer_token_hash"] if v_row else None
@@ -1923,7 +1939,7 @@ async def admin_rotate_plant_credentials(
     conn = get_db_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id FROM plants WHERE id = ?;", (plant_id,))
+        cur.execute("SELECT id FROM plants WHERE id = %s;", (plant_id,))
         if not cur.fetchone():
             raise HTTPException(
                 status_code=404,
@@ -1931,7 +1947,7 @@ async def admin_rotate_plant_credentials(
             )
 
         cur.execute(
-            "SELECT username, client_id FROM plant_credentials WHERE plant_id = ? ORDER BY username LIMIT 1;",
+            "SELECT username, client_id FROM plant_credentials WHERE plant_id = %s ORDER BY username LIMIT 1;",
             (plant_id,),
         )
         row = cur.fetchone()
@@ -1948,7 +1964,7 @@ async def admin_rotate_plant_credentials(
         cur.execute(
             """
             INSERT INTO plant_credentials (plant_id, username, client_id, password_hash, is_active)
-            VALUES (?, ?, ?, ?, 1)
+            VALUES (%s, %s, %s, %s, true)
             ON CONFLICT (plant_id, username) DO UPDATE SET
                 client_id = excluded.client_id,
                 password_hash = excluded.password_hash,
@@ -1991,7 +2007,7 @@ async def admin_delete_plant(plant_id: str) -> dict:
     conn = get_db_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id FROM plants WHERE id = ?;", (plant_id,))
+        cur.execute("SELECT id FROM plants WHERE id = %s;", (plant_id,))
         if not cur.fetchone():
             raise HTTPException(
                 status_code=404,
@@ -2008,8 +2024,8 @@ async def admin_delete_plant(plant_id: str) -> dict:
 
         await asyncio.to_thread(_batched_delete_telemetry, conn, plant_id)
 
-        cur.execute("DELETE FROM plant_credentials WHERE plant_id = ?;", (plant_id,))
-        cur.execute("DELETE FROM plants WHERE id = ?;", (plant_id,))
+        cur.execute("DELETE FROM plant_credentials WHERE plant_id = %s;", (plant_id,))
+        cur.execute("DELETE FROM plants WHERE id = %s;", (plant_id,))
         conn.commit()
 
         broker_reloaded = False

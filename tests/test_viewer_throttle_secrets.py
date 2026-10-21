@@ -1,7 +1,6 @@
 import hashlib
 import json
 import socket
-import sqlite3
 import threading
 import time
 import urllib.error
@@ -281,77 +280,59 @@ def test_plant_json_files_contain_no_secrets():
 
 def test_sync_plant_definitions_preserves_existing_hashes():
     """Criterion 2 & 3: sync_plant_definitions with omitted secrets does not overwrite existing DB hashes."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute(
-        """
-        CREATE TABLE plants (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            timezone TEXT NOT NULL DEFAULT 'UTC',
-            viewer_token_hash TEXT
-        );
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE plant_credentials (
-            plant_id TEXT NOT NULL,
-            username TEXT NOT NULL,
-            client_id TEXT NOT NULL,
-            password_hash TEXT NOT NULL,
-            is_active INTEGER NOT NULL DEFAULT 1,
-            PRIMARY KEY (plant_id, username)
-        );
-        """
-    )
-    conn.execute(
-        "CREATE TABLE areas (plant_id TEXT, area_code TEXT, name TEXT, display_order INT, PRIMARY KEY(plant_id, area_code));"
-    )
-    conn.execute(
-        "CREATE TABLE machines (plant_id TEXT, machine_code TEXT, area_code TEXT, name TEXT, machine_type TEXT, display_order INT, PRIMARY KEY(plant_id, machine_code));"
-    )
-    conn.execute(
-        "CREATE TABLE signals (plant_id TEXT, machine_code TEXT, signal_code TEXT, name TEXT, unit TEXT, data_type TEXT, is_setpoint INT, setpoint_signal_code TEXT, normal_min REAL, normal_max REAL, warn_min REAL, warn_max REAL, alarm_min REAL, alarm_max REAL, display_order INT, PRIMARY KEY(plant_id, machine_code, signal_code));"
-    )
+    from db import get_db_connection
 
-    original_hash = hashlib.sha256(b"existing_secret_token").hexdigest()
-    conn.execute(
-        "INSERT INTO plants (id, name, timezone, viewer_token_hash) VALUES ('test_p1', 'Test Plant', 'UTC', ?)",
-        (original_hash,),
-    )
-    original_pwd_hash = "$7$101$salted$hash"
-    conn.execute(
-        "INSERT INTO plant_credentials (plant_id, username, client_id, password_hash) VALUES ('test_p1', 'u1', 'c1', ?)",
-        (original_pwd_hash,),
-    )
-    conn.commit()
+    conn = get_db_connection()
+    try:
+        original_hash = hashlib.sha256(b"existing_secret_token").hexdigest()
+        conn.execute(
+            """
+            INSERT INTO plants (id, name, timezone, viewer_token_hash)
+            VALUES ('test_p1', 'Test Plant', 'UTC', %s)
+            ON CONFLICT (id) DO UPDATE SET viewer_token_hash = excluded.viewer_token_hash;
+            """,
+            (original_hash,),
+        )
+        original_pwd_hash = "$7$101$salted$hash"
+        conn.execute(
+            """
+            INSERT INTO plant_credentials (plant_id, username, client_id, password_hash)
+            VALUES ('test_p1', 'u1', 'c1', %s)
+            ON CONFLICT (plant_id, username) DO UPDATE SET password_hash = excluded.password_hash;
+            """,
+            (original_pwd_hash,),
+        )
+        conn.commit()
 
-    plant = PlantDefinition(
-        plant_id="test_p1",
-        name="Updated Plant Name",
-        timezone="UTC",
-        viewer_token=None,
-        viewer_token_hash=None,
-        mqtt_credentials=[MQTTCredential(username="u1", client_id="c1", password=None)],
-        areas=[],
-    )
+        plant = PlantDefinition(
+            plant_id="test_p1",
+            name="Updated Plant Name",
+            timezone="UTC",
+            viewer_token=None,
+            viewer_token_hash=None,
+            mqtt_credentials=[MQTTCredential(username="u1", client_id="c1", password=None)],
+            areas=[],
+        )
 
-    sync_plant_definitions(conn, {"test_p1": plant})
+        sync_plant_definitions(conn, {"test_p1": plant})
 
-    cur = conn.cursor()
-    cur.execute("SELECT name, viewer_token_hash FROM plants WHERE id = 'test_p1'")
-    p_row = cur.fetchone()
-    assert p_row["name"] == "Updated Plant Name"
-    assert p_row["viewer_token_hash"] == original_hash, (
-        f"viewer_token_hash was overwritten! Expected {original_hash}, got {p_row['viewer_token_hash']}"
-    )
+        cur = conn.cursor()
+        cur.execute("SELECT name, viewer_token_hash FROM plants WHERE id = 'test_p1'")
+        p_row = cur.fetchone()
+        assert p_row["name"] == "Updated Plant Name"
+        assert p_row["viewer_token_hash"] == original_hash, (
+            f"viewer_token_hash was overwritten! Expected {original_hash}, got {p_row['viewer_token_hash']}"
+        )
 
-    cur.execute(
-        "SELECT password_hash FROM plant_credentials WHERE plant_id = 'test_p1' AND username = 'u1'"
-    )
-    c_row = cur.fetchone()
-    assert c_row["password_hash"] == original_pwd_hash
+        cur.execute(
+            "SELECT password_hash FROM plant_credentials WHERE plant_id = 'test_p1' AND username = 'u1'"
+        )
+        c_row = cur.fetchone()
+        assert c_row["password_hash"] == original_pwd_hash
+    finally:
+        conn.execute("DELETE FROM plants WHERE id = 'test_p1';")
+        conn.commit()
+        conn.close()
 
 
 def test_auth_gen_missing_device_password_fails_closed(tmp_path, monkeypatch):

@@ -265,14 +265,14 @@ def test_admin_plants_response_bodies_never_contain_credentials_or_tokens(
         conn.execute(
             """
             INSERT INTO plants (id, name, timezone, viewer_token_hash)
-            VALUES (?, ?, ?, ?);
+            VALUES (%s, %s, %s, %s);
             """,
             ("plant_canary", "Canary Plant Facility", "UTC", canary_token_hash),
         )
         conn.execute(
             """
             INSERT INTO plant_credentials (plant_id, username, client_id, password_hash, is_active)
-            VALUES (?, ?, ?, ?, 1);
+            VALUES (%s, %s, %s, %s, TRUE);
             """,
             (
                 "plant_canary",

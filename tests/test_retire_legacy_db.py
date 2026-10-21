@@ -1,7 +1,6 @@
 import asyncio
 import json
 import os
-import sqlite3
 import subprocess
 import sys
 
@@ -89,36 +88,37 @@ def test_plant_stats_401_without_token_on_water_plant(server):
 
 def test_plant_stats_isolate_plants(server):
     """Plant stats for Plant A must exclude rows from Plant B."""
-    import main
-    conn = sqlite3.connect(main.PLATFORM_DB_PATH)
+    from db import get_db_connection
+
+    conn = get_db_connection()
     try:
         # Seed test data for both plants
         with conn:
             # Ensure units exist
             conn.execute(
-                "INSERT OR IGNORE INTO units (plant_id, unit_id, status) VALUES ('plant_demo_membrane', 'unit_iso_demo_1', 'failed');"
+                "INSERT INTO units (plant_id, unit_id, status) VALUES ('plant_demo_membrane', 'unit_iso_demo_1', 'failed') ON CONFLICT (plant_id, unit_id) DO NOTHING;"
             )
             conn.execute(
-                "INSERT OR IGNORE INTO units (plant_id, unit_id, status) VALUES ('plant_water_district_9', 'unit_iso_water_1', 'failed');"
+                "INSERT INTO units (plant_id, unit_id, status) VALUES ('plant_water_district_9', 'unit_iso_water_1', 'failed') ON CONFLICT (plant_id, unit_id) DO NOTHING;"
             )
             # Insert qc_results for demo plant
             conn.execute(
                 """
-                INSERT OR REPLACE INTO qc_results (
+                INSERT INTO qc_results (
                     plant_id, unit_id, machine_code, message_id, tested_at, outcome, probability, defect_type, attributed_stage
                 ) VALUES (
                     'plant_demo_membrane', 'unit_iso_demo_1', 'qc_01', 'msg_demo_iso_1', '2026-10-21T10:00:00Z', 'fail', 0.95, 'crack', 'casting'
-                );
+                ) ON CONFLICT (plant_id, message_id) DO NOTHING;
                 """
             )
             # Insert qc_results for water plant
             conn.execute(
                 """
-                INSERT OR REPLACE INTO qc_results (
+                INSERT INTO qc_results (
                     plant_id, unit_id, machine_code, message_id, tested_at, outcome, probability, defect_type, attributed_stage
                 ) VALUES (
                     'plant_water_district_9', 'unit_iso_water_1', 'pump_01', 'msg_water_iso_1', '2026-10-21T11:00:00Z', 'fail', 0.99, 'leak', 'pump_house'
-                );
+                ) ON CONFLICT (plant_id, message_id) DO NOTHING;
                 """
             )
     finally:

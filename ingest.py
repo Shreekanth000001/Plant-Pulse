@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import logging
-import sqlite3
 import threading
 import time
 from collections.abc import Sequence
@@ -9,7 +8,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from plant_definitions import PlantDefinition
+from db import ensure_partition_for_timestamp, get_db_connection
+from plant_definitions import PlantDefinition, load_plants
 from scripts.generate_mosquitto_auth import hash_password_pbkdf2
 
 logger = logging.getLogger("ingest-engine")
@@ -55,7 +55,7 @@ def extract_machine_state_record(
 
 
 def sync_plant_definitions(
-    conn: sqlite3.Connection,
+    conn: Any,
     plants: dict[str, PlantDefinition],
 ) -> None:
     """Upsert plant, area, machine, and signal records into the database."""
@@ -69,7 +69,7 @@ def sync_plant_definitions(
         cursor.execute(
             """
             INSERT INTO plants (id, name, timezone, viewer_token_hash)
-            VALUES (?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s)
             ON CONFLICT (id) DO UPDATE SET
                 name = excluded.name,
                 timezone = excluded.timezone,
@@ -96,17 +96,16 @@ def sync_plant_definitions(
             cursor.execute(
                 """
                 INSERT INTO plant_credentials (plant_id, username, client_id, password_hash, is_active)
-                VALUES (?, ?, ?, COALESCE(?, ''), 1)
+                VALUES (%s, %s, %s, COALESCE(%s, ''), true)
                 ON CONFLICT (plant_id, username) DO UPDATE SET
                     client_id = excluded.client_id,
-                    password_hash = COALESCE(?, plant_credentials.password_hash),
+                    password_hash = COALESCE(NULLIF(excluded.password_hash, ''), plant_credentials.password_hash),
                     is_active = excluded.is_active
                 """,
                 (
                     plant.plant_id,
                     cred.username,
                     cred.client_id,
-                    p_hash,
                     p_hash,
                 ),
             )
@@ -115,7 +114,7 @@ def sync_plant_definitions(
             cursor.execute(
                 """
                 INSERT INTO areas (plant_id, area_code, name, display_order)
-                VALUES (?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s)
                 ON CONFLICT (plant_id, area_code) DO UPDATE SET
                     name = excluded.name,
                     display_order = excluded.display_order
@@ -127,7 +126,7 @@ def sync_plant_definitions(
                 cursor.execute(
                     """
                     INSERT INTO machines (plant_id, machine_code, area_code, name, machine_type, display_order)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                     ON CONFLICT (plant_id, machine_code) DO UPDATE SET
                         area_code = excluded.area_code,
                         name = excluded.name,
@@ -153,7 +152,7 @@ def sync_plant_definitions(
                             is_setpoint, setpoint_signal_code, normal_min, normal_max,
                             warn_min, warn_max, alarm_min, alarm_max, display_order
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (plant_id, machine_code, signal_code) DO UPDATE SET
                             name = excluded.name,
                             unit = excluded.unit,
@@ -191,8 +190,8 @@ def sync_plant_definitions(
                         cursor.execute(
                             """
                             UPDATE signals
-                            SET setpoint_signal_code = ?
-                            WHERE plant_id = ? AND machine_code = ? AND signal_code = ?
+                            SET setpoint_signal_code = %s
+                            WHERE plant_id = %s AND machine_code = %s AND signal_code = %s
                             """,
                             (
                                 sig.setpoint_signal_code,
@@ -217,19 +216,19 @@ class IngestEngine:
 
     def __init__(
         self,
-        db_path: Path | str,
+        db_path: Path | str | None = None,
         plants: dict[str, PlantDefinition] | None = None,
+        plants_dir: Path | str | None = None,
         max_queue_size: int = 10000,
         flush_interval_seconds: float = 0.5,
         batch_size: int = 100,
         max_late_seconds: int = 21600,
     ) -> None:
-        db_str = str(db_path)
-        if db_str.startswith("sqlite:///"):
-            db_str = db_str.removeprefix("sqlite:///")
+        if plants is None and plants_dir is not None:
+            self._plants = load_plants(Path(plants_dir))
+        else:
+            self._plants = plants or {}
 
-        self._db_file = db_str
-        self._plants = plants or {}
         self._max_queue_size = max_queue_size
         self._flush_interval = flush_interval_seconds
         self._batch_size = batch_size
@@ -245,13 +244,6 @@ class IngestEngine:
         self._running = False
         self._stopping = False
         self._lock = threading.Lock()
-
-        # Open SQLite connection
-        self._conn = sqlite3.connect(self._db_file, check_same_thread=False)
-        self._conn.execute("PRAGMA journal_mode=WAL;")
-        self._conn.execute("PRAGMA synchronous=NORMAL;")
-        self._conn.execute("PRAGMA busy_timeout=5000;")
-        self._conn.execute("PRAGMA foreign_keys=ON;")
 
     @property
     def dropped_total(self) -> int:
@@ -289,11 +281,6 @@ class IngestEngine:
 
         # Drain and flush all remaining items in queue
         await self.flush()
-
-        with self._lock:
-            if self._conn:
-                self._conn.close()
-                self._conn = None
 
     def _validate_envelope(
         self,
@@ -490,6 +477,31 @@ class IngestEngine:
         topic = f"plants/{plant_id}/assets/{machine_code}/state"
         return await self.enqueue(topic, payload)
 
+    def process_message(self, topic: str, payload: dict[str, Any]) -> bool:
+        """Process and commit a message synchronously if valid."""
+        norm_payload = dict(payload)
+        if "device_timestamp" not in norm_payload and "timestamp" in norm_payload:
+            norm_payload["device_timestamp"] = norm_payload["timestamp"]
+        if "schema_version" not in norm_payload:
+            norm_payload["schema_version"] = "1.0"
+        if "payload" not in norm_payload and "signals" in norm_payload:
+            norm_payload["payload"] = {"metrics": norm_payload["signals"]}
+        if "plant_id" not in norm_payload or "asset_id" not in norm_payload:
+            parts = topic.split("/")
+            if len(parts) >= 4 and parts[0] == "plants" and parts[2] == "assets":
+                norm_payload.setdefault("plant_id", parts[1])
+                norm_payload.setdefault("asset_id", parts[3])
+
+        now = datetime.now(UTC)
+        is_valid, reason, metric_rows = self._validate_envelope(topic, norm_payload, now)
+        if not is_valid:
+            logger.warning("Ingest rejected message on topic %s: %s", topic, reason)
+            return False
+
+        if metric_rows:
+            self._commit_batch_sync(metric_rows, [])
+        return True
+
     def _commit_batch_sync(
         self,
         metric_rows: Sequence[tuple],
@@ -498,27 +510,34 @@ class IngestEngine:
         """Synchronously commit batch of narrow rows and machine states in the same transaction."""
         if not metric_rows and not state_rows:
             return 0
-        with self._lock:
-            if not self._conn:
-                return 0
-            cursor = self._conn.cursor()
+        with self._lock, get_db_connection() as conn:
+            cursor = conn.cursor()
             if metric_rows:
+                for row in metric_rows:
+                    raw_dt = row[3]
+                    if isinstance(raw_dt, str):
+                        raw_dt = datetime.fromisoformat(raw_dt)
+                    ensure_partition_for_timestamp(conn, raw_dt)
+
                 sql = """
-                INSERT OR IGNORE INTO telemetry_values (
+                INSERT INTO telemetry_values (
                     plant_id, machine_code, signal_code,
                     device_timestamp, received_at, message_id,
                     value_num, value_text
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (device_timestamp, plant_id, message_id, signal_code) DO NOTHING;
                 """
                 try:
                     cursor.executemany(sql, metric_rows)
-                except sqlite3.IntegrityError as exc:
-                    if "FOREIGN KEY" in str(exc):
+                except Exception as exc:
+                    if "foreign key" in str(exc).lower():
+                        conn.rollback()
                         for row in metric_rows:
                             try:
-                                cursor.execute(sql, row)
-                            except sqlite3.IntegrityError:
+                                with conn.transaction():
+                                    cursor.execute(sql, row)
+                            except Exception:  # noqa: BLE001, S110
                                 pass
                     else:
                         raise
@@ -529,7 +548,7 @@ class IngestEngine:
                     plant_id, machine_code, state,
                     sub_state, last_seen_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT (plant_id, machine_code) DO UPDATE SET
                     state = excluded.state,
                     sub_state = excluded.sub_state,
@@ -539,18 +558,20 @@ class IngestEngine:
                 """
                 try:
                     cursor.executemany(state_sql, state_rows)
-                except sqlite3.IntegrityError as exc:
-                    if "FOREIGN KEY" in str(exc):
+                except Exception as exc:
+                    if "foreign key" in str(exc).lower():
+                        conn.rollback()
                         for s_row in state_rows:
                             try:
-                                cursor.execute(state_sql, s_row)
-                            except sqlite3.IntegrityError:
+                                with conn.transaction():
+                                    cursor.execute(state_sql, s_row)
+                            except Exception:  # noqa: BLE001, S110
                                 pass
                     else:
                         raise
 
-            self._conn.commit()
-            return len(metric_rows) + len(state_rows)
+                conn.commit()
+                return len(metric_rows) + len(state_rows)
 
     async def flush(self) -> int:
         """Flush and commit all queued items immediately off the event loop."""
