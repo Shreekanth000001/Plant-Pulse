@@ -209,6 +209,47 @@ def test_admin_routes_throttle_after_5_wrong_attempts_with_retry_after(monkeypat
         thread.join(timeout=2.0)
 
 
+def test_admin_routes_throttle_malformed_headers_count_as_failures(monkeypatch):
+    """5 malformed Authorization headers count as failures and trigger 429 on the 6th attempt."""
+    monkeypatch.setenv("MOUNT_ADMIN_ENDPOINTS", "true")
+    monkeypatch.setenv("ADMIN_TOKEN", "valid_secret_admin_token")
+    admin_rate_limiter.reset()
+
+    app = build_app()
+    srv, thread, base_url = run_test_server(app)
+    try:
+        malformed_headers = [
+            "Basic dXNlcjpwYXNz",
+            "Bearer ",
+            "InvalidScheme 12345",
+            "Bearer   ",
+            "Token xyz",
+        ]
+        # 5 malformed attempts -> all return 401 and increment failures
+        for i, header_val in enumerate(malformed_headers, 1):
+            status, _headers, body = api_request(
+                f"{base_url}/api/admin/health",
+                headers={"Authorization": header_val},
+            )
+            assert status == 401, f"Attempt {i} expected 401, got {status}: {body}"
+
+        # 6th attempt: lockout check runs BEFORE compare and returns 429
+        status, headers, body = api_request(
+            f"{base_url}/api/admin/health",
+            headers={"Authorization": "Bearer valid_secret_admin_token"},
+        )
+        assert status == 429, (
+            f"6th attempt after malformed headers expected 429, got {status}: {body}"
+        )
+        assert "retry-after" in headers, "Expected Retry-After header in 429 response"
+        retry_after = int(headers["retry-after"])
+        assert retry_after > 0, f"Expected positive Retry-After, got {retry_after}"
+        assert "Locked out" in body.get("detail", "")
+    finally:
+        srv.should_exit = True
+        thread.join(timeout=2.0)
+
+
 def test_seed_runs_only_on_empty_db_and_ignores_changed_json(tmp_path):
     """Seed runs only on an empty database; subsequent starts ignore modified JSON and never write back."""
     db_file = tmp_path / "test_platform.db"
