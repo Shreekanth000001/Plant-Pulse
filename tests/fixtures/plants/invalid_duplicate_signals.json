@@ -1,0 +1,37 @@
+{
+  "plant_id": "plant_dup_signals",
+  "name": "Invalid Plant Duplicate Signals",
+  "timezone": "UTC",
+  "enabled_modules": ["core", "alarms"],
+  "areas": [
+    {
+      "area_code": "area_01",
+      "name": "Area 01",
+      "display_order": 1,
+      "machines": [
+        {
+          "machine_code": "mach_01",
+          "name": "Machine 01",
+          "machine_type": "standard",
+          "display_order": 1,
+          "signals": [
+            {
+              "signal_code": "pressure",
+              "name": "Pressure Primary",
+              "unit": "bar",
+              "data_type": "float",
+              "display_order": 1
+            },
+            {
+              "signal_code": "pressure",
+              "name": "Pressure Secondary",
+              "unit": "bar",
+              "data_type": "float",
+              "display_order": 2
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

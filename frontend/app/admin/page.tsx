@@ -71,15 +71,24 @@ export default function AdminPlantsPage() {
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={loadPlants}
-          disabled={loading}
-          className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl transition-all shadow-2xs cursor-pointer flex items-center gap-2 self-start sm:self-auto disabled:opacity-50"
-        >
-          <span className={loading ? "animate-spin" : ""}>🔄</span>
-          <span>Refresh</span>
-        </button>
+        <div className="flex items-center gap-2.5 self-start sm:self-auto">
+          <Link
+            href="/admin/plants/new"
+            className="px-4 py-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl transition-all shadow-2xs flex items-center gap-1.5"
+          >
+            <span>+</span>
+            <span>Register New Plant</span>
+          </Link>
+          <button
+            type="button"
+            onClick={loadPlants}
+            disabled={loading}
+            className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl transition-all shadow-2xs cursor-pointer flex items-center gap-2 disabled:opacity-50"
+          >
+            <span className={loading ? "animate-spin" : ""}>🔄</span>
+            <span>Refresh</span>
+          </button>
+        </div>
       </div>
 
       {/* Stats Summary Cards */}

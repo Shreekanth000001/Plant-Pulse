@@ -1,14 +1,18 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useReducer } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useAdminAuth } from "../../layout";
 import {
   fetchAdminPlantDetail,
+  rotateAdminDeviceCredentials,
+  credentialModalReducer,
+  initialCredentialModalState,
   formatAdminErrorMessage,
   type AdminPlantDetail,
 } from "../../../../lib/admin-api";
+import { AdminCredentialsModal } from "../../../../components/admin/AdminCredentialsModal";
 
 export default function AdminPlantDetailPage() {
   const params = useParams();
@@ -18,6 +22,13 @@ export default function AdminPlantDetailPage() {
   const [plant, setPlant] = useState<AdminPlantDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isRotating, setIsRotating] = useState(false);
+  const [showRotateConfirm, setShowRotateConfirm] = useState(false);
+
+  const [modalState, dispatchModal] = useReducer(
+    credentialModalReducer,
+    initialCredentialModalState
+  );
 
   const loadDetail = useCallback(async () => {
     if (!plantId) return;
@@ -69,8 +80,48 @@ export default function AdminPlantDetailPage() {
       0
     ) ?? 0;
 
+  const handleRotateCredentials = async () => {
+    if (!plant) return;
+    setIsRotating(true);
+    setError(null);
+    try {
+      const res = await rotateAdminDeviceCredentials(adminToken, plant.plant_id);
+      setShowRotateConfirm(false);
+      dispatchModal({
+        type: "OPEN_CREDENTIALS",
+        source: "rotate",
+        credentials: [
+          {
+            username: res.username,
+            password: res.password,
+            client_id: res.client_id,
+          },
+        ],
+        brokerReloaded: res.broker_reloaded,
+      });
+    } catch (err) {
+      setError(formatAdminErrorMessage(err));
+      reportApiError(err);
+    } finally {
+      setIsRotating(false);
+    }
+  };
+
+  const handleModalClose = () => {
+    dispatchModal({ type: "CLOSE_CREDENTIALS" });
+    loadDetail();
+  };
+
   return (
     <div className="flex flex-col gap-6 w-full pb-12">
+      {/* Credentials Modal */}
+      <AdminCredentialsModal
+        isOpen={modalState.isOpen}
+        source={modalState.source}
+        credentials={modalState.credentials}
+        brokerReloaded={modalState.brokerReloaded}
+        onClose={handleModalClose}
+      />
       {/* Breadcrumb & Navigation */}
       <div className="flex items-center justify-between gap-4">
         <Link
@@ -163,11 +214,56 @@ export default function AdminPlantDetailPage() {
               </div>
             </div>
 
-            {/* Device Usernames */}
-            <div className="pt-4 border-t border-slate-100 flex flex-col gap-2">
-              <span className="text-2xs uppercase tracking-wider font-semibold text-slate-400">
-                Registered Device Credentials
-              </span>
+            {/* Device Usernames & Rotation */}
+            <div className="pt-4 border-t border-slate-100 flex flex-col gap-3">
+              <div className="flex items-center justify-between">
+                <span className="text-2xs uppercase tracking-wider font-semibold text-slate-400">
+                  Registered Device Credentials
+                </span>
+                {!showRotateConfirm ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowRotateConfirm(true)}
+                    className="text-xs font-bold text-amber-700 hover:text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-3 py-1 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <span>🔄</span>
+                    <span>Rotate Credentials</span>
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={isRotating}
+                      onClick={handleRotateCredentials}
+                      className="text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-50 px-3 py-1 rounded-xl transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer"
+                    >
+                      {isRotating ? (
+                        <span>Rotating...</span>
+                      ) : (
+                        <span>Confirm &amp; Disconnect Devices</span>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isRotating}
+                      onClick={() => setShowRotateConfirm(false)}
+                      className="text-xs font-semibold text-slate-600 hover:text-slate-900 px-2 py-1 cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {showRotateConfirm && (
+                <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-2">
+                  <span className="font-bold">⚠️</span>
+                  <span>
+                    Warning: Rotating credentials will immediately disconnect connected devices using current passwords and generate a new secure password.
+                  </span>
+                </div>
+              )}
+
               <div className="flex flex-wrap items-center gap-2">
                 {plant.device_usernames && plant.device_usernames.length > 0 ? (
                   plant.device_usernames.map((u) => (

@@ -278,3 +278,274 @@ export async function fetchAdminPlantDetail(
 
   return (await res.json()) as AdminPlantDetail;
 }
+
+export interface OneTimeDeviceCredential {
+  username: string;
+  password?: string;
+  client_id: string;
+}
+
+export interface AdminPlantCreatedResponse extends AdminPlantDetail {
+  one_time_device_credentials?: OneTimeDeviceCredential[];
+  broker_reloaded?: boolean;
+}
+
+export interface AdminCredentialRotationResponse {
+  username: string;
+  password?: string;
+  client_id: string;
+  broker_reloaded?: boolean;
+}
+
+export interface FastApiValidationErrorDetail {
+  loc: (string | number)[];
+  msg: string;
+  type: string;
+}
+
+export interface CredentialModalState {
+  isOpen: boolean;
+  credentials: OneTimeDeviceCredential[] | null;
+  source: "create" | "rotate" | null;
+  brokerReloaded?: boolean;
+}
+
+export const initialCredentialModalState: CredentialModalState = {
+  isOpen: false,
+  credentials: null,
+  source: null,
+};
+
+export type CredentialModalAction =
+  | {
+      type: "OPEN_CREDENTIALS";
+      source: "create" | "rotate";
+      credentials: OneTimeDeviceCredential[];
+      brokerReloaded?: boolean;
+    }
+  | { type: "CLOSE_CREDENTIALS" };
+
+export function credentialModalReducer(
+  state: CredentialModalState,
+  action: CredentialModalAction
+): CredentialModalState {
+  switch (action.type) {
+    case "OPEN_CREDENTIALS":
+      return {
+        isOpen: true,
+        credentials: action.credentials,
+        source: action.source,
+        brokerReloaded: action.brokerReloaded,
+      };
+    case "CLOSE_CREDENTIALS":
+      return {
+        isOpen: false,
+        credentials: null,
+        source: null,
+        brokerReloaded: undefined,
+      };
+    default:
+      return state;
+  }
+}
+
+/**
+ * Maps FastAPI 422 validation error array into a flat field error map.
+ * E.g. loc: ["body", "areas", 0, "machines", 1, "machine_code"] -> "areas.0.machines.1.machine_code"
+ */
+export function mapFastApi422Errors(details: unknown): Record<string, string> {
+  const result: Record<string, string> = {};
+  if (!Array.isArray(details)) return result;
+
+  for (const item of details) {
+    if (!item || typeof item !== "object") continue;
+    const detail = item as Partial<FastApiValidationErrorDetail>;
+    if (!Array.isArray(detail.loc) || typeof detail.msg !== "string") continue;
+
+    const locParts = detail.loc[0] === "body" ? detail.loc.slice(1) : detail.loc;
+    const fieldPath = locParts.join(".");
+    if (fieldPath) {
+      result[fieldPath] = detail.msg;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Creates a new plant definition on the backend.
+ */
+export async function createAdminPlant(
+  token: string,
+  payload: Record<string, unknown>,
+  customBaseUrl?: string
+): Promise<AdminPlantCreatedResponse> {
+  const baseUrl = customBaseUrl || getApiBaseUrl();
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl}/api/admin/plants`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (netErr) {
+    throw new AdminApiError(
+      `Network failure creating plant: ${netErr instanceof Error ? netErr.message : String(netErr)}`,
+      0,
+      undefined,
+      token
+    );
+  }
+
+  if (!res.ok) {
+    let retryAfter: number | undefined;
+    const retryHeader = res.headers.get("Retry-After");
+    if (retryHeader) {
+      const parsed = parseInt(retryHeader, 10);
+      if (!Number.isNaN(parsed)) retryAfter = parsed;
+    }
+
+    let detail = `Failed to create plant (${res.status})`;
+    let rawJson: { detail?: string | FastApiValidationErrorDetail[] } | undefined;
+    try {
+      rawJson = await res.json();
+      if (rawJson && typeof rawJson.detail === "string") {
+        detail = rawJson.detail;
+      } else if (rawJson && Array.isArray(rawJson.detail)) {
+        detail = JSON.stringify(rawJson.detail);
+      }
+    } catch {
+      // ignore
+    }
+
+    const err = new AdminApiError(detail, res.status, retryAfter, token);
+    (err as unknown as { validationErrors?: FastApiValidationErrorDetail[] }).validationErrors =
+      rawJson && Array.isArray(rawJson.detail) ? rawJson.detail : undefined;
+    throw err;
+  }
+
+  return (await res.json()) as AdminPlantCreatedResponse;
+}
+
+/**
+ * Rotates device credentials for a registered plant.
+ */
+export async function rotateAdminDeviceCredentials(
+  token: string,
+  plantId: string,
+  customBaseUrl?: string
+): Promise<AdminCredentialRotationResponse> {
+  const baseUrl = customBaseUrl || getApiBaseUrl();
+  let res: Response;
+  try {
+    res = await fetch(
+      `${baseUrl}/api/admin/plants/${encodeURIComponent(plantId.trim())}/credentials/rotate`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json",
+        },
+      }
+    );
+  } catch (netErr) {
+    throw new AdminApiError(
+      `Network failure rotating device credentials: ${netErr instanceof Error ? netErr.message : String(netErr)}`,
+      0,
+      undefined,
+      token
+    );
+  }
+
+  if (!res.ok) {
+    let retryAfter: number | undefined;
+    const retryHeader = res.headers.get("Retry-After");
+    if (retryHeader) {
+      const parsed = parseInt(retryHeader, 10);
+      if (!Number.isNaN(parsed)) retryAfter = parsed;
+    }
+
+    let detail = `Failed to rotate device credentials (${res.status})`;
+    try {
+      const json = await res.json();
+      if (json && typeof json.detail === "string") {
+        detail = json.detail;
+      }
+    } catch {
+      // ignore
+    }
+
+    throw new AdminApiError(detail, res.status, retryAfter, token);
+  }
+
+  return (await res.json()) as AdminCredentialRotationResponse;
+}
+
+/**
+ * Updates an existing plant definition.
+ */
+export async function updateAdminPlant(
+  token: string,
+  plantId: string,
+  payload: Record<string, unknown>,
+  confirmRemovals = false,
+  customBaseUrl?: string
+): Promise<AdminPlantDetail> {
+  const baseUrl = customBaseUrl || getApiBaseUrl();
+  const queryParam = confirmRemovals ? "?confirm_removals=true" : "";
+  let res: Response;
+  try {
+    res = await fetch(
+      `${baseUrl}/api/admin/plants/${encodeURIComponent(plantId.trim())}${queryParam}`,
+      {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify(payload),
+      }
+    );
+  } catch (netErr) {
+    throw new AdminApiError(
+      `Network failure updating plant: ${netErr instanceof Error ? netErr.message : String(netErr)}`,
+      0,
+      undefined,
+      token
+    );
+  }
+
+  if (!res.ok) {
+    let retryAfter: number | undefined;
+    const retryHeader = res.headers.get("Retry-After");
+    if (retryHeader) {
+      const parsed = parseInt(retryHeader, 10);
+      if (!Number.isNaN(parsed)) retryAfter = parsed;
+    }
+
+    let detail = `Failed to update plant (${res.status})`;
+    let rawJson: { detail?: string | FastApiValidationErrorDetail[] } | undefined;
+    try {
+      rawJson = await res.json();
+      if (rawJson && typeof rawJson.detail === "string") {
+        detail = rawJson.detail;
+      } else if (rawJson && Array.isArray(rawJson.detail)) {
+        detail = JSON.stringify(rawJson.detail);
+      }
+    } catch {
+      // ignore
+    }
+
+    const err = new AdminApiError(detail, res.status, retryAfter, token);
+    (err as unknown as { validationErrors?: FastApiValidationErrorDetail[] }).validationErrors =
+      rawJson && Array.isArray(rawJson.detail) ? rawJson.detail : undefined;
+    throw err;
+  }
+
+  return (await res.json()) as AdminPlantDetail;
+}

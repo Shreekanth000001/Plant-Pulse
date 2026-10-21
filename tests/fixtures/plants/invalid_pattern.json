@@ -1,0 +1,30 @@
+{
+  "plant_id": "INVALID-PLANT-ID!",
+  "name": "Invalid Plant Pattern",
+  "timezone": "UTC",
+  "enabled_modules": ["core", "alarms"],
+  "areas": [
+    {
+      "area_code": "area_01",
+      "name": "Area 01",
+      "display_order": 1,
+      "machines": [
+        {
+          "machine_code": "mach_01",
+          "name": "Machine 01",
+          "machine_type": "standard",
+          "display_order": 1,
+          "signals": [
+            {
+              "signal_code": "flow_rate",
+              "name": "Flow Rate",
+              "unit": "L/min",
+              "data_type": "float",
+              "display_order": 1
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
