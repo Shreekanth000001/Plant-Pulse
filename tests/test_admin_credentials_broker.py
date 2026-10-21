@@ -359,7 +359,7 @@ def test_auth_files_atomic_replace_preserves_old_files_on_hashing_error(tmp_path
     conn.execute(
         """
         INSERT INTO plant_credentials (plant_id, username, client_id, password_hash, is_active)
-        VALUES ('plant_demo_membrane', 'new_unhashed_user', 'new_client', 'plaintext_pwd_to_hash', 1);
+        VALUES ('plant_demo_membrane', 'new_unhashed_user', 'new_client', 'plaintext_pwd_to_hash', TRUE);
         """
     )
     conn.commit()
@@ -391,8 +391,8 @@ def test_generated_passwd_and_acl_always_contain_backend_user_even_with_empty_pl
 
     # Plants table is completely empty
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM plants;")
-    assert cur.fetchone()[0] == 0
+    cur.execute("SELECT COUNT(*) as cnt FROM plants;")
+    assert cur.fetchone()["cnt"] == 0
 
     auth_dir = tmp_path / "auth_empty"
     sync_broker_auth_from_db(
@@ -425,7 +425,7 @@ def test_auth_files_contain_no_plaintext_passwords(tmp_path):
     conn.execute(
         """
         INSERT INTO plant_credentials (plant_id, username, client_id, password_hash, is_active)
-        VALUES ('plant_demo_membrane', 'canary_user', 'canary_client', ?, 1)
+        VALUES ('plant_demo_membrane', 'canary_user', 'canary_client', %s, TRUE)
         ON CONFLICT (plant_id, username) DO UPDATE SET password_hash = excluded.password_hash;
         """,
         (hash_password_pbkdf2(canary),),

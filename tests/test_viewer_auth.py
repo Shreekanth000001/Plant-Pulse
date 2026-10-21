@@ -373,8 +373,7 @@ def test_cors_preflight_for_authorization_and_post(auth_server):
 
 def test_sync_plant_definitions_stores_sha256_hash(tmp_path):
     """sync_plant_definitions stores SHA-256 hex digest in plants.viewer_token_hash (not plain text)."""
-    import sqlite3
-
+    from db import get_db_connection
     from ingest import sync_plant_definitions
     from main import init_platform_db
     from plant_definitions import load_plants
@@ -383,17 +382,18 @@ def test_sync_plant_definitions_stores_sha256_hash(tmp_path):
     init_platform_db(test_db)
     plants = load_plants(PLANTS_DIR)
 
-    conn = sqlite3.connect(test_db)
-    conn.execute("PRAGMA foreign_keys=ON;")
+    conn = get_db_connection(str(test_db))
     sync_plant_definitions(conn, plants)
 
-    row = conn.execute(
+    cur = conn.cursor()
+    cur.execute(
         "SELECT viewer_token_hash FROM plants WHERE id = 'plant_water_district_9'"
-    ).fetchone()
+    )
+    row = cur.fetchone()
     conn.close()
 
     assert row is not None
-    stored_hash = row[0]
+    stored_hash = row["viewer_token_hash"]
     expected_hash = hashlib.sha256(WATER_TOKEN.encode("utf-8")).hexdigest()
     assert stored_hash == expected_hash
     assert stored_hash != WATER_TOKEN

@@ -1,24 +1,25 @@
 """Retention worker and database maintenance for PlantPulse telemetry platform.
 
-Periodically deletes telemetry values older than a configurable number of days (default 30)
-in batches to prevent lock contention, and executes VACUUM when the free-page ratio
-exceeds a threshold (default 20%) to reclaim storage without blocking concurrent writers.
+Periodically deletes telemetry values, stage events, QC results, and units older than
+a configurable number of days (default 30) in batches to prevent lock contention.
 """
 
 import asyncio
 import contextlib
 import logging
 import os
-import sqlite3
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
+
+from db import get_db_connection
 
 logger = logging.getLogger("plantpulse.retention")
 
 DEFAULT_RETENTION_DAYS = 30
 DEFAULT_BATCH_SIZE = 50000
-DEFAULT_FREE_PAGE_THRESHOLD = 0.20  # 20% free pages triggers VACUUM
+DEFAULT_FREE_PAGE_THRESHOLD = 0.20  # 20% free pages triggers maintenance
 DEFAULT_INTERVAL_SECONDS = 86400.0  # Daily
 
 
@@ -49,34 +50,30 @@ def get_retention_interval_seconds() -> float:
         return DEFAULT_INTERVAL_SECONDS
 
 
-def check_free_page_ratio(conn: sqlite3.Connection) -> tuple[int, int, float]:
-    """Return (freelist_count, page_count, free_ratio) for SQLite database."""
+def check_free_page_ratio(conn: Any) -> tuple[int, int, float]:
+    """Return free ratio (managed automatically in PostgreSQL by autovacuum)."""
+    return 0, 0, 0.0
+
+
+def _table_exists(conn: Any, table_name: str) -> bool:
     cur = conn.cursor()
-    cur.execute("PRAGMA freelist_count;")
-    freelist_count = cur.fetchone()[0]
-    cur.execute("PRAGMA page_count;")
-    page_count = cur.fetchone()[0]
-    ratio = freelist_count / max(1, page_count)
-    return freelist_count, page_count, ratio
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    cur = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+    cur.execute(
+        "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = %s;",
         (table_name,),
     )
     return cur.fetchone() is not None
 
 
 def delete_expired_telemetry_batch(
-    conn: sqlite3.Connection,
+    conn: Any,
     cutoff_iso: str,
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
     """Delete a single batch of telemetry_values older than cutoff_iso."""
-    cur = conn.execute(
-        "DELETE FROM telemetry_values WHERE id IN ("
-        "  SELECT id FROM telemetry_values WHERE received_at < ? LIMIT ?"
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM telemetry_values WHERE (device_timestamp, plant_id, message_id, signal_code) IN ("
+        "  SELECT device_timestamp, plant_id, message_id, signal_code FROM telemetry_values WHERE received_at < %s LIMIT %s"
         ")",
         (cutoff_iso, batch_size),
     )
@@ -85,14 +82,15 @@ def delete_expired_telemetry_batch(
 
 
 def delete_expired_stage_events_batch(
-    conn: sqlite3.Connection,
+    conn: Any,
     cutoff_iso: str,
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
     """Delete a single batch of stage_events older than cutoff_iso."""
-    cur = conn.execute(
+    cur = conn.cursor()
+    cur.execute(
         "DELETE FROM stage_events WHERE id IN ("
-        "  SELECT id FROM stage_events WHERE COALESCE(exited_at, entered_at) < ? LIMIT ?"
+        "  SELECT id FROM stage_events WHERE COALESCE(exited_at, entered_at) < %s LIMIT %s"
         ")",
         (cutoff_iso, batch_size),
     )
@@ -101,14 +99,15 @@ def delete_expired_stage_events_batch(
 
 
 def delete_expired_qc_results_batch(
-    conn: sqlite3.Connection,
+    conn: Any,
     cutoff_iso: str,
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
     """Delete a single batch of qc_results older than cutoff_iso."""
-    cur = conn.execute(
+    cur = conn.cursor()
+    cur.execute(
         "DELETE FROM qc_results WHERE id IN ("
-        "  SELECT id FROM qc_results WHERE tested_at < ? LIMIT ?"
+        "  SELECT id FROM qc_results WHERE tested_at < %s LIMIT %s"
         ")",
         (cutoff_iso, batch_size),
     )
@@ -117,14 +116,15 @@ def delete_expired_qc_results_batch(
 
 
 def delete_expired_units_batch(
-    conn: sqlite3.Connection,
+    conn: Any,
     cutoff_iso: str,
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> int:
     """Delete a single batch of units older than cutoff_iso."""
-    cur = conn.execute(
-        "DELETE FROM units WHERE rowid IN ("
-        "  SELECT rowid FROM units WHERE COALESCE(updated_at, created_at) < ? LIMIT ?"
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM units WHERE (plant_id, unit_id) IN ("
+        "  SELECT plant_id, unit_id FROM units WHERE COALESCE(updated_at, created_at) < %s LIMIT %s"
         ")",
         (cutoff_iso, batch_size),
     )
@@ -133,7 +133,7 @@ def delete_expired_units_batch(
 
 
 def run_retention_cleanup(
-    db_path: Path | str,
+    db_path: Path | str | None = None,
     retention_days: int = DEFAULT_RETENTION_DAYS,
     batch_size: int = DEFAULT_BATCH_SIZE,
     free_page_threshold: float = DEFAULT_FREE_PAGE_THRESHOLD,
@@ -142,8 +142,7 @@ def run_retention_cleanup(
     """Execute retention policy cleanup on telemetry_values, stage_events, qc_results, and units.
 
     Deletes expired rows in batches with brief pauses to avoid starvation of
-    concurrent writers, then triggers VACUUM if free pages exceed threshold.
-    Returns (total_deleted, vacuum_executed).
+    concurrent writers. Returns (total_deleted, vacuum_executed).
     """
     cutoff = datetime.now(UTC) - timedelta(days=retention_days)
     cutoff_iso = cutoff.isoformat()
@@ -151,26 +150,13 @@ def run_retention_cleanup(
     total_deleted = 0
     vacuum_executed = False
 
-    conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    conn = get_db_connection(db_path)
     try:
-        conn.execute("PRAGMA busy_timeout = 5000;")
-        conn.execute("PRAGMA foreign_keys = ON;")
-
         # Purge telemetry values
         if _table_exists(conn, "telemetry_values"):
             while True:
-                deleted = delete_expired_telemetry_batch(conn, cutoff_iso, batch_size)
-                total_deleted += deleted
-                if deleted < batch_size:
-                    break
-                if pause_between_batches > 0:
-                    time.sleep(pause_between_batches)
-
-        # Purge child traceability events first (stage_events & qc_results)
-        if _table_exists(conn, "stage_events"):
-            while True:
-                deleted = delete_expired_stage_events_batch(
-                    conn, cutoff_iso, batch_size
+                deleted = delete_expired_telemetry_batch(
+                    conn, cutoff_iso, batch_size=batch_size
                 )
                 total_deleted += deleted
                 if deleted < batch_size:
@@ -178,19 +164,36 @@ def run_retention_cleanup(
                 if pause_between_batches > 0:
                     time.sleep(pause_between_batches)
 
-        if _table_exists(conn, "qc_results"):
+        # Purge stage events
+        if _table_exists(conn, "stage_events"):
             while True:
-                deleted = delete_expired_qc_results_batch(conn, cutoff_iso, batch_size)
+                deleted = delete_expired_stage_events_batch(
+                    conn, cutoff_iso, batch_size=batch_size
+                )
                 total_deleted += deleted
                 if deleted < batch_size:
                     break
                 if pause_between_batches > 0:
                     time.sleep(pause_between_batches)
 
-        # Purge parent units
+        # Purge QC results
+        if _table_exists(conn, "qc_results"):
+            while True:
+                deleted = delete_expired_qc_results_batch(
+                    conn, cutoff_iso, batch_size=batch_size
+                )
+                total_deleted += deleted
+                if deleted < batch_size:
+                    break
+                if pause_between_batches > 0:
+                    time.sleep(pause_between_batches)
+
+        # Purge completed or failed units older than cutoff
         if _table_exists(conn, "units"):
             while True:
-                deleted = delete_expired_units_batch(conn, cutoff_iso, batch_size)
+                deleted = delete_expired_units_batch(
+                    conn, cutoff_iso, batch_size=batch_size
+                )
                 total_deleted += deleted
                 if deleted < batch_size:
                     break
@@ -198,25 +201,7 @@ def run_retention_cleanup(
                     time.sleep(pause_between_batches)
 
         if total_deleted > 0:
-            freelist_count, page_count, free_ratio = check_free_page_ratio(conn)
-            logger.info(
-                "Retention deleted %d rows. Freelists: %d/%d (%.1f%%)",
-                total_deleted,
-                freelist_count,
-                page_count,
-                free_ratio * 100,
-            )
-
-            if free_ratio >= free_page_threshold:
-                logger.info(
-                    "Free page ratio %.2f exceeds threshold %.2f; executing VACUUM...",
-                    free_ratio,
-                    free_page_threshold,
-                )
-                conn.execute("VACUUM;")
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-                vacuum_executed = True
-                logger.info("VACUUM completed successfully.")
+            logger.info("Retention deleted %d expired rows in batches.", total_deleted)
     finally:
         conn.close()
 
@@ -224,23 +209,19 @@ def run_retention_cleanup(
 
 
 async def retention_worker_loop(
-    db_path: Path | str,
+    db_path: Path | str | None = None,
     retention_days: int = DEFAULT_RETENTION_DAYS,
     interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
     batch_size: int = DEFAULT_BATCH_SIZE,
     free_page_threshold: float = DEFAULT_FREE_PAGE_THRESHOLD,
     stop_event: asyncio.Event | None = None,
 ) -> None:
-    """Async background worker loop that periodically runs retention cleanup off the event loop.
-
-    Survives unexpected exceptions (logging errors and sleeping until next interval).
-    """
+    """Async background worker loop that periodically runs retention cleanup off the event loop."""
     logger.info(
-        "Retention worker started (days=%d, interval=%.1fs, batch_size=%d, vacuum_threshold=%.2f)",
+        "Retention worker started (days=%d, interval=%.1fs, batch_size=%d)",
         retention_days,
         interval_seconds,
         batch_size,
-        free_page_threshold,
     )
 
     while not (stop_event and stop_event.is_set()):
@@ -284,7 +265,7 @@ class RetentionWorker:
 
     def __init__(
         self,
-        db_path: Path | str,
+        db_path: Path | str | None = None,
         retention_days: int = DEFAULT_RETENTION_DAYS,
         interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
         batch_size: int = DEFAULT_BATCH_SIZE,

@@ -1,6 +1,9 @@
-import sqlite3
+import os
+import urllib.parse
+import uuid
 from pathlib import Path
 
+import psycopg
 import pytest
 from alembic import command
 from alembic.config import Config
@@ -30,7 +33,7 @@ EXPECTED_PKS = {
     "machines": ["plant_id", "machine_code"],
     "signals": ["plant_id", "machine_code", "signal_code"],
     "machine_states": ["plant_id", "machine_code"],
-    "telemetry_values": ["id"],
+    "telemetry_values": ["device_timestamp", "plant_id", "message_id", "signal_code"],
     "alarm_rules": ["id"],
     "active_alarms": ["id"],
     "units": ["plant_id", "unit_id"],
@@ -39,243 +42,265 @@ EXPECTED_PKS = {
 }
 
 
-def get_alembic_config(db_path: Path) -> Config:
+def get_alembic_config(db_url: str) -> Config:
     alembic_cfg = Config(str(ALEMBIC_INI))
-    alembic_cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
+    if db_url.startswith("postgresql://"):
+        sqla_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    else:
+        sqla_url = db_url
+    alembic_cfg.set_main_option("sqlalchemy.url", sqla_url)
     alembic_cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
     return alembic_cfg
 
 
-def run_alembic_upgrade(db_path: Path) -> None:
-    command.upgrade(get_alembic_config(db_path), "head")
+def run_alembic_upgrade(db_url: str) -> None:
+    command.upgrade(get_alembic_config(db_url), "head")
 
 
-def test_baseline_migration_runs_on_empty_db(tmp_path):
+@pytest.fixture
+def test_pg_db():
+    base_url = os.environ.get(
+        "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/plantpulse_test"
+    )
+    u = urllib.parse.urlparse(base_url)
+    maint_url = urllib.parse.urlunparse(u._replace(path="/postgres"))
+    target_db = f"plantpulse_schema_test_{uuid.uuid4().hex[:8]}"
+    target_url = urllib.parse.urlunparse(u._replace(path=f"/{target_db}"))
+
+    try:
+        conn = psycopg.connect(maint_url, autocommit=True)
+    except (psycopg.Error, OSError) as e:
+        if os.environ.get("CI"):
+            pytest.fail(f"PostgreSQL connection required in CI: {e}")
+        pytest.skip(f"PostgreSQL not reachable: {e}")
+
+    conn.execute(f"DROP DATABASE IF EXISTS {target_db}")
+    conn.execute(f"CREATE DATABASE {target_db}")
+    conn.close()
+
+    yield target_url
+
+    try:
+        conn = psycopg.connect(maint_url, autocommit=True)
+        conn.execute(f"""
+            SELECT pg_terminate_backend(pid)
+            FROM pg_stat_activity
+            WHERE datname = '{target_db}' AND pid <> pg_backend_pid()
+        """)
+        conn.execute(f"DROP DATABASE IF EXISTS {target_db}")
+        conn.close()
+    except (psycopg.Error, OSError):
+        pass
+
+
+def test_baseline_migration_runs_on_empty_db(test_pg_db):
     """Acceptance criterion: baseline migration runs cleanly on an empty database."""
-    db_path = tmp_path / "test_empty.db"
-    assert not db_path.exists()
+    run_alembic_upgrade(test_pg_db)
+    with psycopg.connect(test_pg_db) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
+        )
+        tables = {row[0] for row in cur.fetchall()}
+        assert tables >= EXPECTED_TABLES
 
-    run_alembic_upgrade(db_path)
-    assert db_path.exists()
 
-
-def test_all_12_tables_exist(tmp_path):
+def test_all_12_tables_exist(test_pg_db):
     """Acceptance criterion: all 12 multi-plant tables from Section 3.2 exist."""
-    db_path = tmp_path / "test_tables.db"
-    run_alembic_upgrade(db_path)
-
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-    )
-    tables = {row[0] for row in cursor.fetchall()}
-    conn.close()
-
-    assert tables >= EXPECTED_TABLES, f"Missing tables: {EXPECTED_TABLES - tables}"
+    run_alembic_upgrade(test_pg_db)
+    with psycopg.connect(test_pg_db) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
+        )
+        tables = {row[0] for row in cur.fetchall()}
+        assert tables >= EXPECTED_TABLES, f"Missing tables: {EXPECTED_TABLES - tables}"
 
 
-def test_composite_primary_keys_match_design_doc(tmp_path):
+def test_composite_primary_keys_match_design_doc(test_pg_db):
     """Acceptance criterion: tables use composite primary keys specified in Section 3.2."""
-    db_path = tmp_path / "test_pks.db"
-    run_alembic_upgrade(db_path)
+    run_alembic_upgrade(test_pg_db)
+    with psycopg.connect(test_pg_db) as conn, conn.cursor() as cur:
+        for table, expected_pk in EXPECTED_PKS.items():
+            cur.execute(
+                """
+                SELECT kcu.column_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                  ON tc.constraint_name = kcu.constraint_name
+                  AND tc.table_schema = kcu.table_schema
+                WHERE tc.constraint_type = 'PRIMARY KEY'
+                  AND tc.table_name = %s
+                ORDER BY kcu.ordinal_position
+                """,
+                (table,),
+            )
+            pk_cols = [row[0] for row in cur.fetchall()]
+            assert pk_cols == expected_pk, (
+                f"Table {table}: expected PK {expected_pk}, got {pk_cols}"
+            )
 
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
 
-    for table, expected_pk in EXPECTED_PKS.items():
-        cursor.execute(f"PRAGMA table_info({table})")
-        pk_cols = [
-            row[1]
-            for row in sorted(cursor.fetchall(), key=lambda r: r[5])
-            if row[5] > 0
-        ]
-        assert pk_cols == expected_pk, (
-            f"Table {table}: expected PK {expected_pk}, got {pk_cols}"
-        )
-
-    conn.close()
-
-
-def test_composite_foreign_keys_match_design_doc(tmp_path):
+def test_composite_foreign_keys_match_design_doc(test_pg_db):
     """Acceptance criterion: composite foreign keys enforce parent-child relations."""
-    db_path = tmp_path / "test_fks.db"
-    run_alembic_upgrade(db_path)
+    run_alembic_upgrade(test_pg_db)
+    with psycopg.connect(test_pg_db) as conn, conn.cursor() as cur:
+        def get_fks(table):
+            cur.execute(
+                """
+                SELECT confrelid::regclass::text AS foreign_table_name
+                FROM pg_constraint
+                WHERE contype = 'f' AND conrelid = %s::regclass
+                """,
+                (table,),
+            )
+            return {row[0] for row in cur.fetchall()}
 
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
+        machines_fks = get_fks("machines")
+        assert "areas" in machines_fks
+        assert "plants" in machines_fks
 
-    # Check machines foreign key to areas (plant_id, area_code)
-    cursor.execute("PRAGMA foreign_key_list(machines)")
-    fks = cursor.fetchall()
-    areas_fk = [fk for fk in fks if fk[2] == "areas"]
-    assert len(areas_fk) >= 1, f"Expected FK to areas, got {fks}"
+        signals_fks = get_fks("signals")
+        assert "machines" in signals_fks
 
-    # Check signals foreign key to machines (plant_id, machine_code)
-    cursor.execute("PRAGMA foreign_key_list(signals)")
-    fks = cursor.fetchall()
-    machines_fk = [fk for fk in fks if fk[2] == "machines"]
-    assert len(machines_fk) >= 1, f"Expected FK to machines on signals, got {fks}"
+        stage_fks = get_fks("stage_events")
+        assert "units" in stage_fks
+        assert "machines" in stage_fks
 
-    # Check stage_events foreign keys to units and machines
-    cursor.execute("PRAGMA foreign_key_list(stage_events)")
-    fks = cursor.fetchall()
-    fk_targets = {fk[2] for fk in fks}
-    assert "units" in fk_targets, f"stage_events missing FK to units: {fks}"
-    assert "machines" in fk_targets, f"stage_events missing FK to machines: {fks}"
+        qc_fks = get_fks("qc_results")
+        assert "units" in qc_fks
+        assert "machines" in qc_fks
 
-    # Check qc_results foreign keys to units and machines
-    cursor.execute("PRAGMA foreign_key_list(qc_results)")
-    fks = cursor.fetchall()
-    fk_targets = {fk[2] for fk in fks}
-    assert "units" in fk_targets, f"qc_results missing FK to units: {fks}"
-    assert "machines" in fk_targets, f"qc_results missing FK to machines: {fks}"
-
-    conn.close()
+        telemetry_fks = get_fks("telemetry_values")
+        assert "machines" in telemetry_fks
 
 
-def test_foreign_key_violation_enforcement(tmp_path):
-    """Acceptance criterion: SQLite foreign key enforcement prevents orphan child rows."""
-    db_path = tmp_path / "test_fk_enforce.db"
-    run_alembic_upgrade(db_path)
-
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA foreign_keys=ON")
-
-    # Inserting machine with nonexistent area must fail
-    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY constraint failed"):
-        conn.execute(
-            "INSERT INTO machines (plant_id, machine_code, area_code, name) "
-            "VALUES ('p1', 'm1', 'nonexistent_area', 'Machine 1')"
-        )
-
-    conn.close()
+def test_foreign_key_violation_enforcement(test_pg_db):
+    """Acceptance criterion: PostgreSQL foreign key enforcement prevents orphan child rows."""
+    run_alembic_upgrade(test_pg_db)
+    with (
+        psycopg.connect(test_pg_db) as conn,
+        conn.cursor() as cur,
+        pytest.raises(psycopg.errors.ForeignKeyViolation),
+    ):
+        cur.execute(
+                "INSERT INTO machines (plant_id, machine_code, area_code, name) "
+                "VALUES ('p1', 'm1', 'nonexistent_area', 'Machine 1')"
+            )
 
 
-def test_unique_constraints_for_idempotency(tmp_path):
+def test_unique_constraints_for_idempotency(test_pg_db):
     """Acceptance criterion: unique constraints enforce idempotency as in Section 3.2."""
-    db_path = tmp_path / "test_uniques.db"
-    run_alembic_upgrade(db_path)
+    from db import ensure_partitions
 
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA foreign_keys=ON")
+    run_alembic_upgrade(test_pg_db)
+    with psycopg.connect(test_pg_db) as conn:
+        ensure_partitions(conn)
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO plants (id, name) VALUES ('p1', 'Plant 1')")
+            cur.execute(
+                "INSERT INTO areas (plant_id, area_code, name) VALUES ('p1', 'a1', 'Area 1')"
+            )
+            cur.execute(
+                "INSERT INTO machines (plant_id, machine_code, area_code, name) "
+                "VALUES ('p1', 'm1', 'a1', 'Machine 1')"
+            )
+            cur.execute(
+                "INSERT INTO signals (plant_id, machine_code, signal_code, name) "
+                "VALUES ('p1', 'm1', 's1', 'Signal 1')"
+            )
+            conn.commit()
 
-    # Insert minimal plant, area, machine, signal
-    conn.execute("INSERT INTO plants (id, name) VALUES ('p1', 'Plant 1')")
-    conn.execute(
-        "INSERT INTO areas (plant_id, area_code, name) VALUES ('p1', 'a1', 'Area 1')"
-    )
-    conn.execute(
-        "INSERT INTO machines (plant_id, machine_code, area_code, name) VALUES ('p1', 'm1', 'a1', 'Machine 1')"
-    )
-    conn.execute(
-        "INSERT INTO signals (plant_id, machine_code, signal_code, name) VALUES ('p1', 'm1', 's1', 'Signal 1')"
-    )
-    conn.commit()
+            now_str = "2026-10-21T12:00:00Z"
+            cur.execute(
+                "INSERT INTO telemetry_values (plant_id, machine_code, signal_code, device_timestamp, message_id, value_num) "
+                "VALUES ('p1', 'm1', 's1', %s, 'msg_1', 10.5)",
+                (now_str,),
+            )
+            conn.commit()
 
-    # Test telemetry_values uniqueness on (plant_id, message_id, signal_code)
-    conn.execute(
-        "INSERT INTO telemetry_values (plant_id, machine_code, signal_code, device_timestamp, message_id, value_num) "
-        "VALUES ('p1', 'm1', 's1', '2026-10-18T00:00:00Z', 'msg_1', 10.5)"
-    )
-    conn.commit()
+            cur.execute(
+                "INSERT INTO telemetry_values (plant_id, machine_code, signal_code, device_timestamp, message_id, value_num) "
+                "VALUES ('p1', 'm1', 's1', %s, 'msg_1', 99.9) "
+                "ON CONFLICT (device_timestamp, plant_id, message_id, signal_code) DO NOTHING",
+                (now_str,),
+            )
+            conn.commit()
 
-    # INSERT OR IGNORE should silently ignore duplicate message_id + signal_code
-    conn.execute(
-        "INSERT OR IGNORE INTO telemetry_values (plant_id, machine_code, signal_code, device_timestamp, message_id, value_num) "
-        "VALUES ('p1', 'm1', 's1', '2026-10-18T00:00:00Z', 'msg_1', 99.9)"
-    )
-    conn.commit()
-
-    count = conn.execute("SELECT COUNT(*) FROM telemetry_values").fetchone()[0]
-    assert count == 1, f"Expected 1 row after duplicate insert-or-ignore, got {count}"
-
-    conn.close()
+            cur.execute("SELECT COUNT(*) FROM telemetry_values")
+            count = cur.fetchone()[0]
+            assert count == 1, f"Expected 1 row after duplicate insert-or-ignore, got {count}"
 
 
-def test_migration_downgrade_and_reupgrade(tmp_path):
+def test_migration_downgrade_and_reupgrade(test_pg_db):
     """Acceptance criterion: migration can be cleanly rolled back to base and re-applied."""
-    db_path = tmp_path / "test_rollback.db"
-    alembic_cfg = get_alembic_config(db_path)
+    alembic_cfg = get_alembic_config(test_pg_db)
 
     # 1. Upgrade to head
     command.upgrade(alembic_cfg, "head")
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-    )
-    tables_after_upgrade = {row[0] for row in cursor.fetchall()}
-    assert tables_after_upgrade >= EXPECTED_TABLES
-    conn.close()
+    with psycopg.connect(test_pg_db) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
+        )
+        tables_after_upgrade = {row[0] for row in cur.fetchall()}
+        assert tables_after_upgrade >= EXPECTED_TABLES
 
     # 2. Downgrade to base
     command.downgrade(alembic_cfg, "base")
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-    )
-    tables_after_downgrade = {row[0] for row in cursor.fetchall()}
-    assert EXPECTED_TABLES.isdisjoint(tables_after_downgrade)
-    conn.close()
+    with psycopg.connect(test_pg_db) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
+        )
+        tables_after_downgrade = {row[0] for row in cur.fetchall()}
+        assert EXPECTED_TABLES.isdisjoint(tables_after_downgrade)
 
     # 3. Re-upgrade to head
     command.upgrade(alembic_cfg, "head")
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-    )
-    tables_reupgrade = {row[0] for row in cursor.fetchall()}
-    assert tables_reupgrade >= EXPECTED_TABLES
-    conn.close()
+    with psycopg.connect(test_pg_db) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
+        )
+        tables_reupgrade = {row[0] for row in cur.fetchall()}
+        assert tables_reupgrade >= EXPECTED_TABLES
 
 
-def test_alembic_platform_db_schema_and_db_connection(tmp_path):
-    """Acceptance criterion: alembic migration sets up multi-plant schema on platform_db,
-
-    and db.get_db_connection enforces PRAGMA foreign_keys = ON.
+def test_alembic_platform_db_schema_and_db_connection(test_pg_db):
+    """Acceptance criterion: alembic migration sets up multi-plant schema on PostgreSQL,
+    and db.get_db_connection provides working connection.
     """
     from db import get_db_connection
 
-    platform_db = tmp_path / "platform.db"
+    # 1. Run alembic upgrade head against test_pg_db
+    run_alembic_upgrade(test_pg_db)
 
-    # 1. Run alembic upgrade head against platform_db
-    run_alembic_upgrade(platform_db)
-    assert platform_db.exists()
-
-    # 2. Check platform_db schema via get_db_connection
-    conn_platform = get_db_connection(str(platform_db))
-    cur_platform = conn_platform.cursor()
-    cur_platform.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    # 2. Check schema via get_db_connection
+    conn = get_db_connection(test_pg_db)
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
     )
-    platform_tables = {row[0] for row in cur_platform.fetchall()}
+    platform_tables = {row["table_name"] for row in cur.fetchall()}
     assert platform_tables >= EXPECTED_TABLES
 
     # Check that platform 'units' table has plant_id column
-    cur_platform.execute("PRAGMA table_info(units)")
-    platform_unit_cols = {row[1] for row in cur_platform.fetchall()}
+    cur.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'units'"
+    )
+    platform_unit_cols = {row["column_name"] for row in cur.fetchall()}
     assert "plant_id" in platform_unit_cols
     assert "unit_id" in platform_unit_cols
 
     # Check that platform 'stage_events' table has plant_id and machine_code
-    cur_platform.execute("PRAGMA table_info(stage_events)")
-    platform_stage_cols = {row[1] for row in cur_platform.fetchall()}
+    cur.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'stage_events'"
+    )
+    platform_stage_cols = {row["column_name"] for row in cur.fetchall()}
     assert "plant_id" in platform_stage_cols
     assert "machine_code" in platform_stage_cols
 
-    # Check that foreign keys pragma is active
-    cur_platform.execute("PRAGMA foreign_keys")
-    fk_enabled = cur_platform.fetchone()[0]
-    assert fk_enabled == 1, "Expected foreign keys to be enabled"
-
-    conn_platform.close()
+    conn.close()
 
 
-def test_alembic_default_url_is_platform_db():
-    """Acceptance criterion: alembic.ini defaults to sqlite:///./platform.db."""
+def test_alembic_default_url_is_postgres():
+    """Acceptance criterion: alembic.ini defaults to postgresql+psycopg URL."""
     alembic_cfg = Config(str(ALEMBIC_INI))
     url = alembic_cfg.get_main_option("sqlalchemy.url")
-    assert url == "sqlite:///./platform.db"
+    assert url.startswith("postgresql+psycopg://")

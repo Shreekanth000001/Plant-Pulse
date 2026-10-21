@@ -495,9 +495,9 @@ def test_admin_update_plant_put_with_confirm_removals_returns_200(admin_mutation
     assert "mach_01" in machs
 
     cur.execute(
-        "SELECT COUNT(*) FROM telemetry_values WHERE plant_id = 'plant_confirm_test' AND machine_code = 'mach_02';"
+        "SELECT COUNT(*) as cnt FROM telemetry_values WHERE plant_id = 'plant_confirm_test' AND machine_code = 'mach_02';"
     )
-    assert cur.fetchone()[0] == 0
+    assert cur.fetchone()["cnt"] == 0
     conn2.close()
 
 
@@ -551,10 +551,10 @@ def test_admin_delete_custom_plant_200_and_purges_db_and_registry(admin_mutation
     # Verify DB completely purged
     conn = get_db_connection(str(db_file))
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM plants WHERE id = 'plant_to_delete';")
-    assert cur.fetchone()[0] == 0
-    cur.execute("SELECT COUNT(*) FROM machines WHERE plant_id = 'plant_to_delete';")
-    assert cur.fetchone()[0] == 0
+    cur.execute("SELECT COUNT(*) as cnt FROM plants WHERE id = 'plant_to_delete';")
+    assert cur.fetchone()["cnt"] == 0
+    cur.execute("SELECT COUNT(*) as cnt FROM machines WHERE plant_id = 'plant_to_delete';")
+    assert cur.fetchone()["cnt"] == 0
     conn.close()
 
     # Repeat delete returns 404 (safe to repeat after crash / idempotency)
@@ -678,10 +678,12 @@ async def test_admin_delete_concurrent_ingest_with_real_engine(tmp_path):
         )
         for i in range(10000)
     ]
-    conn.executemany(
+    cur = conn.cursor()
+    cur.executemany(
         """
         INSERT INTO telemetry_values (plant_id, machine_code, signal_code, device_timestamp, received_at, message_id, value_num, value_text)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (device_timestamp, plant_id, message_id, signal_code) DO NOTHING;
         """,
         rows,
     )
@@ -737,14 +739,14 @@ async def test_admin_delete_concurrent_ingest_with_real_engine(tmp_path):
     check_conn = get_db_connection(str(db_file))
     cur = check_conn.cursor()
     cur.execute(
-        "SELECT COUNT(*) FROM telemetry_values WHERE plant_id = 'plant_del_concurrent';"
+        "SELECT COUNT(*) as cnt FROM telemetry_values WHERE plant_id = 'plant_del_concurrent';"
     )
-    assert cur.fetchone()[0] == 0
+    assert cur.fetchone()["cnt"] == 0
 
     cur.execute(
-        "SELECT COUNT(*) FROM telemetry_values WHERE plant_id = 'plant_demo_membrane';"
+        "SELECT COUNT(*) as cnt FROM telemetry_values WHERE plant_id = 'plant_demo_membrane';"
     )
-    membrane_count = cur.fetchone()[0]
+    membrane_count = cur.fetchone()["cnt"]
     assert membrane_count > 0, (
         "Telemetry for plant_demo_membrane must survive without errors"
     )

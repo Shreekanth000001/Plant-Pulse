@@ -227,22 +227,24 @@ def test_history_timestamp_formats_land_in_correct_bucket(history_server):
 
 def test_history_ignores_null_value_num(history_server):
     """Rows with NULL value_num (non-numeric text values) are excluded from numeric aggregations."""
-    import sqlite3
-
-    import main
+    from db import ensure_partition_for_timestamp, get_db_connection
 
     now = datetime.now(UTC)
-    ts = (now - timedelta(minutes=10)).isoformat()
+    dt = now - timedelta(minutes=10)
+    ts = dt.isoformat()
 
-    conn = sqlite3.connect(main.PLATFORM_DB_PATH)
+    conn = get_db_connection()
     try:
-        conn.execute(
+        ensure_partition_for_timestamp(conn, dt)
+        cur = conn.cursor()
+        cur.execute(
             """
             INSERT INTO telemetry_values (
                 plant_id, machine_code, signal_code, device_timestamp,
                 received_at, message_id, value_num, value_text
             )
-            VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, NULL, %s)
+            ON CONFLICT (device_timestamp, plant_id, message_id, signal_code) DO NOTHING;
             """,
             (
                 "plant_demo_membrane",

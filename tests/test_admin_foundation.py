@@ -347,8 +347,8 @@ def test_seed_runs_only_on_empty_db_and_ignores_changed_json(tmp_path):
         )
 
         cur2 = conn2.cursor()
-        cur2.execute("SELECT COUNT(*) FROM plants;")
-        assert cur2.fetchone()[0] == 1, (
+        cur2.execute("SELECT COUNT(*) as cnt FROM plants;")
+        assert cur2.fetchone()["cnt"] == 1, (
             "Only the initially seeded plant should exist in DB"
         )
     finally:

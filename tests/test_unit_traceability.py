@@ -311,15 +311,15 @@ def test_unknown_plant_writes_skipped(tmp_path, monkeypatch):
     conn = get_db_connection(str(db_path))
     with conn:
         conn.execute(
-            "INSERT INTO plants (id, name, timezone) VALUES (?, ?, ?)",
+            "INSERT INTO plants (id, name, timezone) VALUES (%s, %s, %s)",
             (unknown_plant, "Phantom Plant", "UTC"),
         )
         conn.execute(
-            "INSERT INTO areas (plant_id, area_code, name, display_order) VALUES (?, ?, ?, ?)",
+            "INSERT INTO areas (plant_id, area_code, name, display_order) VALUES (%s, %s, %s, %s)",
             (unknown_plant, "housing", "Housing", 1),
         )
         conn.execute(
-            "INSERT INTO machines (plant_id, machine_code, area_code, name, display_order) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO machines (plant_id, machine_code, area_code, name, display_order) VALUES (%s, %s, %s, %s, %s)",
             (unknown_plant, "hm_01", "housing", "Housing Molder 1", 1),
         )
     conn.close()
@@ -344,16 +344,16 @@ def test_unknown_plant_writes_skipped(tmp_path, monkeypatch):
 
     conn = get_db_connection(str(db_path))
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM units WHERE plant_id = ?", (unknown_plant,))
-    assert cur.fetchone()[0] == 0, "Unknown plant should not write to units table"
+    cur.execute("SELECT COUNT(*) as cnt FROM units WHERE plant_id = %s", (unknown_plant,))
+    assert cur.fetchone()["cnt"] == 0, "Unknown plant should not write to units table"
     cur.execute(
-        "SELECT COUNT(*) FROM stage_events WHERE plant_id = ?", (unknown_plant,)
+        "SELECT COUNT(*) as cnt FROM stage_events WHERE plant_id = %s", (unknown_plant,)
     )
-    assert cur.fetchone()[0] == 0, (
+    assert cur.fetchone()["cnt"] == 0, (
         "Unknown plant should not write to stage_events table"
     )
-    cur.execute("SELECT COUNT(*) FROM qc_results WHERE plant_id = ?", (unknown_plant,))
-    assert cur.fetchone()[0] == 0, "Unknown plant should not write to qc_results table"
+    cur.execute("SELECT COUNT(*) as cnt FROM qc_results WHERE plant_id = %s", (unknown_plant,))
+    assert cur.fetchone()["cnt"] == 0, "Unknown plant should not write to qc_results table"
     conn.close()
 
 
@@ -368,38 +368,38 @@ def test_plant_delete_cascades_all_traceability_tables(tmp_path):
     conn = get_db_connection(str(db_path))
     with conn:
         conn.execute(
-            "INSERT INTO plants (id, name, timezone) VALUES (?, ?, ?)",
+            "INSERT INTO plants (id, name, timezone) VALUES (%s, %s, %s)",
             (plant_id, "Cascade Test Plant", "UTC"),
         )
         conn.execute(
-            "INSERT INTO areas (plant_id, area_code, name, display_order) VALUES (?, ?, ?, ?)",
+            "INSERT INTO areas (plant_id, area_code, name, display_order) VALUES (%s, %s, %s, %s)",
             (plant_id, "housing", "Housing Area", 1),
         )
         conn.execute(
-            "INSERT INTO machines (plant_id, machine_code, area_code, name, display_order) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO machines (plant_id, machine_code, area_code, name, display_order) VALUES (%s, %s, %s, %s, %s)",
             (plant_id, "hm_01", "housing", "Housing Molder 1", 1),
         )
         conn.execute(
-            "INSERT INTO units (plant_id, unit_id, status) VALUES (?, ?, 'in_progress')",
+            "INSERT INTO units (plant_id, unit_id, status) VALUES (%s, %s, 'in_progress')",
             (plant_id, "unit_cascade_1"),
         )
         conn.execute(
-            "INSERT INTO stage_events (plant_id, unit_id, machine_code, message_id, outcome, readings) VALUES (?, ?, ?, ?, 'ok', '{}')",
+            "INSERT INTO stage_events (plant_id, unit_id, machine_code, message_id, outcome, readings) VALUES (%s, %s, %s, %s, 'ok', '{}')",
             (plant_id, "unit_cascade_1", "hm_01", "msg_casc_stage"),
         )
         conn.execute(
-            "INSERT INTO qc_results (plant_id, unit_id, machine_code, message_id, outcome, probability) VALUES (?, ?, ?, ?, 'pass', 1.0)",
+            "INSERT INTO qc_results (plant_id, unit_id, machine_code, message_id, outcome, probability) VALUES (%s, %s, %s, %s, 'pass', 1.0)",
             (plant_id, "unit_cascade_1", "hm_01", "msg_casc_qc"),
         )
 
     # Check counts BEFORE delete
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM units WHERE plant_id = ?", (plant_id,))
-    units_before = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM stage_events WHERE plant_id = ?", (plant_id,))
-    stages_before = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM qc_results WHERE plant_id = ?", (plant_id,))
-    qc_before = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) as cnt FROM units WHERE plant_id = %s", (plant_id,))
+    units_before = cur.fetchone()["cnt"]
+    cur.execute("SELECT COUNT(*) as cnt FROM stage_events WHERE plant_id = %s", (plant_id,))
+    stages_before = cur.fetchone()["cnt"]
+    cur.execute("SELECT COUNT(*) as cnt FROM qc_results WHERE plant_id = %s", (plant_id,))
+    qc_before = cur.fetchone()["cnt"]
 
     assert units_before == 1, f"Expected 1 unit before delete, got {units_before}"
     assert stages_before == 1, (
@@ -409,15 +409,15 @@ def test_plant_delete_cascades_all_traceability_tables(tmp_path):
 
     # Delete the plant
     with conn:
-        conn.execute("DELETE FROM plants WHERE id = ?", (plant_id,))
+        conn.execute("DELETE FROM plants WHERE id = %s", (plant_id,))
 
     # Check counts AFTER delete
-    cur.execute("SELECT COUNT(*) FROM units WHERE plant_id = ?", (plant_id,))
-    units_after = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM stage_events WHERE plant_id = ?", (plant_id,))
-    stages_after = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM qc_results WHERE plant_id = ?", (plant_id,))
-    qc_after = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) as cnt FROM units WHERE plant_id = %s", (plant_id,))
+    units_after = cur.fetchone()["cnt"]
+    cur.execute("SELECT COUNT(*) as cnt FROM stage_events WHERE plant_id = %s", (plant_id,))
+    stages_after = cur.fetchone()["cnt"]
+    cur.execute("SELECT COUNT(*) as cnt FROM qc_results WHERE plant_id = %s", (plant_id,))
+    qc_after = cur.fetchone()["cnt"]
     conn.close()
 
     assert units_after == 0, f"Units did not cascade delete! Count: {units_after}"

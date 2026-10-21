@@ -1,36 +1,25 @@
 import asyncio
-import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from alembic import command
-from alembic.config import Config
 
+from db import get_db_connection
 from ingest import IngestEngine, sync_plant_definitions
+from main import init_platform_db
 from plant_definitions import load_plants
 
 PLANTS_DIR = Path(__file__).resolve().parent.parent / "plants"
 
 
-def run_alembic_upgrade(db_path: Path) -> None:
-    repo_root = Path(__file__).resolve().parent.parent
-    ini_path = repo_root / "alembic.ini"
-    alembic_cfg = Config(str(ini_path))
-    alembic_cfg.set_main_option("script_location", str(repo_root / "migrations"))
-    alembic_cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
-    command.upgrade(alembic_cfg, "head")
-
-
 @pytest.fixture
 def test_db(tmp_path):
     db_path = tmp_path / "test_platform.db"
-    run_alembic_upgrade(db_path)
+    init_platform_db(db_path)
 
     # Seed parents from plants/*.json
     plants = load_plants(PLANTS_DIR)
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA foreign_keys=ON")
+    conn = get_db_connection(str(db_path))
     sync_plant_definitions(conn, plants)
     conn.close()
 
@@ -71,8 +60,9 @@ async def test_duplicate_messages_are_ignored(test_db):
     engine = IngestEngine(test_db, plants=plants, batch_size=100)
 
     topic = "plants/plant_demo_membrane/assets/hm_01/telemetry"
-    payload1 = make_valid_payload(message_id="msg-dup-123")
-    payload2 = make_valid_payload(message_id="msg-dup-123")
+    now_ts = datetime.now(UTC)
+    payload1 = make_valid_payload(message_id="msg-dup-123", timestamp=now_ts)
+    payload2 = make_valid_payload(message_id="msg-dup-123", timestamp=now_ts)
 
     accepted1 = await engine.enqueue(topic, payload1)
     accepted2 = await engine.enqueue(topic, payload2)
@@ -81,10 +71,10 @@ async def test_duplicate_messages_are_ignored(test_db):
 
     await engine.flush()
 
-    conn = sqlite3.connect(test_db)
+    conn = get_db_connection(str(test_db))
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM telemetry_values")
-    count = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) as cnt FROM telemetry_values")
+    count = cursor.fetchone()["cnt"]
     conn.close()
 
     # Payload has 3 metrics -> exactly 3 rows, not 6
@@ -106,8 +96,10 @@ async def test_readings_more_than_5_minutes_in_future_rejected(test_db):
 
     await engine.flush()
 
-    conn = sqlite3.connect(test_db)
-    count = conn.execute("SELECT COUNT(*) FROM telemetry_values").fetchone()[0]
+    conn = get_db_connection(str(test_db))
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) as cnt FROM telemetry_values")
+    count = cur.fetchone()["cnt"]
     conn.close()
     assert count == 0
 
@@ -127,7 +119,7 @@ async def test_late_readings_within_configured_window_accepted(test_db):
 
     await engine.flush()
 
-    conn = sqlite3.connect(test_db)
+    conn = get_db_connection(str(test_db))
     cursor = conn.cursor()
     cursor.execute(
         "SELECT device_timestamp FROM telemetry_values WHERE message_id = 'msg-late-valid'"
@@ -137,7 +129,11 @@ async def test_late_readings_within_configured_window_accepted(test_db):
 
     assert len(rows) == 3
     # Device timestamp matches the past time
-    assert rows[0][0].startswith(past_time.strftime("%Y-%m-%d"))
+    raw_ts = rows[0]["device_timestamp"]
+    if isinstance(raw_ts, datetime):
+        assert raw_ts.strftime("%Y-%m-%d") == past_time.strftime("%Y-%m-%d")
+    else:
+        assert raw_ts.startswith(past_time.strftime("%Y-%m-%d"))
 
 
 @pytest.mark.anyio
@@ -155,8 +151,10 @@ async def test_late_readings_older_than_window_rejected(test_db):
 
     await engine.flush()
 
-    conn = sqlite3.connect(test_db)
-    count = conn.execute("SELECT COUNT(*) FROM telemetry_values").fetchone()[0]
+    conn = get_db_connection(str(test_db))
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) as cnt FROM telemetry_values")
+    count = cur.fetchone()["cnt"]
     conn.close()
     assert count == 0
 
@@ -207,16 +205,20 @@ async def test_batches_commit_on_100_items(test_db):
     # Give consumer worker a moment to process the 100 items
     for _ in range(20):
         await asyncio.sleep(0.05)
-        conn = sqlite3.connect(test_db)
-        count = conn.execute("SELECT COUNT(*) FROM telemetry_values").fetchone()[0]
+        conn = get_db_connection(str(test_db))
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) as cnt FROM telemetry_values")
+        count = cur.fetchone()["cnt"]
         conn.close()
         if count >= 100:
             break
 
     await engine.stop()
 
-    conn = sqlite3.connect(test_db)
-    count = conn.execute("SELECT COUNT(*) FROM telemetry_values").fetchone()[0]
+    conn = get_db_connection(str(test_db))
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) as cnt FROM telemetry_values")
+    count = cur.fetchone()["cnt"]
     conn.close()
     assert count == 100
 
@@ -241,10 +243,10 @@ async def test_batches_commit_on_500ms_timer(test_db):
     )
 
     # Before 500ms, should not be committed yet
-    conn = sqlite3.connect(test_db)
-    count_immediate = conn.execute("SELECT COUNT(*) FROM telemetry_values").fetchone()[
-        0
-    ]
+    conn = get_db_connection(str(test_db))
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) as cnt FROM telemetry_values")
+    count_immediate = cur.fetchone()["cnt"]
     conn.close()
     assert count_immediate == 0
 
@@ -253,10 +255,10 @@ async def test_batches_commit_on_500ms_timer(test_db):
     count_after_timer = 0
     while asyncio.get_running_loop().time() - start_time < 3.0:
         await asyncio.sleep(0.05)
-        conn = sqlite3.connect(test_db)
-        count_after_timer = conn.execute(
-            "SELECT COUNT(*) FROM telemetry_values"
-        ).fetchone()[0]
+        conn = get_db_connection(str(test_db))
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) as cnt FROM telemetry_values")
+        count_after_timer = cur.fetchone()["cnt"]
         conn.close()
         if count_after_timer == 2:
             break
@@ -288,8 +290,10 @@ async def test_graceful_shutdown_drains_queue_and_loses_nothing(test_db):
     # Stop engine: must drain and commit the 30 items
     await engine.stop()
 
-    conn = sqlite3.connect(test_db)
-    count = conn.execute("SELECT COUNT(*) FROM telemetry_values").fetchone()[0]
+    conn = get_db_connection(str(test_db))
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) as cnt FROM telemetry_values")
+    count = cur.fetchone()["cnt"]
     conn.close()
     assert count == 30
 
@@ -340,10 +344,12 @@ async def test_topic_router_ingest_integration(test_db):
 
     await engine.flush()
 
-    conn = sqlite3.connect(test_db)
-    count = conn.execute(
-        "SELECT COUNT(*) FROM telemetry_values WHERE message_id = 'msg-router-int-1'"
-    ).fetchone()[0]
+    conn = get_db_connection(str(test_db))
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT COUNT(*) as cnt FROM telemetry_values WHERE message_id = 'msg-router-int-1'"
+    )
+    count = cur.fetchone()["cnt"]
     conn.close()
     assert count == 3
 
@@ -372,16 +378,21 @@ async def test_machine_state_upsert_newer_timestamp_only(test_db):
     await engine.handle_state(payload_new, "plant_demo_membrane", "hm_01")
     await engine.flush()
 
-    conn = sqlite3.connect(test_db)
-    row = conn.execute(
-        "SELECT state, sub_state, last_seen_at FROM machine_states WHERE plant_id=? AND machine_code=?",
+    conn = get_db_connection(str(test_db))
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT state, sub_state, last_seen_at FROM machine_states WHERE plant_id=%s AND machine_code=%s",
         ("plant_demo_membrane", "hm_01"),
-    ).fetchone()
+    )
+    row = cur.fetchone()
     conn.close()
     assert row is not None
-    assert row[0] == "FAULT"
-    assert row[1] == "COOLING"
-    assert row[2] == t_new.isoformat()
+    assert row["state"] == "FAULT"
+    assert row["sub_state"] == "COOLING"
+    last_seen = row["last_seen_at"]
+    if isinstance(last_seen, datetime):
+        last_seen = last_seen.isoformat()
+    assert last_seen.startswith(t_new.strftime("%Y-%m-%dT%H:%M"))
 
     # 2. Send older late message: IDLE at 12:05
     payload_old = {
@@ -396,17 +407,22 @@ async def test_machine_state_upsert_newer_timestamp_only(test_db):
     await engine.handle_state(payload_old, "plant_demo_membrane", "hm_01")
     await engine.flush()
 
-    conn = sqlite3.connect(test_db)
-    row = conn.execute(
-        "SELECT state, sub_state, last_seen_at FROM machine_states WHERE plant_id=? AND machine_code=?",
+    conn = get_db_connection(str(test_db))
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT state, sub_state, last_seen_at FROM machine_states WHERE plant_id=%s AND machine_code=%s",
         ("plant_demo_membrane", "hm_01"),
-    ).fetchone()
+    )
+    row = cur.fetchone()
     conn.close()
     assert row is not None
     # Must NOT be overwritten by older message
-    assert row[0] == "FAULT"
-    assert row[1] == "COOLING"
-    assert row[2] == t_new.isoformat()
+    assert row["state"] == "FAULT"
+    assert row["sub_state"] == "COOLING"
+    last_seen = row["last_seen_at"]
+    if isinstance(last_seen, datetime):
+        last_seen = last_seen.isoformat()
+    assert last_seen.startswith(t_new.strftime("%Y-%m-%dT%H:%M"))
 
 
 @pytest.mark.anyio
@@ -449,15 +465,17 @@ async def test_unknown_status_stored_and_logs_warning_without_failing_batch(
     assert any("CALIBRATING_OPTICS" in r.getMessage() for r in records)
 
     # State still stored
-    conn = sqlite3.connect(test_db)
-    row = conn.execute(
-        "SELECT state, sub_state FROM machine_states WHERE plant_id=? AND machine_code=?",
+    conn = get_db_connection(str(test_db))
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT state, sub_state FROM machine_states WHERE plant_id=%s AND machine_code=%s",
         ("plant_demo_membrane", "hm_01"),
-    ).fetchone()
+    )
+    row = cur.fetchone()
     conn.close()
     assert row is not None
-    assert row[0] == "CALIBRATING_OPTICS"
-    assert row[1] == "FINE_TUNING"
+    assert row["state"] == "CALIBRATING_OPTICS"
+    assert row["sub_state"] == "FINE_TUNING"
 
 
 @pytest.mark.anyio
@@ -478,17 +496,20 @@ async def test_state_upsert_in_same_transaction_as_telemetry_batch(test_db):
     # Flush commits both
     await engine.flush()
 
-    conn = sqlite3.connect(test_db)
-    telemetry_count = conn.execute(
-        "SELECT COUNT(*) FROM telemetry_values WHERE message_id=?",
+    conn = get_db_connection(str(test_db))
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT COUNT(*) as cnt FROM telemetry_values WHERE message_id=%s",
         ("msg-tx-001",),
-    ).fetchone()[0]
-    state_row = conn.execute(
-        "SELECT state FROM machine_states WHERE plant_id=? AND machine_code=?",
+    )
+    telemetry_count = cur.fetchone()["cnt"]
+    cur.execute(
+        "SELECT state FROM machine_states WHERE plant_id=%s AND machine_code=%s",
         ("plant_demo_membrane", "hm_01"),
-    ).fetchone()
+    )
+    state_row = cur.fetchone()
     conn.close()
 
     assert telemetry_count > 0
     assert state_row is not None
-    assert state_row[0] == "RUNNING"
+    assert state_row["state"] == "RUNNING"

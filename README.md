@@ -63,7 +63,7 @@ flowchart LR
     end
 
     subgraph Persistence
-        DB[("SQLite: platform.db<br/>(WAL + normal sync)")]
+        DB[("PostgreSQL 16<br/>(Time-partitioned telemetry)")]
     end
 
     subgraph Client Application
@@ -86,9 +86,9 @@ flowchart LR
 ```
 
 ### Key Architectural Characteristics
-- **Heartbeat-as-Run Watchdog Protocol:** The simulator only runs while active browser viewers are connected. The API emits heartbeats every 5 seconds when viewers exist; after 30 seconds of silence, the simulator idles to prevent unconstrained SQLite database growth.
+- **Heartbeat-as-Run Watchdog Protocol:** The simulator only runs while active browser viewers are connected. The API emits heartbeats every 5 seconds when viewers exist; after 30 seconds of silence, the simulator idles to prevent unconstrained database growth.
 - **Broker-Level Topic ACLs & Password Auth:** Edge credentials and topic access are compiled into Mosquitto password and ACL files (`plants/{plant_id}/#`) at boot. Broker port 1883 remains internal to the Docker network.
-- **Narrow Telemetry Persistence:** Measurements are committed in batches (`telemetry_values`) with database-enforced idempotency (`UNIQUE(plant_id, message_id, signal_code)`).
+- **Native Daily Time Partitioning & Idempotency:** Measurements are committed in batches (`telemetry_values`) partitioned daily by `device_timestamp` with composite primary key `(device_timestamp, plant_id, message_id, signal_code)` and `ON CONFLICT DO NOTHING` deduplication. Partitions are pre-created across `[today-1 .. today+7]`.
 - **Strict Localhost Port Binding:** The API service binds port 8000 strictly to loopback (`127.0.0.1:8000`) in Docker Compose to prevent exposing backend endpoints directly on public network interfaces in VM deployments.
 
 ---
@@ -99,18 +99,17 @@ PlantPulse provides time-series trend analysis for machine sensor readings via a
 
 - **Endpoint:** `GET /api/plants/{plant_id}/signals/{machine_code}/{signal_code}/history`
 - **Time Windows:** Supported via query parameter `range` (`1h`, `6h`, `12h`, `24h`, default `1h`).
-- **Adaptive Downsampling:** Queries accept `points` (bounded between 10 and 500, default 300) and group timestamps into even time buckets using SQLite integer division, computing `avg_value`, `min_value`, and `max_value`.
+- **Adaptive Downsampling:** Queries accept `points` (bounded between 10 and 500, default 300) and group timestamps into even time buckets using PostgreSQL `date_bin`, computing `avg_value`, `min_value`, and `max_value`.
 - **Gap Detection:** Frontend chart rendering detects gaps exceeding 2x the expected interval and inserts sentinel breaks to prevent misleading straight-line interpolation during simulator idle periods.
 
 ---
 
 ## Background Telemetry Retention
 
-To prevent unbounded SQLite database growth during extended runs, a scheduled background worker continuously enforces a configurable retention window:
+To prevent unbounded database growth during extended runs, a scheduled background worker continuously enforces a configurable retention window:
 
 - **Configuration:** Controlled by `RETENTION_DAYS` (default `30` days) and `ENABLE_RETENTION_WORKER` (default `true`, disabled in test environments).
-- **Non-Blocking Batched Deletes:** Deletions run off the main event loop in chunks of 50,000 rows (`DELETE ... WHERE timestamp < ? LIMIT 50000`) until all expired telemetry is purged.
-- **Space Reclamation:** Periodically executes `PRAGMA incremental_vacuum` in small increments, or runs a full `VACUUM` when database free pages exceed a 20% threshold, ensuring concurrent ingestion writes remain responsive.
+- **Non-Blocking Batched Deletes:** Deletions run off the main event loop in chunks of 50,000 rows (`DELETE FROM telemetry_values WHERE (device_timestamp, plant_id, message_id, signal_code) IN (SELECT ... LIMIT 50000)`) until all expired telemetry is purged. In PR 2, partition dropping replaces row deletes for telemetry data.
 
 ---
 
@@ -169,6 +168,7 @@ docker compose ps
 
 All services will show `(healthy)`:
 - `plantpulse-broker-1`: Mosquitto broker (internal `1883/tcp`)
+- `plantpulse-postgres-1`: PostgreSQL 16 database (internal `5432/tcp`)
 - `plantpulse-api-1`: FastAPI backend on `http://127.0.0.1:8000`
 - `plantpulse-dashboard-1`: Next.js web application on `http://localhost:3000`
 - `plantpulse-simulator-1`: Simulator runner client
@@ -198,10 +198,17 @@ python scripts/smoke_stack.py
 
 ## Running Locally (Without Docker)
 
-Prerequisites: Python 3.12, Node 22+, and a local Mosquitto broker.
+Prerequisites: Python 3.12, Node 22+, a local Mosquitto broker, and a running PostgreSQL 16 instance.
 
 ```bash
-# 1. Configure environment and start Mosquitto with generated auth
+# 1. Start local PostgreSQL instance (or use docker):
+docker run -d --name plantpulse-postgres -p 5432:5432 \
+  -e POSTGRES_USER=plantpulse \
+  -e POSTGRES_PASSWORD=plantpulse \
+  -e POSTGRES_DB=plantpulse \
+  postgres:16-alpine
+
+# 2. Configure environment and start Mosquitto with generated auth
 cp .env.example .env && set -a && source .env && set +a
 
 python scripts/generate_mosquitto_auth.py \
@@ -212,19 +219,20 @@ python scripts/generate_mosquitto_auth.py \
 
 mosquitto -p 1883 -c docker/mosquitto.conf
 
-# 2. Start FastAPI Backend (venv active)
+# 3. Start FastAPI Backend (venv active)
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
+export DATABASE_URL="postgresql://plantpulse:plantpulse@localhost:5432/plantpulse"
 alembic upgrade head
 MQTT_USER=backend_service MQTT_PASSWORD=backend_secret uvicorn main:app --port 8000
 
-# 3. Start Simulator Runner
+# 4. Start Simulator Runner
 MQTT_USER=device_plant_demo_membrane \
 MQTT_PASSWORD=demo_membrane_secure_token_123 \
 MQTT_CLIENT_ID=client_demo_membrane_sim \
 python -m demo.simulator.runner
 
-# 4. Start Dashboard
+# 5. Start Dashboard
 cd frontend
 npm install
 npm run dev
@@ -234,14 +242,20 @@ npm run dev
 
 ## Testing & Quality Assurance
 
+Tests execute against a PostgreSQL database configured via `DATABASE_URL`. In CI and automated runs, tests fail if PostgreSQL is unreachable.
+
 ```bash
-# Backend pytest suite (171 passed)
+# 1. Start test PostgreSQL container:
+docker run -d --name plantpulse-test-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16-alpine
+
+# 2. Run backend pytest suite (195 passed)
+export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/plantpulse_test"
 pytest -v
 
-# Frontend unit tests (59 passed)
+# 3. Frontend unit tests (59 passed)
 cd frontend && npm test
 
-# Linting & code formatting
+# 4. Linting & code formatting
 ruff check .
 cd frontend && npm run lint
 codespell --skip="*.db*,*.wal,*.shm,./venv,./frontend/node_modules,./frontend/.next,./.git,./docs/*.png"
@@ -256,8 +270,8 @@ This is a portfolio and learning project demonstrating distributed industrial Io
 1. **Public Demo Passwords & Tokens in `.env.example`:** Pre-configured demo credentials (e.g., `MQTT_PASSWORD`, `WATER_MQTT_PASSWORD`, and `PLANT_WATER_DISTRICT_9_VIEWER_TOKEN`) are included in `.env.example` to allow zero-setup out-of-the-box evaluation. In production environments, credentials should be randomly generated and injected through external secret managers.
 2. **In-Memory Rate Limiter Reset & Proxy IP Sharing:** Rate-limiting attempt histories are maintained in memory and reset whenever the API process restarts. Because client socket IPs are evaluated directly without trusting `X-Forwarded-For`, clients situated behind a shared reverse proxy or corporate NAT pool share a single rate-limiting bucket.
 3. **Legacy `/api` Endpoints Unauthenticated:** Legacy endpoints retained for backwards compatibility (`/api/units`, `/api/summary`) are unauthenticated. Production deployments should disable or deprecate legacy routes.
-4. **SQLite Single-File Persistence:** The platform persists telemetry in a single local SQLite file (`platform.db`) using WAL mode. While efficient for single-node deployments, it lacks distributed clustering, high availability, and horizontal multi-writer scaling.
+4. **Partition Key in Deduplication Constraint:** Native PostgreSQL time partitioning requires the partition key (`device_timestamp`) to be included in all unique constraints and primary keys on partitioned tables. As a result, the primary key of `telemetry_values` is `(device_timestamp, plant_id, message_id, signal_code)`. If an edge device retry generates a new timestamp rather than retaining the original sample timestamp, the message will be stored twice. When retried QoS 1 redelivery preserves the original timestamp, duplicates are cleanly dropped via `ON CONFLICT DO NOTHING`.
 5. **At-Most-Once Delivery Inside API:** The IngestEngine buffers incoming MQTT telemetry in an asynchronous queue before committing batched inserts. An abrupt server termination or container kill will drop in-flight uncommitted measurements.
-6. **Retention VACUUM Requires Free Disk Space:** SQLite full `VACUUM` operations duplicate the database file during compaction. Running a full vacuum on large databases requires free disk capacity equal to or greater than the current size of `platform.db`.
+6. **Partition Retention Transition:** PR 1 implements the full database swap to PostgreSQL with daily partitioned telemetry tables and composite-key batched deletes. Dedicated partition-drop retention automation and legacy SQLite export tools will be introduced in PR 2 (#34).
 7. **Static Admin Token Until Login Session (#55):** Admin authentication currently uses a static pre-shared Bearer secret (`ADMIN_TOKEN`). Interactive user accounts, database-backed roles, and session token rotation are cataloged for a subsequent milestone.
 8. **No Viewer Token Removal in Admin UI:** The Admin UI allows rotating or updating existing plant viewer tokens, but clearing a token back to public unauthenticated access is not supported from the interface (preserving the existing token hash on blank submission). Making a protected plant public requires manual database intervention.

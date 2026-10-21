@@ -157,12 +157,9 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("plant_id", "machine_code"),
     )
 
-    # 7. Telemetry Values
+    # 7. Telemetry Values (partitioned daily by device_timestamp)
     op.create_table(
         "telemetry_values",
-        sa.Column(
-            "id", sa.Integer(), primary_key=True, autoincrement=True, nullable=False
-        ),
         sa.Column("plant_id", sa.String(length=64), nullable=False),
         sa.Column("machine_code", sa.String(length=64), nullable=False),
         sa.Column("signal_code", sa.String(length=64), nullable=False),
@@ -176,15 +173,15 @@ def upgrade() -> None:
         sa.Column("message_id", sa.String(length=64), nullable=False),
         sa.Column("value_num", sa.Float(), nullable=True),
         sa.Column("value_text", sa.String(length=255), nullable=True),
-        sa.ForeignKeyConstraint(["plant_id"], ["plants.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint(
+            "device_timestamp", "plant_id", "message_id", "signal_code"
+        ),
         sa.ForeignKeyConstraint(
-            ["plant_id", "machine_code", "signal_code"],
-            ["signals.plant_id", "signals.machine_code", "signals.signal_code"],
+            ["plant_id", "machine_code"],
+            ["machines.plant_id", "machines.machine_code"],
             ondelete="CASCADE",
         ),
-        sa.UniqueConstraint(
-            "plant_id", "message_id", "signal_code", name="uq_telemetry_idempotency"
-        ),
+        postgresql_partition_by="RANGE (device_timestamp)",
     )
     op.create_index(
         "idx_telemetry_series",

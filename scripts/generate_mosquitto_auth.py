@@ -4,7 +4,6 @@ import hashlib
 import os
 import shutil
 import signal
-import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +12,8 @@ from pathlib import Path
 repo_root = Path(__file__).resolve().parent.parent
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
+
+from typing import Any
 
 from plant_definitions import PlantDefinition, load_plants
 
@@ -171,13 +172,13 @@ def _get_cached_backend_hash(backend_user: str, backend_password: str) -> str:
 
 
 def sync_broker_auth_from_db(
-    conn: sqlite3.Connection,
+    conn: Any,
     auth_dir: Path | str | None = None,
     backend_user: str | None = None,
     backend_password: str | None = None,
     reload: bool = True,
 ) -> bool:
-    """Generate Mosquitto password and ACL files from platform.db and reload Mosquitto."""
+    """Generate Mosquitto password and ACL files from platform database and reload Mosquitto."""
     if auth_dir is None:
         auth_dir = os.getenv("MOSQUITTO_AUTH_DIR", "/mosquitto/auth")
     auth_dir = Path(auth_dir)
@@ -196,7 +197,7 @@ def sync_broker_auth_from_db(
 
     cur = conn.cursor()
     cur.execute(
-        "SELECT plant_id, username, password_hash FROM plant_credentials WHERE is_active = 1 ORDER BY plant_id, username;"
+        "SELECT plant_id, username, password_hash FROM plant_credentials WHERE is_active = true ORDER BY plant_id, username;"
     )
     cred_rows = cur.fetchall()
 
@@ -215,7 +216,7 @@ def sync_broker_auth_from_db(
         if not h.startswith("$7$"):
             h = hash_password_pbkdf2(h)
             cur.execute(
-                "UPDATE plant_credentials SET password_hash = ? WHERE plant_id = ? AND username = ?;",
+                "UPDATE plant_credentials SET password_hash = %s WHERE plant_id = %s AND username = %s;",
                 (h, row["plant_id"], u),
             )
             conn.commit()

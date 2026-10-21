@@ -2,8 +2,7 @@ import os
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, event, pool
-from sqlalchemy.engine import Engine
+from sqlalchemy import engine_from_config, pool
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -14,25 +13,15 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
-# Override sqlalchemy.url from DATABASE_URL env var if provided
+# Override sqlalchemy.url from DATABASE_URL env var if default or not provided
+current_url = config.get_main_option("sqlalchemy.url")
 db_url = os.environ.get("DATABASE_URL")
-if db_url:
+if db_url and (not current_url or current_url == "postgresql+psycopg://postgres:postgres@localhost:5432/plantpulse"):
+    if db_url.startswith("postgresql://") and not db_url.startswith("postgresql+psycopg://"):
+        db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
     config.set_main_option("sqlalchemy.url", db_url)
 
 target_metadata = None
-
-
-@event.listens_for(Engine, "connect")
-def set_sqlite_pragma(dbapi_connection, connection_record):
-    """Ensure SQLite connections enforce foreign keys, WAL mode, and busy timeout."""
-    cursor = dbapi_connection.cursor()
-    try:
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA synchronous=NORMAL")
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.execute("PRAGMA busy_timeout=5000")
-    finally:
-        cursor.close()
 
 
 def run_migrations_offline() -> None:

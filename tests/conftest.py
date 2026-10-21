@@ -9,3 +9,6 @@ os.environ.setdefault(
     "PLANT_WATER_DISTRICT_9_VIEWER_TOKEN", "district9_read_secret_token_889"
 )
 os.environ.setdefault("BACKEND_MQTT_PASSWORD", "backend_test_password_123")
+os.environ.setdefault(
+    "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/plantpulse_test"
+)
