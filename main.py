@@ -46,20 +46,9 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import func
-from sqlalchemy.orm import Session
 
 from admin_auth import get_client_ip, verify_admin_token, viewer_rate_limiter
-from database import (
-    QCResult,
-    SessionLocal,
-    StageEvent,
-    TelemetryReading,
-    Unit,
-    get_db_connection,
-    get_session,
-    init_db,
-)
+from db import get_db_connection
 from ingest import IngestEngine, sync_plant_definitions
 from plant_definitions import (
     AdminCredentialRotateResponse,
@@ -92,7 +81,6 @@ MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_USER = os.getenv("MQTT_USER")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
-MQTT_TOPIC = "factory/#"
 RECONNECT_MAX_S = 30
 
 
@@ -109,7 +97,6 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
 log = logging.getLogger("factory-backend")
-DbSession = Annotated[Session, Depends(get_session)]
 
 
 class RedactSensitiveFilter(logging.Filter):
@@ -290,34 +277,10 @@ def verify_plant_viewer(
 
 
 class ConnectionManager:
-    """Tracks connected clients and fans out messages.
-    Supports both legacy global clients and plant-partitioned rooms."""
+    """Tracks connected clients and fans out messages partitioned by plant."""
 
     def __init__(self) -> None:
-        self._clients: set[WebSocket] = set()
         self._rooms: dict[str, set[WebSocket]] = {}
-
-    async def connect(self, ws: WebSocket) -> None:
-        await ws.accept()
-        self._clients.add(ws)
-        log.info("WebSocket client connected (%d total)", len(self._clients))
-
-    def disconnect(self, ws: WebSocket) -> None:
-        self._clients.discard(ws)
-        log.info("WebSocket client disconnected (%d total)", len(self._clients))
-
-    async def broadcast(self, message: str) -> None:
-        if not self._clients:
-            return
-        clients = list(self._clients)
-
-        async def _send(ws: WebSocket) -> None:
-            try:
-                await asyncio.wait_for(ws.send_text(message), timeout=2.0)
-            except Exception:  # noqa: BLE001
-                self.disconnect(ws)
-
-        await asyncio.gather(*(_send(ws) for ws in clients))
 
     async def connect_plant(self, plant_id: str, ws: WebSocket) -> None:
         await ws.accept()
@@ -375,23 +338,6 @@ plant_queue_depths: dict[str, dict[str, int]] = {}
 active_machine_units: dict[tuple[str, str], str] = {}
 active_units: dict[str, dict[str, Any]] = {}
 
-
-# Fields that are "common" columns on TelemetryReading — everything else
-# in a telemetry payload goes into the `extra` JSON column.
-COMMON_TELEMETRY_FIELDS = {
-    "machine_id",
-    "name",
-    "machine_state",
-    "phase",
-    "starved",
-    "current_unit",
-    "vibration",
-    "vibration_wear_level",
-    "good_count",
-    "reject_count",
-}
-
-
 def _store_platform_unit_in_progress(plant_id: str, unit_id: str) -> None:
     if plant_id not in plants_registry:
         return
@@ -408,98 +354,6 @@ def _store_platform_unit_in_progress(plant_id: str, unit_id: str) -> None:
         log.exception("Failed to store in-progress unit in platform.db for %s", unit_id)
     finally:
         conn.close()
-
-
-def _store_telemetry(db, sub_facility: str, payload: dict) -> None:
-    excluded = COMMON_TELEMETRY_FIELDS | {"last_result", "stage_event"}
-    extra = {k: v for k, v in payload.items() if k not in excluded}
-    curr_unit_id = payload.get("current_unit") or payload.get("current_unit_id")
-    if curr_unit_id:
-        active_units[curr_unit_id] = {
-            "plant_id": DEMO_PLANT_ID,
-            "machine_code": payload.get("machine_id", "hm_01"),
-            "seen_at": datetime.now(UTC).isoformat(),
-        }
-        if not db.query(Unit).filter(Unit.unit_id == curr_unit_id).first():
-            db.add(Unit(unit_id=curr_unit_id, status="in_progress"))
-        _store_platform_unit_in_progress(DEMO_PLANT_ID, curr_unit_id)
-
-    reading = TelemetryReading(
-        timestamp=datetime.now(UTC),
-        machine_id=payload["machine_id"],
-        sub_facility=sub_facility,
-        machine_state=payload.get("machine_state"),
-        phase=payload.get("phase"),
-        starved=payload.get("starved", False),
-        current_unit_id=curr_unit_id,
-        vibration=payload.get("vibration"),
-        vibration_wear_level=payload.get("vibration_wear_level"),
-        good_count=payload.get("good_count"),
-        reject_count=payload.get("reject_count"),
-        extra=extra,
-    )
-    db.add(reading)
-
-
-def _parse_event_dt(val: Any) -> datetime | None:
-    if not val:
-        return None
-    if isinstance(val, (int, float)):
-        return datetime.fromtimestamp(val, tz=UTC)
-    if isinstance(val, str):
-        try:
-            return datetime.fromisoformat(val)
-        except ValueError:
-            return None
-    return None
-
-
-def _store_stage_event(db, payload: dict) -> None:
-    unit_id = payload["unit_id"]
-
-    # First time we've seen this unit — Housing's stage_event is always
-    # the first one to arrive for any given unit.
-    if not db.query(Unit).filter(Unit.unit_id == unit_id).first():
-        db.add(Unit(unit_id=unit_id, status="in_progress"))
-
-    machine_code = payload.get("machine_code") or payload.get("machine_id") or "hm_01"
-    readings = payload.get("readings") or payload.get("sensor_snapshot") or {}
-
-    db.add(
-        StageEvent(
-            unit_id=unit_id,
-            machine_code=machine_code,
-            entered_at=_parse_event_dt(payload.get("entered_at")),
-            exited_at=_parse_event_dt(payload.get("exited_at")),
-            outcome=payload.get("outcome") or "ok",
-            anomaly_score=float(payload.get("anomaly_score") or 0.0),
-            readings=readings,
-        )
-    )
-
-
-def _store_qc_result(db, machine_id: str, payload: dict) -> None:
-    unit_id = payload["unit_id"]
-    outcome = payload.get("outcome") or "pass"
-    unit_status = "passed" if outcome in ("pass", "passed") else "failed"
-
-    existing = db.query(Unit).filter(Unit.unit_id == unit_id).first()
-    if not existing:
-        db.add(Unit(unit_id=unit_id, status=unit_status))
-    else:
-        existing.status = unit_status
-
-    db.add(
-        QCResult(
-            unit_id=unit_id,
-            machine_code=machine_id,
-            tested_at=datetime.now(UTC),
-            outcome=outcome,
-            probability=float(payload.get("probability") or 1.0),
-            defect_type=payload.get("defect_type"),
-            attributed_stage=payload.get("attributed_stage"),
-        )
-    )
 
 
 def _store_platform_stage_event(plant_id: str, payload: dict, inner: dict) -> None:
@@ -611,44 +465,6 @@ def _store_platform_qc_result(
         conn.close()
 
 
-def handle_message(topic: str, payload: dict) -> None:
-    """topic examples:
-    factory/housing/hm_01/telemetry
-    factory/housing/hm_01/stage_event
-    factory/qc/qc_01/telemetry
-    factory/qc/qc_01/result
-    factory/queue_depths
-    """
-    if topic == "factory/queue_depths":
-        latest_queue_depths.clear()
-        latest_queue_depths.update(payload)
-        plant_queue_depths[DEMO_PLANT_ID] = dict(payload)
-        return
-
-    parts = topic.split("/")
-    if len(parts) != 4 or parts[0] != "factory":
-        log.warning("Unexpected topic shape, skipping: %s", topic)
-        return
-
-    _, sub_facility, machine_id, kind = parts
-
-    db = SessionLocal()
-    try:
-        if kind == "telemetry":
-            _store_telemetry(db, sub_facility, payload)
-        elif kind == "stage_event":
-            _store_stage_event(db, payload)
-        elif kind == "result":
-            _store_qc_result(db, machine_id, payload)
-        else:
-            log.warning("Unknown message kind '%s' on topic %s", kind, topic)
-            return
-        db.commit()
-    except Exception:
-        db.rollback()
-        log.exception("Failed to store message from topic %s", topic)
-    finally:
-        db.close()
 
 
 @topic_router.on("telemetry")
@@ -808,10 +624,7 @@ async def emit_heartbeat_tick(
     mgr = conn_mgr or manager
     trk = tracker or viewer_tracker
 
-    has_ws_viewers = (
-        any(len(clients) > 0 for clients in mgr._rooms.values())
-        or len(mgr._clients) > 0
-    )
+    has_ws_viewers = any(len(clients) > 0 for clients in mgr._rooms.values())
     has_rest_viewers = trk.has_recent_poll()
 
     if not has_ws_viewers and not has_rest_viewers:
@@ -872,10 +685,8 @@ async def mqtt_listener() -> None:
             ) as client:
                 active_mqtt_client = client
                 await client.subscribe("plants/#", qos=1)
-                await client.subscribe(MQTT_TOPIC, qos=1)
                 log.info(
-                    "Subscribed to plants/# and %s on %s:%d",
-                    MQTT_TOPIC,
+                    "Subscribed to plants/# on %s:%d",
                     MQTT_HOST,
                     MQTT_PORT,
                 )
@@ -894,16 +705,6 @@ async def mqtt_listener() -> None:
 
                         if topic_str.startswith("plants/"):
                             await topic_router.dispatch(topic_str, payload)
-                        elif topic_str.startswith("factory/"):
-                            handle_message(topic_str, payload)
-                            await manager.broadcast(
-                                json.dumps(
-                                    {
-                                        "topic": topic_str,
-                                        "payload": payload,
-                                    }
-                                )
-                            )
                 finally:
                     active_mqtt_client = None
 
@@ -961,7 +762,6 @@ def seed_plants_if_empty(conn: sqlite3.Connection, plants_dir: Path) -> bool:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global ingest_engine
-    init_db()
     init_platform_db(PLATFORM_DB_PATH)
 
     conn = get_db_connection(PLATFORM_DB_PATH)
@@ -1353,66 +1153,13 @@ async def plant_telemetry_ws(
         manager.disconnect_plant(plant_id, ws)
 
 
-@app.websocket("/ws/telemetry")
-async def telemetry_ws(ws: WebSocket) -> None:
-    await manager.connect(ws)
-    try:
-        while True:
-            await ws.receive_text()  # broadcast-only; read just to detect disconnects
-    except WebSocketDisconnect:
-        pass
-    finally:
-        manager.disconnect(ws)
-
-
-@app.get("/api/machines/latest")
-def latest_machine_status(db: DbSession) -> list[dict]:
-    """Most recent telemetry row for every machine — what a dashboard
-    would load on first render, before live WebSocket updates take over."""
-    subquery = (
-        db.query(
-            TelemetryReading.machine_id,
-            func.max(TelemetryReading.id).label("latest_id"),
-        )
-        .group_by(TelemetryReading.machine_id)
-        .subquery()
-    )
-    rows = (
-        db.query(TelemetryReading)
-        .join(subquery, TelemetryReading.id == subquery.c.latest_id)
-        .all()
-    )
-    return [
-        {
-            "machine_id": r.machine_id,
-            "sub_facility": r.sub_facility,
-            "machine_state": r.machine_state,
-            "phase": r.phase,
-            "starved": r.starved,
-            "current_unit_id": r.current_unit_id,
-            "vibration": r.vibration,
-            "good_count": r.good_count,
-            "reject_count": r.reject_count,
-            "extra": r.extra,
-            "timestamp": r.timestamp.isoformat() if r.timestamp else None,
-        }
-        for r in rows
-    ]
-
-
-@app.get("/api/queue-depths")
-def queue_depths() -> dict:
-    """How many units are waiting in front of each stage right now.
-    Live updates also arrive over the WebSocket with topic
-    'factory/queue_depths'; this endpoint is for the first page load."""
-    return dict(latest_queue_depths)
 
 
 @app.get(
     "/api/plants/{plant_id}/units",
     dependencies=[Depends(verify_plant_viewer)],
 )
-def get_plant_recent_units(plant_id: str, db: DbSession, limit: int = 20) -> list[dict]:
+def get_plant_recent_units(plant_id: str, limit: int = 20) -> list[dict]:
     """Most recently created units for a plant, newest first — feeds the unit-lookup
     page's 'recent units' list."""
     plant = plants_registry.get(plant_id)
@@ -1444,16 +1191,6 @@ def get_plant_recent_units(plant_id: str, db: DbSession, limit: int = 20) -> lis
         finally:
             conn.close()
 
-    if plant_id == DEMO_PLANT_ID:
-        rows = db.query(Unit).order_by(Unit.created_at.desc()).limit(limit).all()
-        return [
-            {
-                "unit_id": u.unit_id,
-                "status": u.status,
-                "created_at": u.created_at.isoformat() if u.created_at else None,
-            }
-            for u in rows
-        ]
     return []
 
 
@@ -1461,7 +1198,7 @@ def get_plant_recent_units(plant_id: str, db: DbSession, limit: int = 20) -> lis
     "/api/plants/{plant_id}/units/{unit_id}",
     dependencies=[Depends(verify_plant_viewer)],
 )
-def get_plant_unit_history(plant_id: str, unit_id: str, db: DbSession) -> dict:
+def get_plant_unit_history(plant_id: str, unit_id: str) -> dict:
     """Full traceable journey for one unit within a plant — every stage it passed
     through, plus its QC verdict if tested. This is the payoff of the
     whole traceability design: a real answer to 'why did this fail?'"""
@@ -1558,120 +1295,74 @@ def get_plant_unit_history(plant_id: str, unit_id: str, db: DbSession) -> dict:
             "qc_result": None,
         }
 
-    # Fallback for legacy demo database
-    if plant_id == DEMO_PLANT_ID:
-        unit = db.query(Unit).filter(Unit.unit_id == unit_id).first()
-        if unit:
-            stages = (
-                db.query(StageEvent)
-                .filter(StageEvent.unit_id == unit_id)
-                .order_by(StageEvent.entered_at)
-                .all()
-            )
-            qc = db.query(QCResult).filter(QCResult.unit_id == unit_id).first()
-
-            return {
-                "unit_id": unit.unit_id,
-                "status": unit.status,
-                "created_at": unit.created_at.isoformat() if unit.created_at else None,
-                "stages": [
-                    {
-                        "sub_facility": s.sub_facility,
-                        "machine_id": s.machine_id,
-                        "outcome": s.outcome,
-                        "anomaly_score": s.anomaly_score,
-                        "readings": s.readings,
-                        "entered_at": s.entered_at.isoformat()
-                        if s.entered_at
-                        else None,
-                        "exited_at": s.exited_at.isoformat() if s.exited_at else None,
-                    }
-                    for s in stages
-                ],
-                "qc_result": None
-                if not qc
-                else {
-                    "outcome": qc.outcome,
-                    "probability": qc.probability,
-                    "defect_type": qc.defect_type,
-                    "attributed_stage": qc.attributed_stage,
-                    "tested_at": qc.tested_at.isoformat() if qc.tested_at else None,
-                },
-            }
-
     raise HTTPException(status_code=404, detail="Unit not found")
 
 
-@app.get("/api/stats/defect-rate-by-hour")
-def defect_rate_by_hour(db: DbSession) -> list[dict]:
-    """Defect rate grouped by hour-of-day — this is the metric that
-    makes the shift-change bias in defect_model.py visible in real data."""
+@app.get(
+    "/api/plants/{plant_id}/stats/defect-rate-by-hour",
+    dependencies=[Depends(verify_plant_viewer)],
+)
+def plant_defect_rate_by_hour(plant_id: str) -> list[dict]:
+    """Defect rate grouped by hour-of-day for a plant."""
+    plant = plants_registry.get(plant_id)
+    if not plant:
+        raise HTTPException(status_code=404, detail=f"Plant '{plant_id}' not found")
+
+    buckets: dict[str, dict[str, int]] = {}
     if Path(PLATFORM_DB_PATH).exists():
         conn = get_db_connection(PLATFORM_DB_PATH)
         try:
             cur = conn.cursor()
             cur.execute(
-                "SELECT strftime('%H', tested_at) as hour, outcome FROM qc_results;"
+                "SELECT strftime('%H', tested_at) as hour, outcome FROM qc_results WHERE plant_id = ?;",
+                (plant_id,),
             )
             p_rows = cur.fetchall()
-            if p_rows:
-                buckets: dict[str, dict[str, int]] = {}
-                for row in p_rows:
-                    hour = row["hour"] or "00"
-                    outcome = row["outcome"]
-                    b = buckets.setdefault(hour, {"total": 0, "failed": 0})
-                    b["total"] += 1
-                    if outcome in ("fail", "failed"):
-                        b["failed"] += 1
-                return [
-                    {
-                        "hour": hour,
-                        "total_tested": b["total"],
-                        "failed": b["failed"],
-                        "defect_rate": (
-                            round(b["failed"] / b["total"], 3) if b["total"] else 0
-                        ),
-                    }
-                    for hour, b in sorted(buckets.items())
-                ]
+            for row in p_rows:
+                hour = row["hour"] or "00"
+                outcome = row["outcome"]
+                b = buckets.setdefault(hour, {"total": 0, "failed": 0})
+                b["total"] += 1
+                if outcome in ("fail", "failed"):
+                    b["failed"] += 1
         except Exception:
-            log.exception("Failed to query defect-rate-by-hour from platform.db")
+            log.exception(
+                "Failed to query defect-rate-by-hour from platform.db for plant %s",
+                plant_id,
+            )
         finally:
             conn.close()
-
-    # Pull hour+outcome pairs and aggregate in Python — simpler and more
-    # portable than a dialect-specific conditional-sum SQL expression,
-    # and this table will never be large enough for that to matter.
-    hour_expr = func.strftime("%H", QCResult.tested_at)
-    results = db.query(hour_expr.label("hour"), QCResult.outcome).all()
-    buckets: dict[str, dict[str, int]] = {}
-    for hour, outcome in results:
-        b = buckets.setdefault(hour, {"total": 0, "failed": 0})
-        b["total"] += 1
-        if outcome == "fail":
-            b["failed"] += 1
 
     return [
         {
             "hour": hour,
             "total_tested": b["total"],
             "failed": b["failed"],
-            "defect_rate": round(b["failed"] / b["total"], 3) if b["total"] else 0,
+            "defect_rate": (
+                round(b["failed"] / b["total"], 3) if b["total"] else 0
+            ),
         }
         for hour, b in sorted(buckets.items())
     ]
 
 
-@app.get("/api/stats/defect-rate-by-stage")
-def defect_rate_by_stage(db: DbSession) -> list[dict]:
-    """Of all failures, which stage gets attributed most often — points
-    at where the process is actually struggling."""
+@app.get(
+    "/api/plants/{plant_id}/stats/defect-rate-by-stage",
+    dependencies=[Depends(verify_plant_viewer)],
+)
+def plant_defect_rate_by_stage(plant_id: str) -> list[dict]:
+    """Of all failures for a plant, which stage gets attributed most often."""
+    plant = plants_registry.get(plant_id)
+    if not plant:
+        raise HTTPException(status_code=404, detail=f"Plant '{plant_id}' not found")
+
     if Path(PLATFORM_DB_PATH).exists():
         conn = get_db_connection(PLATFORM_DB_PATH)
         try:
             cur = conn.cursor()
             cur.execute(
-                "SELECT attributed_stage, count(*) as cnt FROM qc_results WHERE outcome IN ('fail', 'failed') AND attributed_stage IS NOT NULL GROUP BY attributed_stage;"
+                "SELECT attributed_stage, count(*) as cnt FROM qc_results WHERE plant_id = ? AND outcome IN ('fail', 'failed') AND attributed_stage IS NOT NULL GROUP BY attributed_stage;",
+                (plant_id,),
             )
             p_rows = cur.fetchall()
             if p_rows:
@@ -1680,17 +1371,14 @@ def defect_rate_by_stage(db: DbSession) -> list[dict]:
                     for row in p_rows
                 ]
         except Exception:
-            log.exception("Failed to query defect-rate-by-stage from platform.db")
+            log.exception(
+                "Failed to query defect-rate-by-stage from platform.db for plant %s",
+                plant_id,
+            )
         finally:
             conn.close()
 
-    rows = (
-        db.query(QCResult.attributed_stage, func.count(QCResult.id))
-        .filter(QCResult.outcome == "fail")
-        .group_by(QCResult.attributed_stage)
-        .all()
-    )
-    return [{"stage": stage, "failures": count} for stage, count in rows]
+    return []
 
 
 admin_router = APIRouter(

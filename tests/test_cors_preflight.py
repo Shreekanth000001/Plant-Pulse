@@ -8,7 +8,7 @@ from contextlib import closing
 import pytest
 import uvicorn
 
-from database import get_db_connection
+from db import get_db_connection
 from main import PLANTS_DIR, build_app, init_platform_db, seed_plants_if_empty
 
 

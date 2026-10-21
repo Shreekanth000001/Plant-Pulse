@@ -393,14 +393,13 @@ async def test_criterion_8_websocket_cross_plant_isolation(server):
         assert frame["payload"]["message_id"] == "test-a-001"
 
 
-def test_criterion_9_legacy_endpoints_preserved(server):
-    """Criterion 9: Legacy endpoints remain functional without modification."""
+def test_criterion_9_legacy_endpoints_retired(server):
+    """Criterion 9: Legacy endpoints are retired and return 404."""
     status, data = http_get(f"{server['base_url']}/api/machines/latest")
-    assert status == 200, f"Legacy /api/machines/latest returned {status}: {data}"
-    assert isinstance(data, list)
+    assert status == 404, f"Retired /api/machines/latest returned {status}: {data}"
 
     status, data = http_get(f"{server['base_url']}/api/queue-depths")
-    assert status == 200, f"Legacy /api/queue-depths returned {status}: {data}"
+    assert status == 404, f"Retired /api/queue-depths returned {status}: {data}"
 
     status, data = http_get(f"{server['base_url']}/api/units")
     assert status == 404, f"Removed /api/units returned {status}: {data}"
@@ -456,7 +455,3 @@ def test_plant_scoped_queue_depths_endpoint(server):
     data = json.loads(body)
     assert data == {"casting": 4, "assembly": 2, "qc": 1}
 
-    # 5. Legacy /api/queue-depths also reflects latest queue depths
-    status, leg_data = http_get(f"{server['base_url']}/api/queue-depths")
-    assert status == 200
-    assert leg_data == {"casting": 4, "assembly": 2, "qc": 1}

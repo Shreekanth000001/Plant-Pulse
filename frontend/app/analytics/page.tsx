@@ -1,11 +1,15 @@
 "use client";
 
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useState, useMemo, useCallback } from "react";
 import {
   fetchDefectRateByHour,
   fetchDefectRateByStage,
   getErrorMessage,
+  ApiError,
 } from "../../lib/api";
+import { safeSessionStorageGet } from "../../lib/plant-utils";
+import { TokenEntryCard } from "../../components/telemetry/TokenEntryCard";
+import { useFactoryWebSocket } from "../../context/WebSocketContext";
 import { DefectRateByHour, DefectRateByStage } from "../../types/factory";
 import { useSyncExternalStore } from "react";
 import {
@@ -32,54 +36,91 @@ const STAGE_COLORS: Record<string, string> = {
 };
 
 export default function AnalyticsPage() {
+  const {
+    selectedPlantId,
+    plantsList,
+    plantDefinition,
+    isTokenRequired,
+    tokenError,
+    submitViewerToken,
+  } = useFactoryWebSocket();
+
   const [hourlyData, setHourlyData] = useState<DefectRateByHour[]>([]);
   const [stageData, setStageData] = useState<DefectRateByStage[]>([]);
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [authRequired, setAuthRequired] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string>("");
   const [chartView, setChartView] = useState<"rate" | "volume">("rate");
   const isClient = useSyncExternalStore(() => () => {}, () => true, () => false);
 
-  const loadStats = React.useCallback(async (silent = false) => {
-    try {
-      if (!silent) setLoading(true);
-      else setIsRefreshing(true);
-      setError(null);
-      const [hourly, stages] = await Promise.all([
-        fetchDefectRateByHour(),
-        fetchDefectRateByStage(),
-      ]);
+  const loadStats = useCallback(
+    async (silent = false) => {
+      try {
+        if (!silent) setLoading(true);
+        else setIsRefreshing(true);
+        setError(null);
+        setAuthRequired(false);
 
-      setHourlyData(hourly || []);
-      setStageData(stages || []);
-      setLastUpdated(new Date().toLocaleTimeString());
-    } catch (err: unknown) {
-      setError(getErrorMessage(err, "Failed to load analytics data"));
-    } finally {
-      setLoading(false);
-      setIsRefreshing(false);
-    }
-  }, []);
+        const token = safeSessionStorageGet<string | null>(
+          `plantpulse_viewer_token_${selectedPlantId}`,
+          null
+        );
+        const [hourly, stages] = await Promise.all([
+          fetchDefectRateByHour(selectedPlantId, token),
+          fetchDefectRateByStage(selectedPlantId, token),
+        ]);
+
+        setHourlyData(hourly || []);
+        setStageData(stages || []);
+        setLastUpdated(new Date().toLocaleTimeString());
+      } catch (err: unknown) {
+        if (err instanceof ApiError && err.status === 401) {
+          setAuthRequired(true);
+          setError("Viewer token required to access analytics for this plant.");
+        } else {
+          setError(getErrorMessage(err, "Failed to load analytics data"));
+        }
+      } finally {
+        setLoading(false);
+        setIsRefreshing(false);
+      }
+    },
+    [selectedPlantId]
+  );
 
   useEffect(() => {
     let isMounted = true;
 
     async function initialLoad() {
       try {
+        setLoading(true);
+        setError(null);
+        setAuthRequired(false);
+
+        const token = safeSessionStorageGet<string | null>(
+          `plantpulse_viewer_token_${selectedPlantId}`,
+          null
+        );
         const [hourly, stages] = await Promise.all([
-          fetchDefectRateByHour(),
-          fetchDefectRateByStage(),
+          fetchDefectRateByHour(selectedPlantId, token),
+          fetchDefectRateByStage(selectedPlantId, token),
         ]);
         if (!isMounted) return;
         setHourlyData(hourly || []);
         setStageData(stages || []);
         setLastUpdated(new Date().toLocaleTimeString());
-        setLoading(false);
       } catch (err: unknown) {
         if (!isMounted) return;
-        setError(getErrorMessage(err, "Failed to load analytics data"));
-        setLoading(false);
+        if (err instanceof ApiError && err.status === 401) {
+          setAuthRequired(true);
+          setError("Viewer token required to access analytics for this plant.");
+        } else {
+          setError(getErrorMessage(err, "Failed to load analytics data"));
+        }
+      } finally {
+        if (isMounted) setLoading(false);
       }
     }
 
@@ -94,7 +135,7 @@ export default function AnalyticsPage() {
       isMounted = false;
       clearInterval(interval);
     };
-  }, [loadStats]);
+  }, [selectedPlantId, loadStats]);
 
   // Format hourly data for display (percentages)
   const formattedHourly = useMemo(() => {
@@ -132,6 +173,26 @@ export default function AnalyticsPage() {
   const totalStageFailures = useMemo(() => {
     return stageData.reduce((acc, s) => acc + s.failures, 0);
   }, [stageData]);
+
+  if (authRequired || isTokenRequired) {
+    return (
+      <div className="max-w-2xl mx-auto py-12">
+        <TokenEntryCard
+          plantName={
+            plantsList.find((p) => p.plant_id === selectedPlantId)?.name ||
+            plantDefinition?.name ||
+            selectedPlantId
+          }
+          plantId={selectedPlantId}
+          onSubmit={(token) => {
+            submitViewerToken(token);
+            setAuthRequired(false);
+          }}
+          error={tokenError || error}
+        />
+      </div>
+    );
+  }
 
   if (loading) {
     return (

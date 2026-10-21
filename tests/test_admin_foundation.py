@@ -10,7 +10,7 @@ import pytest
 import uvicorn
 
 from admin_auth import admin_rate_limiter
-from database import get_db_connection
+from db import get_db_connection
 from main import build_app, init_platform_db, seed_plants_if_empty
 from plant_definitions import load_plants_from_db
 

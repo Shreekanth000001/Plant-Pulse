@@ -299,7 +299,7 @@ def test_water_plant_units_with_token_returns_200(server):
 
 def test_unknown_plant_writes_skipped(tmp_path, monkeypatch):
     """Writes to units, stage_events, and qc_results must be skipped for plants not in plants_registry."""
-    from database import get_db_connection
+    from db import get_db_connection
 
     db_path = tmp_path / "test_unknown_plant.db"
     main.init_platform_db(db_path)
@@ -359,7 +359,7 @@ def test_unknown_plant_writes_skipped(tmp_path, monkeypatch):
 
 def test_plant_delete_cascades_all_traceability_tables(tmp_path):
     """Deleting a plant cascades and deletes all rows in units, stage_events, and qc_results."""
-    from database import get_db_connection
+    from db import get_db_connection
 
     db_path = tmp_path / "test_cascade.db"
     main.init_platform_db(db_path)

@@ -11,7 +11,7 @@ import pytest
 import uvicorn
 
 from admin_auth import admin_rate_limiter
-from database import get_db_connection
+from db import get_db_connection
 from main import (
     PLANTS_DIR,
     build_app,
