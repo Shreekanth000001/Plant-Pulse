@@ -1,5 +1,4 @@
 import type {
-  MachineStatus,
   UnitHistoryResponse,
   RecentUnitItem,
   DefectRateByHour,
@@ -43,7 +42,7 @@ export function getWsUrl(plantId?: string, ticket?: string | null): string {
   let baseWs = "ws://localhost:8000";
   if (envWs) {
     baseWs = envWs.trim().replace(/\/+$/, "");
-    // If NEXT_PUBLIC_WS_URL includes a path like /ws/telemetry, extract host origin
+    // If NEXT_PUBLIC_WS_URL includes a path like /ws/..., extract host origin
     if (baseWs.includes("/ws/")) {
       baseWs = baseWs.split("/ws/")[0].replace(/\/+$/, "");
     }
@@ -60,7 +59,7 @@ export function getWsUrl(plantId?: string, ticket?: string | null): string {
     }
     return url;
   }
-  return `${baseWs}/ws/telemetry`;
+  return `${baseWs}/ws/plant_demo_membrane/telemetry`;
 }
 
 export class ApiError extends Error {
@@ -207,25 +206,6 @@ export async function fetchPlantMachinesLatest(
 }
 
 /**
- * Fetch latest telemetry for all machines (legacy endpoint).
- */
-export async function fetchLatestMachines(): Promise<MachineStatus[]> {
-  const baseUrl = getApiBaseUrl();
-  const res = await fetch(`${baseUrl}/api/machines/latest`, {
-    cache: "no-store",
-  });
-
-  if (!res.ok) {
-    throw new ApiError(
-      `Failed to fetch machines: ${res.statusText}`,
-      res.status
-    );
-  }
-
-  return res.json();
-}
-
-/**
  * Fetch full history and QC result for a given unit within a plant.
  */
 export async function fetchUnitHistory(
@@ -264,13 +244,29 @@ export async function fetchUnitHistory(
 }
 
 /**
- * Fetch defect rate by hour of the day.
+ * Fetch defect rate by hour of the day for a plant.
  */
-export async function fetchDefectRateByHour(): Promise<DefectRateByHour[]> {
+export async function fetchDefectRateByHour(
+  plantId: string,
+  token?: string | null
+): Promise<DefectRateByHour[]> {
   const baseUrl = getApiBaseUrl();
-  const res = await fetch(`${baseUrl}/api/stats/defect-rate-by-hour`, {
-    cache: "no-store",
-  });
+  const cleanPlantId = encodeURIComponent(plantId.trim());
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token.trim()}`;
+  }
+  const res = await fetch(
+    `${baseUrl}/api/plants/${cleanPlantId}/stats/defect-rate-by-hour`,
+    {
+      cache: "no-store",
+      headers,
+    }
+  );
+
+  if (res.status === 401) {
+    throw new ApiError("Unauthorized", 401);
+  }
 
   if (!res.ok) {
     throw new ApiError(
@@ -283,13 +279,29 @@ export async function fetchDefectRateByHour(): Promise<DefectRateByHour[]> {
 }
 
 /**
- * Fetch defect rate grouped by attributed stage.
+ * Fetch defect rate grouped by attributed stage for a plant.
  */
-export async function fetchDefectRateByStage(): Promise<DefectRateByStage[]> {
+export async function fetchDefectRateByStage(
+  plantId: string,
+  token?: string | null
+): Promise<DefectRateByStage[]> {
   const baseUrl = getApiBaseUrl();
-  const res = await fetch(`${baseUrl}/api/stats/defect-rate-by-stage`, {
-    cache: "no-store",
-  });
+  const cleanPlantId = encodeURIComponent(plantId.trim());
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token.trim()}`;
+  }
+  const res = await fetch(
+    `${baseUrl}/api/plants/${cleanPlantId}/stats/defect-rate-by-stage`,
+    {
+      cache: "no-store",
+      headers,
+    }
+  );
+
+  if (res.status === 401) {
+    throw new ApiError("Unauthorized", 401);
+  }
 
   if (!res.ok) {
     throw new ApiError(
@@ -338,24 +350,6 @@ export async function fetchPlantQueueDepths(
   return res.json();
 }
 
-/**
- * Fetch current queue sizes between production stages.
- */
-export async function fetchQueueDepths(): Promise<BackendQueueDepths> {
-  const baseUrl = getApiBaseUrl();
-  const res = await fetch(`${baseUrl}/api/queue-depths`, {
-    cache: "no-store",
-  });
-
-  if (!res.ok) {
-    throw new ApiError(
-      `Failed to fetch queue depths: ${res.statusText}`,
-      res.status
-    );
-  }
-
-  return res.json();
-}
 
 /**
  * Fetch most recently created units for a plant from registry.

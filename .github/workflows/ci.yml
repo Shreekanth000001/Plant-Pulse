@@ -36,7 +36,7 @@ jobs:
 
       # Fails if a dependency is missing from requirements.txt.
       - name: Smoke import
-        run: python -c "import database, main, retention; from demo.simulator import config, units, defect_model, simulator, mqtt_publisher"
+        run: python -c "import db, main, retention; from demo.simulator import config, units, defect_model, simulator, mqtt_publisher"
 
       - name: Tests
         run: |
@@ -55,7 +55,7 @@ jobs:
         working-directory: frontend
     env:
       NEXT_PUBLIC_API_URL: http://localhost:8000
-      NEXT_PUBLIC_WS_URL: ws://localhost:8000/ws/telemetry
+      NEXT_PUBLIC_WS_URL: ws://localhost:8000
     steps:
       - uses: actions/checkout@v7
 

@@ -14,7 +14,7 @@ import uvicorn
 import websockets
 
 from admin_auth import admin_rate_limiter
-from database import get_db_connection
+from db import get_db_connection
 from ingest import IngestEngine
 from main import (
     PLANTS_DIR,
