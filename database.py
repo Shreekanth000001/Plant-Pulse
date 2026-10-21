@@ -6,7 +6,10 @@ backend process. Swapping to Postgres later is a one-line change to
 DATABASE_URL, not a rewrite — the models/queries stay the same.
 """
 
+import os
+import sqlite3
 from datetime import UTC, datetime
+from pathlib import Path
 
 from sqlalchemy import (
     JSON,
@@ -17,14 +20,34 @@ from sqlalchemy import (
     Integer,
     String,
     create_engine,
+    event,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 DATABASE_URL = "sqlite:///./factory.db"
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+
+
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys = ON;")
+    cursor.close()
+
+
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
+
+
+def get_db_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
+    """Return a raw SQLite connection to the platform database with foreign keys enforced."""
+    if db_path is None:
+        db_path = os.getenv("PLATFORM_DB_PATH", "platform.db")
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA foreign_keys = ON;")
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def utcnow() -> datetime:
@@ -36,6 +59,7 @@ class TelemetryReading(Base):
     real columns; sub-facility-specific fields (temperature vs torque vs
     viscosity) go in `extra`, since forcing them into fixed columns would
     mean a different schema per sub-facility."""
+
     __tablename__ = "telemetry_readings"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -44,7 +68,7 @@ class TelemetryReading(Base):
     machine_id = Column(String, index=True)
     sub_facility = Column(String, index=True)
     machine_state = Column(String)
-    phase = Column(String, nullable=True)   # QC has no phase
+    phase = Column(String, nullable=True)  # QC has no phase
     starved = Column(Boolean, default=False)
     current_unit_id = Column(String, nullable=True)
 
@@ -53,7 +77,9 @@ class TelemetryReading(Base):
     good_count = Column(Integer, nullable=True)
     reject_count = Column(Integer, nullable=True)
 
-    extra = Column(JSON)  # e.g. {"mold_temperature_setpoint": 65.0, "mold_temperature_actual": 64.2}
+    extra = Column(
+        JSON
+    )  # e.g. {"mold_temperature_setpoint": 65.0, "mold_temperature_actual": 64.2}
 
 
 class Unit(Base):
@@ -67,6 +93,7 @@ class Unit(Base):
 class StageEvent(Base):
     """One row per machine a unit passed through — mirrors Unit.history
     entries from the simulator."""
+
     __tablename__ = "stage_events"
 
     id = Column(Integer, primary_key=True, autoincrement=True)

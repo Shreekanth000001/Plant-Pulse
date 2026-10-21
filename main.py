@@ -34,6 +34,7 @@ from typing import Annotated, Any
 
 import aiomqtt
 from fastapi import (
+    APIRouter,
     Depends,
     FastAPI,
     Header,
@@ -46,12 +47,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from admin_auth import verify_admin_token
 from database import (
     QCResult,
     SessionLocal,
     StageEvent,
     TelemetryReading,
     Unit,
+    get_db_connection,
     get_session,
     init_db,
 )
@@ -61,6 +64,7 @@ from plant_definitions import (
     PlantSummary,
     PublicPlantDefinition,
     load_plants,
+    load_plants_from_db,
 )
 from topic_router import TopicRouter
 
@@ -209,7 +213,16 @@ def verify_plant_viewer(
     if not plant:
         raise HTTPException(status_code=404, detail=f"Plant '{plant_id}' not found")
 
-    if not plant.viewer_token:
+    expected_hash = (
+        plant.viewer_token_hash
+        if plant.viewer_token_hash
+        else (
+            hashlib.sha256(plant.viewer_token.encode("utf-8")).hexdigest()
+            if plant.viewer_token
+            else None
+        )
+    )
+    if not expected_hash:
         return
 
     if not authorization or not authorization.startswith("Bearer "):
@@ -220,7 +233,6 @@ def verify_plant_viewer(
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    expected_hash = hashlib.sha256(plant.viewer_token.encode("utf-8")).hexdigest()
     if not hmac.compare_digest(token_hash, expected_hash):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -641,7 +653,7 @@ def init_platform_db(db_path: Path | str = PLATFORM_DB_PATH) -> None:
     db_file = Path(db_path)
     if db_file.exists():
         try:
-            conn = sqlite3.connect(str(db_file))
+            conn = get_db_connection(str(db_file))
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='machines';"
@@ -665,23 +677,35 @@ def init_platform_db(db_path: Path | str = PLATFORM_DB_PATH) -> None:
         command.upgrade(alembic_cfg, "head")
 
 
+def seed_plants_if_empty(conn: sqlite3.Connection, plants_dir: Path) -> bool:
+    """Seed plants from plants_dir into platform.db only if plants table is empty.
+
+    Returns True if seeded, False if skipped. Never writes back to plants_dir.
+    """
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM plants;")
+    count = cursor.fetchone()[0]
+    if count == 0 and plants_dir.exists():
+        loaded = load_plants(plants_dir)
+        sync_plant_definitions(conn, loaded)
+        return True
+    return False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global ingest_engine
     init_db()
     init_platform_db(PLATFORM_DB_PATH)
 
-    if PLANTS_DIR.exists():
-        loaded = load_plants(PLANTS_DIR)
+    conn = get_db_connection(PLATFORM_DB_PATH)
+    try:
+        seed_plants_if_empty(conn, PLANTS_DIR)
+        loaded = load_plants_from_db(conn)
         plants_registry.clear()
         plants_registry.update(loaded)
-
-        conn = sqlite3.connect(PLATFORM_DB_PATH)
-        try:
-            conn.execute("PRAGMA foreign_keys=ON;")
-            sync_plant_definitions(conn, plants_registry)
-        finally:
-            conn.close()
+    finally:
+        conn.close()
 
     ingest_engine = IngestEngine(db_path=PLATFORM_DB_PATH, plants=plants_registry)
     await ingest_engine.start()
@@ -719,7 +743,9 @@ app.add_middleware(
 
 @app.middleware("http")
 async def track_viewer_activity(request: Request, call_next):
-    if request.url.path.startswith("/api/"):
+    if request.url.path.startswith("/api/") and not request.url.path.startswith(
+        "/api/admin"
+    ):
         viewer_tracker.record_poll()
     return await call_next(request)
 
@@ -767,8 +793,7 @@ def get_latest_plant_machines(plant_id: str) -> list[dict]:
     if not Path(PLATFORM_DB_PATH).exists():
         return []
 
-    conn = sqlite3.connect(PLATFORM_DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = get_db_connection(PLATFORM_DB_PATH)
     try:
         try:
             machines_rows = conn.execute(
@@ -959,8 +984,7 @@ def get_signal_history(
     start_iso = start_dt.isoformat()
     end_iso = end_dt.isoformat()
 
-    conn = sqlite3.connect(PLATFORM_DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = get_db_connection(PLATFORM_DB_PATH)
     try:
         rows = conn.execute(
             """
@@ -1024,9 +1048,9 @@ async def plant_telemetry_ws(
     if not plant:
         raise HTTPException(status_code=404, detail=f"Plant '{plant_id}' not found")
 
-    if plant.viewer_token is not None and not ticket_store.validate_and_consume(
-        plant_id, ticket
-    ):
+    if (
+        plant.viewer_token or plant.viewer_token_hash
+    ) and not ticket_store.validate_and_consume(plant_id, ticket):
         await ws.accept()
         await ws.close(code=4401, reason="Unauthorized")
         return
@@ -1195,3 +1219,40 @@ def defect_rate_by_stage(db: DbSession) -> list[dict]:
         .all()
     )
     return [{"stage": stage, "failures": count} for stage, count in rows]
+
+
+admin_router = APIRouter(
+    prefix="/api/admin",
+    tags=["admin"],
+    dependencies=[Depends(verify_admin_token)],
+)
+
+
+@admin_router.get("/health")
+def admin_health() -> dict:
+    return {"status": "ok"}
+
+
+def build_app(mount_admin: bool | None = None) -> FastAPI:
+    if mount_admin is None:
+        mount_admin = os.getenv("MOUNT_ADMIN_ENDPOINTS", "false").lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+
+    has_admin = any(
+        getattr(r, "original_router", None) is admin_router for r in app.router.routes
+    )
+    if mount_admin and not has_admin:
+        app.include_router(admin_router)
+    elif not mount_admin and has_admin:
+        app.router.routes = [
+            r
+            for r in app.router.routes
+            if getattr(r, "original_router", None) is not admin_router
+        ]
+    return app
+
+
+build_app()
