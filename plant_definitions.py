@@ -147,6 +147,22 @@ class PlantDefinition(BaseModel):
         return PlantSummary.model_validate(dump)
 
 
+class AdminPlantSummary(BaseModel):
+    plant_id: str = Field(..., pattern=r"^[a-z0-9_]{3,64}$")
+    name: str
+    timezone: str = "UTC"
+    has_viewer_token: bool = False
+
+
+class AdminPlantDetail(BaseModel):
+    plant_id: str = Field(..., pattern=r"^[a-z0-9_]{3,64}$")
+    name: str
+    timezone: str = "UTC"
+    has_viewer_token: bool = False
+    device_usernames: list[str] = Field(default_factory=list)
+    areas: list[AreaDefinition] = Field(default_factory=list)
+
+
 def load_plants(directory: Path) -> dict[str, PlantDefinition]:
     plants: dict[str, PlantDefinition] = {}
     for path in sorted(directory.glob("*.json")):
