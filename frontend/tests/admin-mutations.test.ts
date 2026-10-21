@@ -9,6 +9,11 @@ import {
   createAdminPlant,
   rotateAdminDeviceCredentials,
   updateAdminPlant,
+  deleteAdminPlant,
+  diffPlantRemovals,
+  parse409Removals,
+  canConfirmDelete,
+  isSystemPlant,
   type FastApiValidationErrorDetail,
 } from "../lib/admin-api.ts";
 
@@ -249,3 +254,162 @@ test("Admin API: updateAdminPlant appends ?confirm_removals=true when requested"
     globalThis.fetch = originalFetch;
   }
 });
+
+test("diffPlantRemovals: detects removed areas, machines, and signals", () => {
+  const originalPlant = {
+    areas: [
+      {
+        area_code: "area_1",
+        machines: [
+          {
+            machine_code: "mach_1",
+            signals: [{ signal_code: "sig_temp" }, { signal_code: "sig_press" }],
+          },
+          {
+            machine_code: "mach_2",
+            signals: [{ signal_code: "sig_flow" }],
+          },
+        ],
+      },
+      {
+        area_code: "area_2",
+        machines: [
+          {
+            machine_code: "mach_3",
+            signals: [{ signal_code: "sig_speed" }],
+          },
+        ],
+      },
+    ],
+  };
+
+  const updatedPlant = {
+    areas: [
+      {
+        area_code: "area_1",
+        machines: [
+          {
+            machine_code: "mach_1",
+            signals: [{ signal_code: "sig_temp" }], // sig_press removed
+          },
+          // mach_2 removed
+        ],
+      },
+      // area_2 removed (and mach_3 removed)
+    ],
+  };
+
+  const diff = diffPlantRemovals(originalPlant, updatedPlant);
+  assert.strictEqual(diff.hasRemovals, true);
+  assert.deepStrictEqual(diff.removedAreas, ["area_2"]);
+  assert.deepStrictEqual(diff.removedMachines, ["mach_2", "mach_3"]);
+  assert.deepStrictEqual(diff.removedSignals, [
+    "mach_1:sig_press",
+    "mach_2:sig_flow",
+    "mach_3:sig_speed",
+  ]);
+});
+
+test("409 parsing: extracts removed components from backend 409 error detail", () => {
+  const detail =
+    "Updating plant would remove existing components (areas: ['area_old'], machines: ['mach_old'], signals: ['mach_1:sig_press', 'mach_2:sig_flow']). Pass ?confirm_removals=true to proceed.";
+
+  const parsed = parse409Removals(detail);
+  assert.strictEqual(parsed.isRemovalConflict, true);
+  assert.deepStrictEqual(parsed.removedAreas, ["area_old"]);
+  assert.deepStrictEqual(parsed.removedMachines, ["mach_old"]);
+  assert.deepStrictEqual(parsed.removedSignals, ["mach_1:sig_press", "mach_2:sig_flow"]);
+
+  // Test non-removal error detail
+  const nonRemoval = parse409Removals("Plant 'plant_1' already exists");
+  assert.strictEqual(nonRemoval.isRemovalConflict, false);
+  assert.deepStrictEqual(nonRemoval.removedAreas, []);
+  assert.deepStrictEqual(nonRemoval.removedMachines, []);
+  assert.deepStrictEqual(nonRemoval.removedSignals, []);
+});
+
+test("canConfirmDelete: enforces exact plant_id match and disables system plants", () => {
+  // Matching ID on normal plant -> allowed
+  assert.strictEqual(canConfirmDelete("plant_custom_1", "plant_custom_1", false), true);
+  // Matching ID with surrounding whitespace -> trimmed and allowed
+  assert.strictEqual(canConfirmDelete("plant_custom_1", "  plant_custom_1  ", false), true);
+
+  // Mismatched ID -> rejected
+  assert.strictEqual(canConfirmDelete("plant_custom_1", "plant_custom_2", false), false);
+  assert.strictEqual(canConfirmDelete("plant_custom_1", "", false), false);
+
+  // System plant -> always rejected even if input matches target
+  assert.strictEqual(canConfirmDelete("plant_demo_membrane", "plant_demo_membrane", true), false);
+  assert.strictEqual(isSystemPlant("plant_demo_membrane"), true);
+  assert.strictEqual(isSystemPlant("plant_custom_1"), false);
+});
+
+test("PUT without a token field keeps the hash: updateAdminPlant preserves token state when omitted", async () => {
+  let capturedBodyObj: Record<string, unknown> = {};
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    capturedBodyObj = JSON.parse((init?.body as string) || "{}");
+    return new Response(
+      JSON.stringify({
+        plant_id: "plant_existing_token",
+        name: "Updated Plant",
+        timezone: "UTC",
+        has_viewer_token: true, // Server retains hash
+        device_usernames: [],
+        areas: [],
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    );
+  }) as typeof globalThis.fetch;
+
+  try {
+    const payload = {
+      plant_id: "plant_existing_token",
+      name: "Updated Plant",
+      timezone: "UTC",
+      areas: [],
+      // viewer_token is intentionally omitted
+    };
+
+    const res = await updateAdminPlant("mock_admin_token_xyz", "plant_existing_token", payload);
+    assert.strictEqual(capturedBodyObj["viewer_token"], undefined);
+    assert.strictEqual(res.has_viewer_token, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("deleteAdminPlant: sends DELETE request with Bearer header and returns status", async () => {
+  let capturedUrl = "";
+  let capturedMethod = "";
+  let capturedHeaders: Record<string, string> = {};
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    capturedUrl = url.toString();
+    capturedMethod = init?.method || "";
+    capturedHeaders = (init?.headers as Record<string, string>) || {};
+    return new Response(
+      JSON.stringify({
+        status: "deleted",
+        plant_id: "plant_to_delete",
+        broker_reloaded: true,
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    );
+  }) as typeof globalThis.fetch;
+
+  try {
+    const res = await deleteAdminPlant("mock_admin_token_xyz", "plant_to_delete");
+    assert.strictEqual(capturedUrl, "http://localhost:8000/api/admin/plants/plant_to_delete");
+    assert.strictEqual(capturedMethod, "DELETE");
+    assert.strictEqual(capturedHeaders["Authorization"], "Bearer mock_admin_token_xyz");
+    assert.strictEqual(res.status, "deleted");
+    assert.strictEqual(res.plant_id, "plant_to_delete");
+    assert.strictEqual(res.broker_reloaded, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+

@@ -345,6 +345,66 @@ def test_admin_update_plant_put_does_not_touch_credentials(admin_mutations_env):
     assert current_cred == orig_cred, "PUT must not touch plant_credentials"
 
 
+def test_admin_update_plant_put_without_viewer_token_preserves_existing_hash(
+    admin_mutations_env,
+):
+    """PUT /api/admin/plants/{id} omitting viewer_token preserves existing viewer_token_hash."""
+    base_url, db_file, _port = admin_mutations_env
+    auth_header = {
+        "Authorization": "Bearer valid_test_admin_token_1234567890_32char",
+        "Content-Type": "application/json",
+    }
+    # Create plant with viewer_token configured
+    create_payload = sample_plant_payload("plant_token_preserve_test")
+    create_payload["viewer_token"] = "initial_secret_viewer_token_999"
+
+    status, _headers, body, _raw = api_request_with_raw(
+        f"{base_url}/api/admin/plants",
+        headers=auth_header,
+        method="POST",
+        data=json.dumps(create_payload).encode("utf-8"),
+    )
+    assert status == 201
+    assert body.get("has_viewer_token") is True
+
+    # Check hash in database
+    conn = get_db_connection(str(db_file))
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT viewer_token_hash FROM plants WHERE id = 'plant_token_preserve_test';"
+    )
+    initial_hash = cur.fetchone()["viewer_token_hash"]
+    conn.close()
+    assert initial_hash is not None and len(initial_hash) == 64
+
+    # Update plant metadata via PUT omitting viewer_token completely
+    put_payload = sample_plant_payload("plant_token_preserve_test")
+    put_payload["name"] = "Preserved Token Plant Name"
+    # Ensure viewer_token is not present in put_payload
+    put_payload.pop("viewer_token", None)
+
+    status2, _headers2, body2, _raw2 = api_request_with_raw(
+        f"{base_url}/api/admin/plants/plant_token_preserve_test",
+        headers=auth_header,
+        method="PUT",
+        data=json.dumps(put_payload).encode("utf-8"),
+    )
+    assert status2 == 200
+    assert body2.get("name") == "Preserved Token Plant Name"
+    assert body2.get("has_viewer_token") is True
+
+    # Verify database hash remains identical
+    conn2 = get_db_connection(str(db_file))
+    cur2 = conn2.cursor()
+    cur2.execute(
+        "SELECT viewer_token_hash FROM plants WHERE id = 'plant_token_preserve_test';"
+    )
+    post_put_hash = cur2.fetchone()["viewer_token_hash"]
+    conn2.close()
+    assert post_put_hash == initial_hash, "PUT without token field must keep existing hash"
+
+
+
 def test_admin_update_plant_put_without_confirm_removals_returns_409(
     admin_mutations_env,
 ):

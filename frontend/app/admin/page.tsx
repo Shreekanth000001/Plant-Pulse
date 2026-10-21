@@ -5,15 +5,22 @@ import Link from "next/link";
 import { useAdminAuth } from "./layout";
 import {
   fetchAdminPlants,
+  deleteAdminPlant,
+  isSystemPlant,
   formatAdminErrorMessage,
   type AdminPlantSummary,
 } from "../../lib/admin-api";
+import { AdminDeleteModal } from "../../components/admin/AdminDeleteModal";
 
 export default function AdminPlantsPage() {
   const { adminToken, reportApiError } = useAdminAuth();
   const [plants, setPlants] = useState<AdminPlantSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const [deleteTarget, setDeleteTarget] = useState<AdminPlantSummary | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const loadPlants = useCallback(async () => {
     setLoading(true);
@@ -29,6 +36,22 @@ export default function AdminPlantsPage() {
       setLoading(false);
     }
   }, [adminToken, reportApiError]);
+
+  const handleDeleteConfirmed = async () => {
+    if (!deleteTarget) return;
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteAdminPlant(adminToken, deleteTarget.plant_id);
+      setDeleteTarget(null);
+      await loadPlants();
+    } catch (err) {
+      setDeleteError(formatAdminErrorMessage(err));
+      reportApiError(err);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -56,6 +79,21 @@ export default function AdminPlantsPage() {
 
   return (
     <div className="flex flex-col gap-6 w-full">
+      {/* Delete Confirmation Modal */}
+      <AdminDeleteModal
+        isOpen={deleteTarget !== null}
+        isDeleting={isDeleting}
+        plantId={deleteTarget?.plant_id || ""}
+        plantName={deleteTarget?.name || ""}
+        isSystemPlant={isSystemPlant(deleteTarget?.plant_id || "")}
+        error={deleteError}
+        onConfirm={handleDeleteConfirmed}
+        onClose={() => {
+          setDeleteTarget(null);
+          setDeleteError(null);
+        }}
+      />
+
       {/* Top Title Banner */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-slate-200">
         <div>
@@ -215,13 +253,37 @@ export default function AdminPlantsPage() {
                       )}
                     </td>
                     <td className="py-4 px-4 text-right">
-                      <Link
-                        href={`/admin/plants/${encodeURIComponent(plant.plant_id)}`}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 active:bg-black text-white font-medium text-xs transition-all shadow-2xs"
-                      >
-                        <span>View Details</span>
-                        <span aria-hidden="true">&rarr;</span>
-                      </Link>
+                      <div className="flex items-center justify-end gap-2">
+                        <Link
+                          href={`/admin/plants/${encodeURIComponent(plant.plant_id)}`}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 active:bg-black text-white font-medium text-xs transition-all shadow-2xs"
+                        >
+                          <span>View</span>
+                          <span aria-hidden="true">&rarr;</span>
+                        </Link>
+                        <Link
+                          href={`/admin/plants/${encodeURIComponent(plant.plant_id)}/edit`}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 font-semibold text-xs transition-all shadow-2xs"
+                        >
+                          <span>✏️ Edit</span>
+                        </Link>
+                        {isSystemPlant(plant.plant_id) ? (
+                          <span className="px-2 py-1 rounded-xl bg-slate-100 border border-slate-200 text-slate-400 font-medium text-3xs uppercase tracking-wide cursor-not-allowed">
+                            Protected
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDeleteTarget(plant);
+                              setDeleteError(null);
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 font-semibold text-xs transition-all cursor-pointer shadow-2xs"
+                          >
+                            <span>🗑️ Delete</span>
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
