@@ -45,10 +45,12 @@ services:
     depends_on:
       broker:
         condition: service_healthy
+    pid: "service:broker"
     ports:
       - "8000:8000"
     volumes:
       - platform_data:/app/data
+      - mosquitto_auth:/mosquitto/auth
     environment:
       MQTT_HOST: broker
       MQTT_PORT: 1883

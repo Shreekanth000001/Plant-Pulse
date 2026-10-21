@@ -3,6 +3,8 @@ import base64
 import hashlib
 import os
 import shutil
+import signal
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +15,25 @@ if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
 from plant_definitions import PlantDefinition, load_plants
+
+
+def _write_auth_file_atomic(dest_path: Path, content: str) -> None:
+    """Write content to a .tmp file and atomically rename, setting 1883:1883 + 0600 or 0644."""
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = dest_path.with_suffix(".tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+
+    try:
+        os.chown(tmp_path, 1883, 1883)
+    except (PermissionError, OSError):
+        pass
+
+    try:
+        os.chmod(tmp_path, 0o600)
+    except (PermissionError, OSError):
+        os.chmod(tmp_path, 0o644)
+
+    os.replace(tmp_path, dest_path)
 
 
 def hash_password_pbkdf2(password: str, iterations: int = 101) -> str:
@@ -67,15 +88,9 @@ def generate_auth_files(
 
     # 1. Generate ACL file
     acl_content = generate_acl_content(plants, backend_user=backend_user)
-    acl_path.parent.mkdir(parents=True, exist_ok=True)
-    acl_path.write_text(acl_content, encoding="utf-8")
-    os.chmod(acl_path, 0o600)
+    _write_auth_file_atomic(acl_path, acl_content)
 
     # 2. Generate password file
-    passwd_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # If mosquitto_passwd binary is present, we can use it, or write hashes directly.
-    # Writing hashes directly ensures exact 0600 permissions and cross-platform reliability.
     passwd_lines: list[str] = []
 
     if backend_password:
@@ -85,15 +100,33 @@ def generate_auth_files(
         for cred in plant.mqtt_credentials:
             passwd_lines.append(f"{cred.username}:{hash_password(cred.password)}")
 
-    passwd_path.write_text("\n".join(passwd_lines) + "\n", encoding="utf-8")
-    os.chmod(passwd_path, 0o600)
+    _write_auth_file_atomic(passwd_path, "\n".join(passwd_lines) + "\n")
 
     return passwd_path, acl_path
 
 
-def reload_mosquitto() -> None:
-    """Send SIGHUP to mosquitto process if running."""
-    if shutil.which("pgrep") and shutil.which("kill"):
+def reload_mosquitto() -> bool:
+    """Send SIGHUP to mosquitto process in shared PID namespace or host process table."""
+    pids: list[int] = []
+    proc = Path("/proc")
+    if proc.exists() and proc.is_dir():
+        try:
+            for entry in proc.iterdir():
+                if entry.name.isdigit():
+                    try:
+                        comm_file = entry / "comm"
+                        if (
+                            comm_file.exists()
+                            and comm_file.read_text(encoding="utf-8").strip()
+                            == "mosquitto"
+                        ):
+                            pids.append(int(entry.name))
+                    except (PermissionError, FileNotFoundError, ProcessLookupError):
+                        continue
+        except (PermissionError, OSError):
+            pass
+
+    if not pids and shutil.which("pgrep"):
         res = subprocess.run(
             ["pgrep", "mosquitto"],
             capture_output=True,
@@ -101,8 +134,124 @@ def reload_mosquitto() -> None:
             check=False,
         )
         if res.returncode == 0:
-            for pid in res.stdout.strip().splitlines():
-                subprocess.run(["kill", "-HUP", pid], check=False)
+            pids = [int(p) for p in res.stdout.strip().splitlines() if p.isdigit()]
+
+    if not pids:
+        return False
+
+    signaled = False
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGHUP)
+            signaled = True
+        except (PermissionError, ProcessLookupError):
+            pass
+    return signaled
+
+
+_BACKEND_HASH_CACHE: dict[tuple[str, str], str] = {}
+
+
+def _get_cached_backend_hash(backend_user: str, backend_password: str) -> str:
+    if backend_password.startswith("$7$"):
+        return backend_password
+    key = (backend_user, backend_password)
+    if key not in _BACKEND_HASH_CACHE:
+        _BACKEND_HASH_CACHE[key] = hash_password_pbkdf2(backend_password)
+    return _BACKEND_HASH_CACHE[key]
+
+
+def sync_broker_auth_from_db(
+    conn: sqlite3.Connection,
+    auth_dir: Path | str | None = None,
+    backend_user: str | None = None,
+    backend_password: str | None = None,
+    reload: bool = True,
+) -> bool:
+    """Generate Mosquitto password and ACL files from platform.db and reload Mosquitto."""
+    if auth_dir is None:
+        auth_dir = os.getenv("MOSQUITTO_AUTH_DIR", "/mosquitto/auth")
+    auth_dir = Path(auth_dir)
+
+    if backend_user is None:
+        backend_user = os.getenv(
+            "BACKEND_MQTT_USER", os.getenv("MQTT_USER", "backend_service")
+        )
+    if backend_password is None:
+        backend_password = os.getenv(
+            "BACKEND_MQTT_PASSWORD", os.getenv("MQTT_PASSWORD", "")
+        )
+
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT plant_id, username, password_hash FROM plant_credentials WHERE is_active = 1 ORDER BY plant_id, username;"
+    )
+    cred_rows = cur.fetchall()
+
+    cur.execute("SELECT id, name FROM plants ORDER BY id;")
+    plant_rows = cur.fetchall()
+
+    # 1. Build passwd lines
+    passwd_lines: list[str] = []
+    # Always include backend user
+    if backend_password:
+        b_hash = _get_cached_backend_hash(backend_user, backend_password)
+        passwd_lines.append(f"{backend_user}:{b_hash}")
+    else:
+        b_hash = _get_cached_backend_hash(backend_user, "backend_service_secret")
+        passwd_lines.append(f"{backend_user}:{b_hash}")
+
+    for row in cred_rows:
+        u = row["username"]
+        h = row["password_hash"]
+        if not h.startswith("$7$"):
+            h = hash_password_pbkdf2(h)
+            cur.execute(
+                "UPDATE plant_credentials SET password_hash = ? WHERE plant_id = ? AND username = ?;",
+                (h, row["plant_id"], u),
+            )
+            conn.commit()
+        passwd_lines.append(f"{u}:{h}")
+
+    passwd_content = "\n".join(passwd_lines) + "\n"
+
+    # 2. Build ACL content
+    acl_lines = [
+        "# PlantPulse Mosquitto ACL Configuration",
+        "# Auto-generated from platform.db. Do not edit manually.",
+        "",
+        "# Backend Service (Full Read/Write Access across all plants)",
+        f"user {backend_user}",
+        "topic readwrite plants/#",
+        "",
+    ]
+
+    creds_by_plant: dict[str, list[str]] = {}
+    for row in cred_rows:
+        creds_by_plant.setdefault(row["plant_id"], []).append(row["username"])
+
+    for p in plant_rows:
+        pid = p["id"]
+        pname = p["name"]
+        users = creds_by_plant.get(pid, [])
+        if users:
+            acl_lines.append(f"# Plant: {pname} ({pid})")
+            for u in sorted(users):
+                acl_lines.append(f"user {u}")
+                acl_lines.append(f"topic readwrite plants/{pid}/#")
+            acl_lines.append("")
+
+    acl_content = "\n".join(acl_lines).rstrip() + "\n"
+
+    passwd_file = auth_dir / "passwd"
+    acl_file = auth_dir / "acl.conf"
+
+    _write_auth_file_atomic(passwd_file, passwd_content)
+    _write_auth_file_atomic(acl_file, acl_content)
+
+    if reload:
+        return reload_mosquitto()
+    return True
 
 
 def main() -> None:

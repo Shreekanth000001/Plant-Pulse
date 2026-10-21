@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from plant_definitions import PlantDefinition
+from scripts.generate_mosquitto_auth import hash_password_pbkdf2
 
 logger = logging.getLogger("ingest-engine")
 
@@ -82,6 +83,8 @@ def sync_plant_definitions(
         )
 
         for cred in plant.mqtt_credentials:
+            pwd = cred.password
+            p_hash = pwd if pwd.startswith("$7$") else hash_password_pbkdf2(pwd)
             cursor.execute(
                 """
                 INSERT INTO plant_credentials (plant_id, username, client_id, password_hash, is_active)
@@ -95,7 +98,7 @@ def sync_plant_definitions(
                     plant.plant_id,
                     cred.username,
                     cred.client_id,
-                    cred.password,
+                    p_hash,
                 ),
             )
 

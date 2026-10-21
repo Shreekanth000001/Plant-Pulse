@@ -163,6 +163,23 @@ class AdminPlantDetail(BaseModel):
     areas: list[AreaDefinition] = Field(default_factory=list)
 
 
+class AdminDeviceCredential(BaseModel):
+    username: str
+    password: str
+
+
+class AdminCredentialRotateResponse(BaseModel):
+    plant_id: str
+    username: str
+    password: str
+    broker_reloaded: bool
+
+
+class AdminPlantCreatedResponse(AdminPlantDetail):
+    one_time_device_credentials: list[AdminDeviceCredential] | None = None
+    broker_reloaded: bool = True
+
+
 def load_plants(directory: Path) -> dict[str, PlantDefinition]:
     plants: dict[str, PlantDefinition] = {}
     for path in sorted(directory.glob("*.json")):
