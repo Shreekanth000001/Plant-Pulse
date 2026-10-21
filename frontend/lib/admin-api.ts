@@ -549,3 +549,188 @@ export async function updateAdminPlant(
 
   return (await res.json()) as AdminPlantDetail;
 }
+
+export const SYSTEM_PLANT_IDS = new Set<string>(["plant_demo_membrane"]);
+
+export function isSystemPlant(plantId: string): boolean {
+  if (!plantId) return false;
+  return SYSTEM_PLANT_IDS.has(plantId.trim());
+}
+
+export function canConfirmDelete(
+  targetPlantId: string,
+  inputPlantId: string,
+  isProtectedSystemPlant?: boolean
+): boolean {
+  if (isProtectedSystemPlant) return false;
+  if (!targetPlantId || !inputPlantId) return false;
+  return targetPlantId.trim() === inputPlantId.trim();
+}
+
+export interface PlantRemovalsDiff {
+  removedAreas: string[];
+  removedMachines: string[];
+  removedSignals: string[];
+  hasRemovals: boolean;
+}
+
+export function diffPlantRemovals(
+  originalPlant: {
+    areas?: Array<{
+      area_code: string;
+      machines?: Array<{
+        machine_code: string;
+        signals?: Array<{ signal_code: string }>;
+      }>;
+    }>;
+  },
+  updatedPlant: {
+    areas?: Array<{
+      area_code: string;
+      machines?: Array<{
+        machine_code: string;
+        signals?: Array<{ signal_code: string }>;
+      }>;
+    }>;
+  }
+): PlantRemovalsDiff {
+  const origAreas = new Set((originalPlant.areas || []).map((a) => a.area_code));
+  const newAreas = new Set((updatedPlant.areas || []).map((a) => a.area_code));
+  const removedAreas = Array.from(origAreas).filter((a) => !newAreas.has(a)).sort();
+
+  const origMachines = new Set(
+    (originalPlant.areas || []).flatMap((a) => (a.machines || []).map((m) => m.machine_code))
+  );
+  const newMachines = new Set(
+    (updatedPlant.areas || []).flatMap((a) => (a.machines || []).map((m) => m.machine_code))
+  );
+  const removedMachines = Array.from(origMachines).filter((m) => !newMachines.has(m)).sort();
+
+  const origSignals = new Set(
+    (originalPlant.areas || []).flatMap((a) =>
+      (a.machines || []).flatMap((m) =>
+        (m.signals || []).map((s) => `${m.machine_code}:${s.signal_code}`)
+      )
+    )
+  );
+  const newSignals = new Set(
+    (updatedPlant.areas || []).flatMap((a) =>
+      (a.machines || []).flatMap((m) =>
+        (m.signals || []).map((s) => `${m.machine_code}:${s.signal_code}`)
+      )
+    )
+  );
+  const removedSignals = Array.from(origSignals).filter((s) => !newSignals.has(s)).sort();
+
+  const hasRemovals =
+    removedAreas.length > 0 || removedMachines.length > 0 || removedSignals.length > 0;
+
+  return {
+    removedAreas,
+    removedMachines,
+    removedSignals,
+    hasRemovals,
+  };
+}
+
+export interface Parsed409Removals {
+  removedAreas: string[];
+  removedMachines: string[];
+  removedSignals: string[];
+  isRemovalConflict: boolean;
+}
+
+export function parse409Removals(detail: string): Parsed409Removals {
+  if (!detail || typeof detail !== "string") {
+    return {
+      removedAreas: [],
+      removedMachines: [],
+      removedSignals: [],
+      isRemovalConflict: false,
+    };
+  }
+
+  const isRemovalConflict =
+    detail.includes("Updating plant would remove existing components") ||
+    detail.includes("confirm_removals=true");
+
+  const parseList = (regex: RegExp): string[] => {
+    const match = detail.match(regex);
+    if (!match || !match[1]) return [];
+    return match[1]
+      .split(",")
+      .map((s) => s.replace(/['"\[\]]/g, "").trim())
+      .filter((s) => s.length > 0);
+  };
+
+  const removedAreas = parseList(/areas:\s*\[(.*?)\]/);
+  const removedMachines = parseList(/machines:\s*\[(.*?)\]/);
+  const removedSignals = parseList(/signals:\s*\[(.*?)\]/);
+
+  return {
+    removedAreas,
+    removedMachines,
+    removedSignals,
+    isRemovalConflict:
+      isRemovalConflict ||
+      removedAreas.length > 0 ||
+      removedMachines.length > 0 ||
+      removedSignals.length > 0,
+  };
+}
+
+export interface AdminPlantDeleteResponse {
+  status: "deleted";
+  plant_id: string;
+  broker_reloaded: boolean;
+}
+
+export async function deleteAdminPlant(
+  token: string,
+  plantId: string,
+  customBaseUrl?: string
+): Promise<AdminPlantDeleteResponse> {
+  const baseUrl = customBaseUrl || getApiBaseUrl();
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl}/api/admin/plants/${encodeURIComponent(plantId.trim())}`, {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+      },
+    });
+  } catch (netErr) {
+    throw new AdminApiError(
+      `Network failure deleting plant: ${netErr instanceof Error ? netErr.message : String(netErr)}`,
+      0,
+      undefined,
+      token
+    );
+  }
+
+  if (!res.ok) {
+    let retryAfter: number | undefined;
+    const retryHeader = res.headers.get("Retry-After");
+    if (retryHeader) {
+      const parsed = parseInt(retryHeader, 10);
+      if (!Number.isNaN(parsed)) retryAfter = parsed;
+    }
+
+    let detail = `Failed to delete plant (${res.status})`;
+    try {
+      const json = await res.json();
+      if (json && typeof json.detail === "string") {
+        detail = json.detail;
+      }
+    } catch {
+      // ignore json decode failure
+    }
+
+    throw new AdminApiError(detail, res.status, retryAfter, token);
+  }
+
+  return (await res.json()) as AdminPlantDeleteResponse;
+}
+
+

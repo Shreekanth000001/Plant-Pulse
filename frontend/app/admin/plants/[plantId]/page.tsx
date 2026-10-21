@@ -2,19 +2,23 @@
 
 import React, { useState, useEffect, useCallback, useReducer } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useAdminAuth } from "../../layout";
 import {
   fetchAdminPlantDetail,
   rotateAdminDeviceCredentials,
+  deleteAdminPlant,
+  isSystemPlant,
   credentialModalReducer,
   initialCredentialModalState,
   formatAdminErrorMessage,
   type AdminPlantDetail,
 } from "../../../../lib/admin-api";
 import { AdminCredentialsModal } from "../../../../components/admin/AdminCredentialsModal";
+import { AdminDeleteModal } from "../../../../components/admin/AdminDeleteModal";
 
 export default function AdminPlantDetailPage() {
+  const router = useRouter();
   const params = useParams();
   const plantId = (params?.plantId as string) || "";
   const { adminToken, reportApiError } = useAdminAuth();
@@ -25,10 +29,30 @@ export default function AdminPlantDetailPage() {
   const [isRotating, setIsRotating] = useState(false);
   const [showRotateConfirm, setShowRotateConfirm] = useState(false);
 
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
   const [modalState, dispatchModal] = useReducer(
     credentialModalReducer,
     initialCredentialModalState
   );
+
+  const handleDeletePlant = async () => {
+    if (!plant) return;
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteAdminPlant(adminToken, plant.plant_id);
+      setShowDeleteModal(false);
+      router.push("/admin");
+    } catch (err) {
+      setDeleteError(formatAdminErrorMessage(err));
+      reportApiError(err);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   const loadDetail = useCallback(async () => {
     if (!plantId) return;
@@ -122,8 +146,24 @@ export default function AdminPlantDetailPage() {
         brokerReloaded={modalState.brokerReloaded}
         onClose={handleModalClose}
       />
+
+      {/* Delete Confirmation Modal */}
+      <AdminDeleteModal
+        isOpen={showDeleteModal}
+        isDeleting={isDeleting}
+        plantId={plantId}
+        plantName={plant?.name || plantId}
+        isSystemPlant={isSystemPlant(plantId)}
+        error={deleteError}
+        onConfirm={handleDeletePlant}
+        onClose={() => {
+          setShowDeleteModal(false);
+          setDeleteError(null);
+        }}
+      />
+
       {/* Breadcrumb & Navigation */}
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <Link
           href="/admin"
           className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 transition-colors"
@@ -131,15 +171,41 @@ export default function AdminPlantDetailPage() {
           <span>&larr;</span>
           <span>Back to All Plants</span>
         </Link>
-        <button
-          type="button"
-          onClick={loadDetail}
-          disabled={loading}
-          className="px-3.5 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl transition-all shadow-2xs cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
-        >
-          <span className={loading ? "animate-spin" : ""}>🔄</span>
-          <span>Refresh</span>
-        </button>
+        <div className="flex items-center gap-2.5">
+          <Link
+            href={`/admin/plants/${encodeURIComponent(plantId)}/edit`}
+            className="px-3.5 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl transition-all shadow-2xs cursor-pointer flex items-center gap-1.5"
+          >
+            <span>✏️</span>
+            <span>Edit Plant</span>
+          </Link>
+
+          {isSystemPlant(plantId) ? (
+            <span className="px-3 py-1.5 rounded-xl bg-slate-100 border border-slate-300 text-slate-500 text-xs font-semibold flex items-center gap-1">
+              <span>🔒</span>
+              <span>System Plant (Protected)</span>
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setShowDeleteModal(true)}
+              className="px-3.5 py-1.5 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-xl transition-all shadow-2xs cursor-pointer flex items-center gap-1.5"
+            >
+              <span>🗑️</span>
+              <span>Delete Plant</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={loadDetail}
+            disabled={loading}
+            className="px-3.5 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl transition-all shadow-2xs cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+          >
+            <span className={loading ? "animate-spin" : ""}>🔄</span>
+            <span>Refresh</span>
+          </button>
+        </div>
       </div>
 
       {/* Error View */}
