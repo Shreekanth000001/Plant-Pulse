@@ -130,6 +130,12 @@ def get_db_connection(db_target: Any = None) -> PooledConnectionWrapper:
     return PooledConnectionWrapper(pool, conn)
 
 
+def forget_partition(part_name: str) -> None:
+    """Remove a dropped partition name from the in-memory cache."""
+    with _partition_lock:
+        _known_partitions.discard(part_name)
+
+
 def ensure_partitions(
     conn: Any = None, days_behind: int = 1, days_ahead: int = 7
 ) -> list[str]:

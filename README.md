@@ -58,7 +58,7 @@ flowchart LR
         API["FastAPI Backend :8000<br/>(Uvicorn on 127.0.0.1)"]
         INGEST["IngestEngine<br/>(Async batch writer)"]
         HEART["Heartbeat Emitter<br/>(5s ping when viewers active)"]
-        RET["Retention Worker<br/>(30-day batched purge + vacuum)"]
+        RET["Retention Worker<br/>(Partition drop + batched deletes)"]
         THROTTLE["Rate Limiters<br/>(Sliding-window IP throttles)"]
     end
 
@@ -78,7 +78,7 @@ flowchart LR
     WATCH -->|runs or pauses line| SIM
     API --> INGEST
     INGEST -->|batched commits off loop| DB
-    RET -->|scheduled purge & vacuum| DB
+    RET -->|scheduled partition drops & batched purge| DB
     THROTTLE -->|guards REST & WS tickets| API
     API -->|REST queries & downsampled history| UI
     API -->|WebSocket rooms /ws/{plant}/telemetry| UI
@@ -89,6 +89,7 @@ flowchart LR
 - **Heartbeat-as-Run Watchdog Protocol:** The simulator only runs while active browser viewers are connected. The API emits heartbeats every 5 seconds when viewers exist; after 30 seconds of silence, the simulator idles to prevent unconstrained database growth.
 - **Broker-Level Topic ACLs & Password Auth:** Edge credentials and topic access are compiled into Mosquitto password and ACL files (`plants/{plant_id}/#`) at boot. Broker port 1883 remains internal to the Docker network.
 - **Native Daily Time Partitioning & Idempotency:** Measurements are committed in batches (`telemetry_values`) partitioned daily by `device_timestamp` with composite primary key `(device_timestamp, plant_id, message_id, signal_code)` and `ON CONFLICT DO NOTHING` deduplication. Partitions are pre-created across `[today-1 .. today+7]`.
+- **Partition-Drop Retention (`RETENTION_DAYS`):** Telemetry values are retained for a configurable window (`RETENTION_DAYS`, default 30). The retention worker automatically drops daily leaf partitions (`DROP TABLE telemetry_values_pYYYY_MM_DD`) older than the cutoff, returning physical disk storage to the filesystem immediately with zero fragmentation or VACUUM locking. Product traceability records (`units`, `stage_events`, `qc_results`) are cleaned using composite-key batched deletes.
 - **Strict Localhost Port Binding:** The API service binds port 8000 strictly to loopback (`127.0.0.1:8000`) in Docker Compose to prevent exposing backend endpoints directly on public network interfaces in VM deployments.
 
 ---
@@ -224,6 +225,10 @@ python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 export DATABASE_URL="postgresql://plantpulse:plantpulse@localhost:5432/plantpulse"
 alembic upgrade head
+
+# Optional: Migrate legacy SQLite database (platform.db) to PostgreSQL via streaming COPY
+python scripts/migrate_sqlite_to_postgres.py --sqlite-path platform.db --postgres-url "$DATABASE_URL"
+
 MQTT_USER=backend_service MQTT_PASSWORD=backend_secret uvicorn main:app --port 8000
 
 # 4. Start Simulator Runner
@@ -272,6 +277,6 @@ This is a portfolio and learning project demonstrating distributed industrial Io
 3. **Legacy `/api` Endpoints Unauthenticated:** Legacy endpoints retained for backwards compatibility (`/api/units`, `/api/summary`) are unauthenticated. Production deployments should disable or deprecate legacy routes.
 4. **Partition Key in Deduplication Constraint:** Native PostgreSQL time partitioning requires the partition key (`device_timestamp`) to be included in all unique constraints and primary keys on partitioned tables. As a result, the primary key of `telemetry_values` is `(device_timestamp, plant_id, message_id, signal_code)`. If an edge device retry generates a new timestamp rather than retaining the original sample timestamp, the message will be stored twice. When retried QoS 1 redelivery preserves the original timestamp, duplicates are cleanly dropped via `ON CONFLICT DO NOTHING`.
 5. **At-Most-Once Delivery Inside API:** The IngestEngine buffers incoming MQTT telemetry in an asynchronous queue before committing batched inserts. An abrupt server termination or container kill will drop in-flight uncommitted measurements.
-6. **Partition Retention Transition:** PR 1 implements the full database swap to PostgreSQL with daily partitioned telemetry tables and composite-key batched deletes. Dedicated partition-drop retention automation and legacy SQLite export tools will be introduced in PR 2 (#34).
+6. **Partition-Drop Retention Window:** Measurements older than `RETENTION_DAYS` (default 30) are purged by dropping matching daily leaf partition tables (`DROP TABLE telemetry_values_pYYYY_MM_DD`), immediately reclaiming disk space. Out-of-window timestamps arriving outside managed partition boundaries are rejected by PostgreSQL because no catch-all default partition is configured.
 7. **Static Admin Token Until Login Session (#55):** Admin authentication currently uses a static pre-shared Bearer secret (`ADMIN_TOKEN`). Interactive user accounts, database-backed roles, and session token rotation are cataloged for a subsequent milestone.
 8. **No Viewer Token Removal in Admin UI:** The Admin UI allows rotating or updating existing plant viewer tokens, but clearing a token back to public unauthenticated access is not supported from the interface (preserving the existing token hash on blank submission). Making a protected plant public requires manual database intervention.
