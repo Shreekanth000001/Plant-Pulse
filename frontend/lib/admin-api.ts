@@ -733,4 +733,247 @@ export async function deleteAdminPlant(
   return (await res.json()) as AdminPlantDeleteResponse;
 }
 
+export interface PlantJsonParseResult {
+  success: boolean;
+  data: Record<string, unknown> | null;
+  error: string | null;
+  line?: number;
+  column?: number;
+}
+
+export function parsePlantJson(jsonString: string): PlantJsonParseResult {
+  if (!jsonString || typeof jsonString !== "string" || !jsonString.trim()) {
+    return {
+      success: false,
+      data: null,
+      error: "JSON string is empty",
+    };
+  }
+
+  try {
+    const data = JSON.parse(jsonString);
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      return {
+        success: false,
+        data: null,
+        error: "Root JSON value must be an object (plant definition).",
+      };
+    }
+    return {
+      success: true,
+      data: data as Record<string, unknown>,
+      error: null,
+    };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    let line: number | undefined;
+    let column: number | undefined;
+
+    const lineColMatch = msg.match(/line\s+(\d+)\s+column\s+(\d+)/i);
+    if (lineColMatch) {
+      line = parseInt(lineColMatch[1], 10);
+      column = parseInt(lineColMatch[2], 10);
+    } else {
+      const posMatch = msg.match(/position\s+(\d+)/i);
+      if (posMatch) {
+        const pos = parseInt(posMatch[1], 10);
+        const prefix = jsonString.slice(0, pos);
+        const lines = prefix.split("\n");
+        line = lines.length;
+        column = lines[lines.length - 1].length + 1;
+      }
+    }
+
+    const posStr =
+      line !== undefined && column !== undefined
+        ? ` at line ${line}, column ${column}`
+        : line !== undefined
+          ? ` at line ${line}`
+          : "";
+
+    return {
+      success: false,
+      data: null,
+      error: `Syntax error${posStr}: ${msg}`,
+      line,
+      column,
+    };
+  }
+}
+
+export interface AdvisoryValidationResult {
+  valid: boolean;
+  errors: Record<string, string>;
+  warnings: string[];
+}
+
+export function validatePlantDefinitionAdvisory(data: unknown): AdvisoryValidationResult {
+  const errors: Record<string, string> = {};
+  const warnings: string[] = [];
+
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return {
+      valid: false,
+      errors: { root: "Plant definition must be an object." },
+      warnings,
+    };
+  }
+
+  const obj = data as Record<string, unknown>;
+
+  // plant_id validation
+  const plantId = obj.plant_id;
+  if (!plantId || typeof plantId !== "string" || !plantId.trim()) {
+    errors["plant_id"] = "Field required";
+  } else if (!/^[a-z0-9_]{3,64}$/.test(plantId.trim())) {
+    errors["plant_id"] = "String should match pattern '^[a-z0-9_]{3,64}$'";
+  }
+
+  // name validation
+  if (!obj.name || typeof obj.name !== "string" || !obj.name.trim()) {
+    errors["name"] = "Field required";
+  }
+
+  // areas validation
+  if (!obj.areas || !Array.isArray(obj.areas)) {
+    errors["areas"] = "Areas list is required and must be an array.";
+  } else if (obj.areas.length === 0) {
+    warnings.push("Plant has no production areas configured.");
+  } else {
+    const areaCodes = new Set<string>();
+
+    obj.areas.forEach((areaRaw, aIdx) => {
+      if (!areaRaw || typeof areaRaw !== "object") {
+        errors[`areas.${aIdx}`] = "Area must be an object.";
+        return;
+      }
+      const area = areaRaw as Record<string, unknown>;
+      const aCode = String(area.area_code || "").trim();
+      if (!aCode) {
+        errors[`areas.${aIdx}.area_code`] = "Area code is required.";
+      } else if (areaCodes.has(aCode)) {
+        errors[`areas.${aIdx}.area_code`] = `Duplicate area code '${aCode}'.`;
+      } else {
+        areaCodes.add(aCode);
+      }
+
+      if (!area.machines || !Array.isArray(area.machines)) {
+        warnings.push(`Area '${aCode || aIdx}' has no machines array.`);
+      } else {
+        const machCodes = new Set<string>();
+        area.machines.forEach((machRaw, mIdx) => {
+          if (!machRaw || typeof machRaw !== "object") return;
+          const mach = machRaw as Record<string, unknown>;
+          const mCode = String(mach.machine_code || "").trim();
+          if (!mCode) {
+            errors[`areas.${aIdx}.machines.${mIdx}.machine_code`] = "Machine code is required.";
+          } else if (machCodes.has(mCode)) {
+            errors[`areas.${aIdx}.machines.${mIdx}.machine_code`] =
+              `Duplicate machine code '${mCode}'.`;
+          } else {
+            machCodes.add(mCode);
+          }
+
+          if (mach.signals && Array.isArray(mach.signals)) {
+            const sigCodesInMach = new Set<string>();
+            mach.signals.forEach((sigRaw, sIdx) => {
+              if (!sigRaw || typeof sigRaw !== "object") return;
+              const sig = sigRaw as Record<string, unknown>;
+              const sCode = String(sig.signal_code || "").trim();
+              if (!sCode) {
+                errors[`areas.${aIdx}.machines.${mIdx}.signals.${sIdx}.signal_code`] =
+                  "Signal code is required.";
+              } else if (sigCodesInMach.has(sCode)) {
+                errors[`areas.${aIdx}.machines.${mIdx}.signals.${sIdx}.signal_code`] =
+                  `Duplicate signal code '${sCode}' in machine '${mCode}'.`;
+              } else {
+                sigCodesInMach.add(sCode);
+              }
+            });
+          }
+        });
+      }
+    });
+  }
+
+  return {
+    valid: Object.keys(errors).length === 0,
+    errors,
+    warnings,
+  };
+}
+
+export function exportPlantDefinitionJson(plant: unknown): string {
+  if (!plant || typeof plant !== "object") {
+    return "{}";
+  }
+
+  const p = plant as Record<string, unknown>;
+
+  const clean: Record<string, unknown> = {
+    plant_id: p.plant_id || "",
+    name: p.name || "",
+    timezone: p.timezone || "UTC",
+    enabled_modules: Array.isArray(p.enabled_modules) ? p.enabled_modules : ["core", "alarms"],
+  };
+
+  if (Array.isArray(p.areas)) {
+    clean.areas = p.areas.map((areaRaw: unknown, aIdx: number) => {
+      const area = (areaRaw || {}) as Record<string, unknown>;
+      return {
+        area_code: area.area_code || "",
+        name: area.name || "",
+        display_order: typeof area.display_order === "number" ? area.display_order : aIdx + 1,
+        machines: Array.isArray(area.machines)
+          ? area.machines.map((machRaw: unknown, mIdx: number) => {
+              const mach = (machRaw || {}) as Record<string, unknown>;
+              return {
+                machine_code: mach.machine_code || "",
+                name: mach.name || "",
+                machine_type: mach.machine_type || "standard",
+                display_order:
+                  typeof mach.display_order === "number" ? mach.display_order : mIdx + 1,
+                signals: Array.isArray(mach.signals)
+                  ? mach.signals.map((sigRaw: unknown, sIdx: number) => {
+                      const sig = (sigRaw || {}) as Record<string, unknown>;
+                      return {
+                        signal_code: sig.signal_code || "",
+                        name: sig.name || "",
+                        unit: sig.unit || "",
+                        data_type: sig.data_type || "float",
+                        is_setpoint: Boolean(sig.is_setpoint),
+                        setpoint_signal_code: sig.setpoint_signal_code || null,
+                        normal_min: sig.normal_min ?? null,
+                        normal_max: sig.normal_max ?? null,
+                        warn_min: sig.warn_min ?? null,
+                        warn_max: sig.warn_max ?? null,
+                        alarm_min: sig.alarm_min ?? null,
+                        alarm_max: sig.alarm_max ?? null,
+                        display_order:
+                          typeof sig.display_order === "number" ? sig.display_order : sIdx + 1,
+                      };
+                    })
+                  : [],
+              };
+            })
+          : [],
+      };
+    });
+  } else {
+    clean.areas = [];
+  }
+
+  // Explicit defense against secret key leaks
+  delete clean.viewer_token;
+  delete clean.viewer_token_hash;
+  delete clean.password;
+  delete clean.password_hash;
+  delete clean.mqtt_credentials;
+  delete clean.device_usernames;
+
+  return JSON.stringify(clean, null, 2);
+}
+
+
+
 

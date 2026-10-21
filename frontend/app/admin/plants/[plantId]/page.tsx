@@ -12,6 +12,7 @@ import {
   credentialModalReducer,
   initialCredentialModalState,
   formatAdminErrorMessage,
+  exportPlantDefinitionJson,
   type AdminPlantDetail,
 } from "../../../../lib/admin-api";
 import { AdminCredentialsModal } from "../../../../components/admin/AdminCredentialsModal";
@@ -136,6 +137,20 @@ export default function AdminPlantDetailPage() {
     loadDetail();
   };
 
+  const handleExportJson = () => {
+    if (!plant) return;
+    const jsonStr = exportPlantDefinitionJson(plant);
+    const blob = new Blob([jsonStr], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${plant.plant_id || "plant"}_definition.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="flex flex-col gap-6 w-full pb-12">
       {/* Credentials Modal */}
@@ -172,6 +187,17 @@ export default function AdminPlantDetailPage() {
           <span>Back to All Plants</span>
         </Link>
         <div className="flex items-center gap-2.5">
+          <button
+            type="button"
+            onClick={handleExportJson}
+            disabled={!plant}
+            className="px-3.5 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl transition-all shadow-2xs cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+            title="Download sanitized plant definition JSON"
+          >
+            <span>📥</span>
+            <span>Export JSON</span>
+          </button>
+
           <Link
             href={`/admin/plants/${encodeURIComponent(plantId)}/edit`}
             className="px-3.5 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-xl transition-all shadow-2xs cursor-pointer flex items-center gap-1.5"
