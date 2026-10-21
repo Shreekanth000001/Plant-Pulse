@@ -405,6 +405,22 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
                       parsed.sub_status !== undefined
                         ? parsed.sub_status
                         : existing.phase,
+                    current_unit_id:
+                      parsed.current_unit_id !== undefined
+                        ? parsed.current_unit_id
+                        : existing.current_unit_id,
+                    starved:
+                      parsed.starved !== undefined
+                        ? parsed.starved
+                        : existing.starved,
+                    good_count:
+                      parsed.good_count !== undefined
+                        ? parsed.good_count
+                        : existing.good_count,
+                    reject_count:
+                      parsed.reject_count !== undefined
+                        ? parsed.reject_count
+                        : existing.reject_count,
                     vibration:
                       parsed.vibration !== undefined
                         ? parsed.vibration

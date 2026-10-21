@@ -248,6 +248,7 @@ export function StationInspectorModal({
   const isVibrationFault = vibration !== null && vibration >= vibrationFaultThreshold;
   const isVibrationHigh = vibration !== null && vibration > 4.5;
 
+  const activeUnit = machine.current_unit_id;
   const good = machine.good_count ?? 0;
   const reject = machine.reject_count ?? 0;
   const total = good + reject;
@@ -307,10 +308,10 @@ export function StationInspectorModal({
               <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
                 Currently Processing Unit
               </div>
-              {machine.current_unit_id ? (
+              {activeUnit ? (
                 <div className="flex items-center gap-2 mt-1">
                   <span className="font-mono text-sm font-bold text-blue-600">
-                    {machine.current_unit_id}
+                    {activeUnit}
                   </span>
                   {machine.phase && (
                     <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-white text-slate-700 border border-slate-200">
@@ -325,9 +326,9 @@ export function StationInspectorModal({
               )}
             </div>
 
-            {machine.current_unit_id && (
+            {activeUnit && (
               <Link
-                href={`/units/${encodeURIComponent(machine.current_unit_id)}`}
+                href={`/units/${encodeURIComponent(activeUnit)}`}
                 className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-xs transition-all flex items-center gap-1.5"
               >
                 <span>Trace Unit Journey</span>

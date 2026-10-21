@@ -574,6 +574,10 @@ def build_telemetry_payload(
         "payload": {
             "status": reading.get("machine_state", "IDLE"),
             "sub_status": reading.get("phase"),
+            "current_unit_id": reading.get("current_unit"),
+            "starved": reading.get("starved", False),
+            "good_count": reading.get("good_count"),
+            "reject_count": reading.get("reject_count"),
             "metrics": metrics,
         },
     }
