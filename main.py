@@ -60,9 +60,14 @@ from database import (
 )
 from ingest import IngestEngine, sync_plant_definitions
 from plant_definitions import (
+    AdminPlantDetail,
+    AdminPlantSummary,
+    AreaDefinition,
+    MachineDefinition,
     PlantDefinition,
     PlantSummary,
     PublicPlantDefinition,
+    SignalDefinition,
     load_plants,
     load_plants_from_db,
 )
@@ -1231,6 +1236,126 @@ admin_router = APIRouter(
 @admin_router.get("/health")
 def admin_health() -> dict:
     return {"status": "ok"}
+
+
+@admin_router.get("/plants", response_model=list[AdminPlantSummary])
+def admin_list_plants() -> list[AdminPlantSummary]:
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, name, timezone, viewer_token_hash FROM plants ORDER BY id;"
+        )
+        rows = cur.fetchall()
+        return [
+            AdminPlantSummary(
+                plant_id=row["id"],
+                name=row["name"],
+                timezone=row["timezone"],
+                has_viewer_token=bool(row["viewer_token_hash"]),
+            )
+            for row in rows
+        ]
+    finally:
+        conn.close()
+
+
+@admin_router.get("/plants/{plant_id}", response_model=AdminPlantDetail)
+def admin_get_plant_detail(plant_id: str) -> AdminPlantDetail:
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, name, timezone, viewer_token_hash FROM plants WHERE id = ?;",
+            (plant_id,),
+        )
+        p_row = cur.fetchone()
+        if not p_row:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Plant '{plant_id}' not found",
+            )
+
+        cur.execute(
+            "SELECT area_code, name, display_order FROM areas WHERE plant_id = ? ORDER BY display_order, area_code;",
+            (plant_id,),
+        )
+        area_rows = cur.fetchall()
+        areas: list[AreaDefinition] = []
+        for a_row in area_rows:
+            a_code = a_row["area_code"]
+            cur.execute(
+                "SELECT machine_code, name, machine_type, display_order FROM machines WHERE plant_id = ? AND area_code = ? ORDER BY display_order, machine_code;",
+                (plant_id, a_code),
+            )
+            machine_rows = cur.fetchall()
+            machines: list[MachineDefinition] = []
+            for m_row in machine_rows:
+                m_code = m_row["machine_code"]
+                cur.execute(
+                    """
+                    SELECT signal_code, name, unit, data_type, is_setpoint, setpoint_signal_code,
+                           normal_min, normal_max, warn_min, warn_max, alarm_min, alarm_max, display_order
+                    FROM signals
+                    WHERE plant_id = ? AND machine_code = ?
+                    ORDER BY display_order, signal_code;
+                    """,
+                    (plant_id, m_code),
+                )
+                signal_rows = cur.fetchall()
+                signals = [
+                    SignalDefinition(
+                        signal_code=s["signal_code"],
+                        name=s["name"],
+                        unit=s["unit"] or "",
+                        data_type=s["data_type"],
+                        is_setpoint=bool(s["is_setpoint"]),
+                        setpoint_signal_code=s["setpoint_signal_code"],
+                        normal_min=s["normal_min"],
+                        normal_max=s["normal_max"],
+                        warn_min=s["warn_min"],
+                        warn_max=s["warn_max"],
+                        alarm_min=s["alarm_min"],
+                        alarm_max=s["alarm_max"],
+                        display_order=s["display_order"],
+                    )
+                    for s in signal_rows
+                ]
+                machines.append(
+                    MachineDefinition(
+                        machine_code=m_code,
+                        name=m_row["name"],
+                        machine_type=m_row["machine_type"],
+                        display_order=m_row["display_order"],
+                        signals=signals,
+                    )
+                )
+            areas.append(
+                AreaDefinition(
+                    area_code=a_code,
+                    name=a_row["name"],
+                    display_order=a_row["display_order"],
+                    machines=machines,
+                )
+            )
+
+        cur.execute(
+            "SELECT username FROM plant_credentials WHERE plant_id = ? ORDER BY username;",
+            (plant_id,),
+        )
+        cred_rows = cur.fetchall()
+        device_usernames = [c["username"] for c in cred_rows]
+
+        return AdminPlantDetail(
+            plant_id=p_row["id"],
+            name=p_row["name"],
+            timezone=p_row["timezone"],
+            has_viewer_token=bool(p_row["viewer_token_hash"]),
+            device_usernames=device_usernames,
+            areas=areas,
+        )
+    finally:
+        conn.close()
 
 
 def build_app(mount_admin: bool | None = None) -> FastAPI:

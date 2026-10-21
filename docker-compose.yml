@@ -57,6 +57,8 @@ services:
       PLATFORM_DB_PATH: /app/data/platform.db
       DATABASE_URL: sqlite:////app/data/platform.db
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      MOUNT_ADMIN_ENDPOINTS: ${MOUNT_ADMIN_ENDPOINTS:-false}
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
       interval: 5s

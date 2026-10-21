@@ -81,6 +81,24 @@ def sync_plant_definitions(
             ),
         )
 
+        for cred in plant.mqtt_credentials:
+            cursor.execute(
+                """
+                INSERT INTO plant_credentials (plant_id, username, client_id, password_hash, is_active)
+                VALUES (?, ?, ?, ?, 1)
+                ON CONFLICT (plant_id, username) DO UPDATE SET
+                    client_id = excluded.client_id,
+                    password_hash = excluded.password_hash,
+                    is_active = excluded.is_active
+                """,
+                (
+                    plant.plant_id,
+                    cred.username,
+                    cred.client_id,
+                    cred.password,
+                ),
+            )
+
         for area in plant.areas:
             cursor.execute(
                 """
