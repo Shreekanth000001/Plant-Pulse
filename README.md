@@ -185,3 +185,4 @@ This is a portfolio and learning project demonstrating distributed industrial Io
 5. **No Backpressure in Simulator Queues:** Housing runs continuously with unlimited raw materials, so the queue in front of Membrane Casting grows without bound if upstream throughput exceeds downstream cycle times.
 6. **Weather Model is a Placeholder:** Ambient weather bias in defect modeling evaluates to a constant 0.0 until an external weather API integration is built.
 7. **Defect Patterns Exist by Construction:** QC defect probabilities are generated from mathematical formulas (shift-change bias + anomaly deviations) rather than real physical defect causes.
+8. **Viewer Token Removal:** The Admin API and UI do not support removing or clearing a viewer access token once configured on a plant (a blank token on update preserves the existing token hash). Making a protected plant public requires manual database intervention or recreation.

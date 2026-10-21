@@ -1,0 +1,36 @@
+{
+  "plant_id": "plant_minimal_fixture",
+  "name": "Minimal Valid Plant",
+  "timezone": "UTC",
+  "enabled_modules": ["core", "alarms"],
+  "areas": [
+    {
+      "area_code": "area_01",
+      "name": "Area 01",
+      "display_order": 1,
+      "machines": [
+        {
+          "machine_code": "mach_01",
+          "name": "Machine 01",
+          "machine_type": "standard",
+          "display_order": 1,
+          "signals": [
+            {
+              "signal_code": "temp_actual",
+              "name": "Temperature",
+              "unit": "°C",
+              "data_type": "float",
+              "normal_min": 20.0,
+              "normal_max": 25.0,
+              "warn_min": 15.0,
+              "warn_max": 30.0,
+              "alarm_min": 10.0,
+              "alarm_max": 35.0,
+              "display_order": 1
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

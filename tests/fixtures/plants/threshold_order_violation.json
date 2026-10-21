@@ -1,0 +1,36 @@
+{
+  "plant_id": "plant_threshold_violation",
+  "name": "Plant With Inverted Thresholds",
+  "timezone": "UTC",
+  "enabled_modules": ["core", "alarms"],
+  "areas": [
+    {
+      "area_code": "area_01",
+      "name": "Area 01",
+      "display_order": 1,
+      "machines": [
+        {
+          "machine_code": "mach_01",
+          "name": "Machine 01",
+          "machine_type": "standard",
+          "display_order": 1,
+          "signals": [
+            {
+              "signal_code": "temp_actual",
+              "name": "Temperature",
+              "unit": "°C",
+              "data_type": "float",
+              "normal_min": 50.0,
+              "normal_max": 20.0,
+              "warn_min": 60.0,
+              "warn_max": 10.0,
+              "alarm_min": 70.0,
+              "alarm_max": 5.0,
+              "display_order": 1
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
