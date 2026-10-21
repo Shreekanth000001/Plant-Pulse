@@ -182,6 +182,9 @@ Run the end-to-end smoke verification script:
 python scripts/smoke_stack.py
 ```
 
+> [!NOTE]
+> `smoke_stack.py` requires the `websockets` client package. Run it with an activated virtual environment (`source venv/bin/activate`) or install it directly via `pip install websockets`.
+
 > [!IMPORTANT]
 > **Note on Remote VM Deployments (Build-Time Client URLs):**
 > Next.js inlines `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_WS_URL` into client-side JavaScript bundles at build time. When deploying to a remote VM or domain, update `.env` before building:
