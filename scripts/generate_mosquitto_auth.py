@@ -93,8 +93,11 @@ def generate_auth_files(
     # 2. Generate password file
     passwd_lines: list[str] = []
 
-    if backend_password:
-        passwd_lines.append(f"{backend_user}:{hash_password(backend_password)}")
+    if not backend_password:
+        raise ValueError(
+            "Backend MQTT password is required (backend_password). Refusing to generate authentication with missing secret."
+        )
+    passwd_lines.append(f"{backend_user}:{hash_password(backend_password)}")
 
     for plant in sorted(plants.values(), key=lambda p: p.plant_id):
         for cred in plant.mqtt_credentials:
@@ -184,8 +187,11 @@ def sync_broker_auth_from_db(
             "BACKEND_MQTT_USER", os.getenv("MQTT_USER", "backend_service")
         )
     if backend_password is None:
-        backend_password = os.getenv(
-            "BACKEND_MQTT_PASSWORD", os.getenv("MQTT_PASSWORD", "")
+        backend_password = os.getenv("BACKEND_MQTT_PASSWORD")
+
+    if not backend_password:
+        raise ValueError(
+            "Backend MQTT password is required (BACKEND_MQTT_PASSWORD). Refusing to generate authentication with missing secret."
         )
 
     cur = conn.cursor()
@@ -200,12 +206,8 @@ def sync_broker_auth_from_db(
     # 1. Build passwd lines
     passwd_lines: list[str] = []
     # Always include backend user
-    if backend_password:
-        b_hash = _get_cached_backend_hash(backend_user, backend_password)
-        passwd_lines.append(f"{backend_user}:{b_hash}")
-    else:
-        b_hash = _get_cached_backend_hash(backend_user, "backend_service_secret")
-        passwd_lines.append(f"{backend_user}:{b_hash}")
+    b_hash = _get_cached_backend_hash(backend_user, backend_password)
+    passwd_lines.append(f"{backend_user}:{b_hash}")
 
     for row in cred_rows:
         u = row["username"]
@@ -291,7 +293,8 @@ def main() -> None:
     parser.add_argument(
         "--backend-password",
         type=str,
-        default=os.getenv("BACKEND_SERVICE_PASSWORD", "backend_service_secret"),
+        default=os.getenv("BACKEND_MQTT_PASSWORD")
+        or os.getenv("BACKEND_SERVICE_PASSWORD"),
         help="Backend service MQTT password",
     )
     parser.add_argument(
@@ -301,6 +304,11 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    if not args.backend_password:
+        parser.error(
+            "Backend MQTT password is required (set BACKEND_MQTT_PASSWORD in environment or provide --backend-password). Refusing to proceed with missing secret."
+        )
 
     passwd_out, acl_out = generate_auth_files(
         plants_dir=args.plants_dir,
