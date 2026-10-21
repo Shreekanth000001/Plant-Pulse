@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import logging
 import sqlite3
+import threading
 import time
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
@@ -235,6 +236,7 @@ class IngestEngine:
         self._worker_task: asyncio.Task | None = None
         self._running = False
         self._stopping = False
+        self._lock = threading.Lock()
 
         # Open SQLite connection
         self._conn = sqlite3.connect(self._db_file, check_same_thread=False)
@@ -280,8 +282,10 @@ class IngestEngine:
         # Drain and flush all remaining items in queue
         await self.flush()
 
-        if self._conn:
-            self._conn.close()
+        with self._lock:
+            if self._conn:
+                self._conn.close()
+                self._conn = None
 
     def _validate_envelope(
         self,
@@ -486,56 +490,59 @@ class IngestEngine:
         """Synchronously commit batch of narrow rows and machine states in the same transaction."""
         if not metric_rows and not state_rows:
             return 0
-        cursor = self._conn.cursor()
-        if metric_rows:
-            sql = """
-            INSERT OR IGNORE INTO telemetry_values (
-                plant_id, machine_code, signal_code,
-                device_timestamp, received_at, message_id,
-                value_num, value_text
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """
-            try:
-                cursor.executemany(sql, metric_rows)
-            except sqlite3.IntegrityError as exc:
-                if "FOREIGN KEY" in str(exc):
-                    for row in metric_rows:
-                        try:
-                            cursor.execute(sql, row)
-                        except sqlite3.IntegrityError:
-                            pass
-                else:
-                    raise
+        with self._lock:
+            if not self._conn:
+                return 0
+            cursor = self._conn.cursor()
+            if metric_rows:
+                sql = """
+                INSERT OR IGNORE INTO telemetry_values (
+                    plant_id, machine_code, signal_code,
+                    device_timestamp, received_at, message_id,
+                    value_num, value_text
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """
+                try:
+                    cursor.executemany(sql, metric_rows)
+                except sqlite3.IntegrityError as exc:
+                    if "FOREIGN KEY" in str(exc):
+                        for row in metric_rows:
+                            try:
+                                cursor.execute(sql, row)
+                            except sqlite3.IntegrityError:
+                                pass
+                    else:
+                        raise
 
-        if state_rows:
-            state_sql = """
-            INSERT INTO machine_states (
-                plant_id, machine_code, state,
-                sub_state, last_seen_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT (plant_id, machine_code) DO UPDATE SET
-                state = excluded.state,
-                sub_state = excluded.sub_state,
-                last_seen_at = excluded.last_seen_at,
-                updated_at = excluded.updated_at
-            WHERE excluded.last_seen_at > machine_states.last_seen_at;
-            """
-            try:
-                cursor.executemany(state_sql, state_rows)
-            except sqlite3.IntegrityError as exc:
-                if "FOREIGN KEY" in str(exc):
-                    for s_row in state_rows:
-                        try:
-                            cursor.execute(state_sql, s_row)
-                        except sqlite3.IntegrityError:
-                            pass
-                else:
-                    raise
+            if state_rows:
+                state_sql = """
+                INSERT INTO machine_states (
+                    plant_id, machine_code, state,
+                    sub_state, last_seen_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (plant_id, machine_code) DO UPDATE SET
+                    state = excluded.state,
+                    sub_state = excluded.sub_state,
+                    last_seen_at = excluded.last_seen_at,
+                    updated_at = excluded.updated_at
+                WHERE excluded.last_seen_at > machine_states.last_seen_at;
+                """
+                try:
+                    cursor.executemany(state_sql, state_rows)
+                except sqlite3.IntegrityError as exc:
+                    if "FOREIGN KEY" in str(exc):
+                        for s_row in state_rows:
+                            try:
+                                cursor.execute(state_sql, s_row)
+                            except sqlite3.IntegrityError:
+                                pass
+                    else:
+                        raise
 
-        self._conn.commit()
-        return len(metric_rows) + len(state_rows)
+            self._conn.commit()
+            return len(metric_rows) + len(state_rows)
 
     async def flush(self) -> int:
         """Flush and commit all queued items immediately off the event loop."""
