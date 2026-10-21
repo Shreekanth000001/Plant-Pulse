@@ -40,6 +40,7 @@ from fastapi import (
     Header,
     HTTPException,
     Request,
+    Response,
     WebSocket,
     WebSocketDisconnect,
 )
@@ -60,6 +61,9 @@ from database import (
 )
 from ingest import IngestEngine, sync_plant_definitions
 from plant_definitions import (
+    AdminCredentialRotateResponse,
+    AdminDeviceCredential,
+    AdminPlantCreatedResponse,
     AdminPlantDetail,
     AdminPlantSummary,
     AreaDefinition,
@@ -70,6 +74,10 @@ from plant_definitions import (
     SignalDefinition,
     load_plants,
     load_plants_from_db,
+)
+from scripts.generate_mosquitto_auth import (
+    hash_password_pbkdf2,
+    sync_broker_auth_from_db,
 )
 from topic_router import TopicRouter
 
@@ -88,6 +96,7 @@ def get_mqtt_credentials() -> tuple[str | None, str | None]:
 PLATFORM_DB_PATH = os.getenv("PLATFORM_DB_PATH", "platform.db")
 PLANTS_DIR = Path(os.getenv("PLANTS_DIR", Path(__file__).resolve().parent / "plants"))
 SYSTEM_PLANT_IDS: frozenset[str] = frozenset({"plant_demo_membrane"})
+MOSQUITTO_AUTH_DIR = Path(os.getenv("MOSQUITTO_AUTH_DIR", "/mosquitto/auth"))
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
@@ -728,6 +737,16 @@ async def lifespan(app: FastAPI):
         loaded = load_plants_from_db(conn)
         plants_registry.clear()
         plants_registry.update(loaded)
+        if MOSQUITTO_AUTH_DIR.exists():
+            backend_user, backend_password = get_mqtt_credentials()
+            await asyncio.to_thread(
+                sync_broker_auth_from_db,
+                conn,
+                MOSQUITTO_AUTH_DIR,
+                backend_user=backend_user or "backend_service",
+                backend_password=backend_password or "backend_secret",
+                reload=True,
+            )
     finally:
         conn.close()
 
@@ -1324,7 +1343,7 @@ def _sync_single_plant(
     conn: sqlite3.Connection,
     plant: PlantDefinition,
     touch_credentials: bool = True,
-) -> None:
+) -> list[AdminDeviceCredential]:
     """Upsert plant, areas, machines, signals, and optionally credentials into platform.db."""
     cursor = conn.cursor()
     if plant.viewer_token:
@@ -1357,8 +1376,33 @@ def _sync_single_plant(
         ),
     )
 
+    generated_creds: list[AdminDeviceCredential] = []
     if touch_credentials:
-        for cred in plant.mqtt_credentials:
+        if plant.mqtt_credentials:
+            for cred in plant.mqtt_credentials:
+                pwd = cred.password
+                p_hash = pwd if pwd.startswith("$7$") else hash_password_pbkdf2(pwd)
+                cursor.execute(
+                    """
+                    INSERT INTO plant_credentials (plant_id, username, client_id, password_hash, is_active)
+                    VALUES (?, ?, ?, ?, 1)
+                    ON CONFLICT (plant_id, username) DO UPDATE SET
+                        client_id = excluded.client_id,
+                        password_hash = excluded.password_hash,
+                        is_active = excluded.is_active
+                    """,
+                    (
+                        plant.plant_id,
+                        cred.username,
+                        cred.client_id,
+                        p_hash,
+                    ),
+                )
+        else:
+            gen_user = f"device_{plant.plant_id}"
+            gen_pass = secrets.token_urlsafe(32)
+            gen_hash = hash_password_pbkdf2(gen_pass)
+            gen_client = f"client_{plant.plant_id}"
             cursor.execute(
                 """
                 INSERT INTO plant_credentials (plant_id, username, client_id, password_hash, is_active)
@@ -1370,10 +1414,13 @@ def _sync_single_plant(
                 """,
                 (
                     plant.plant_id,
-                    cred.username,
-                    cred.client_id,
-                    cred.password,
+                    gen_user,
+                    gen_client,
+                    gen_hash,
                 ),
+            )
+            generated_creds.append(
+                AdminDeviceCredential(username=gen_user, password=gen_pass)
             )
 
     for area in plant.areas:
@@ -1464,6 +1511,7 @@ def _sync_single_plant(
                             sig.signal_code,
                         ),
                     )
+    return generated_creds
 
 
 def _fetch_admin_plant_detail(
@@ -1572,10 +1620,14 @@ def admin_get_plant_detail(plant_id: str) -> AdminPlantDetail:
 
 @admin_router.post(
     "/plants",
-    response_model=AdminPlantDetail,
+    response_model=AdminPlantCreatedResponse,
+    response_model_exclude_none=True,
     status_code=201,
 )
-def admin_create_plant(plant: PlantDefinition) -> AdminPlantDetail:
+async def admin_create_plant(
+    plant: PlantDefinition, response: Response
+) -> AdminPlantCreatedResponse:
+    response.headers["Cache-Control"] = "no-store"
     conn = get_db_connection()
     try:
         cur = conn.cursor()
@@ -1586,7 +1638,7 @@ def admin_create_plant(plant: PlantDefinition) -> AdminPlantDetail:
                 detail=f"Plant '{plant.plant_id}' already exists",
             )
 
-        _sync_single_plant(conn, plant, touch_credentials=True)
+        generated_creds = _sync_single_plant(conn, plant, touch_credentials=True)
         conn.commit()
 
         if plant.viewer_token and not plant.viewer_token_hash:
@@ -1597,7 +1649,25 @@ def admin_create_plant(plant: PlantDefinition) -> AdminPlantDetail:
         if ingest_engine:
             ingest_engine.update_plant(plant)
 
-        return _fetch_admin_plant_detail(conn, plant.plant_id)
+        broker_reloaded = False
+        if MOSQUITTO_AUTH_DIR.exists():
+            backend_user, backend_password = get_mqtt_credentials()
+            broker_reloaded = await asyncio.to_thread(
+                sync_broker_auth_from_db,
+                conn,
+                MOSQUITTO_AUTH_DIR,
+                backend_user=backend_user or "backend_service",
+                backend_password=backend_password or "backend_secret",
+                reload=True,
+            )
+
+        detail = _fetch_admin_plant_detail(conn, plant.plant_id)
+        creds_return = generated_creds if generated_creds else None
+        return AdminPlantCreatedResponse(
+            **detail.model_dump(),
+            one_time_device_credentials=creds_return,
+            broker_reloaded=broker_reloaded,
+        )
     finally:
         conn.close()
 
@@ -1725,6 +1795,74 @@ async def admin_update_plant(
         conn.close()
 
 
+@admin_router.post(
+    "/plants/{plant_id}/credentials/rotate",
+    response_model=AdminCredentialRotateResponse,
+)
+async def admin_rotate_plant_credentials(
+    plant_id: str, response: Response
+) -> AdminCredentialRotateResponse:
+    response.headers["Cache-Control"] = "no-store"
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM plants WHERE id = ?;", (plant_id,))
+        if not cur.fetchone():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Plant '{plant_id}' not found",
+            )
+
+        cur.execute(
+            "SELECT username, client_id FROM plant_credentials WHERE plant_id = ? ORDER BY username LIMIT 1;",
+            (plant_id,),
+        )
+        row = cur.fetchone()
+        if row:
+            username = row["username"]
+            client_id = row["client_id"]
+        else:
+            username = f"device_{plant_id}"
+            client_id = f"client_{plant_id}"
+
+        new_password = secrets.token_urlsafe(32)
+        new_hash = hash_password_pbkdf2(new_password)
+
+        cur.execute(
+            """
+            INSERT INTO plant_credentials (plant_id, username, client_id, password_hash, is_active)
+            VALUES (?, ?, ?, ?, 1)
+            ON CONFLICT (plant_id, username) DO UPDATE SET
+                client_id = excluded.client_id,
+                password_hash = excluded.password_hash,
+                is_active = excluded.is_active;
+            """,
+            (plant_id, username, client_id, new_hash),
+        )
+        conn.commit()
+
+        broker_reloaded = False
+        if MOSQUITTO_AUTH_DIR.exists():
+            backend_user, backend_password = get_mqtt_credentials()
+            broker_reloaded = await asyncio.to_thread(
+                sync_broker_auth_from_db,
+                conn,
+                MOSQUITTO_AUTH_DIR,
+                backend_user=backend_user or "backend_service",
+                backend_password=backend_password or "backend_secret",
+                reload=True,
+            )
+
+        return AdminCredentialRotateResponse(
+            plant_id=plant_id,
+            username=username,
+            password=new_password,
+            broker_reloaded=broker_reloaded,
+        )
+    finally:
+        conn.close()
+
+
 @admin_router.delete("/plants/{plant_id}")
 async def admin_delete_plant(plant_id: str) -> dict:
     if plant_id in SYSTEM_PLANT_IDS:
@@ -1753,10 +1891,27 @@ async def admin_delete_plant(plant_id: str) -> dict:
 
         await asyncio.to_thread(_batched_delete_telemetry, conn, plant_id)
 
+        cur.execute("DELETE FROM plant_credentials WHERE plant_id = ?;", (plant_id,))
         cur.execute("DELETE FROM plants WHERE id = ?;", (plant_id,))
         conn.commit()
 
-        return {"status": "deleted", "plant_id": plant_id}
+        broker_reloaded = False
+        if MOSQUITTO_AUTH_DIR.exists():
+            backend_user, backend_password = get_mqtt_credentials()
+            broker_reloaded = await asyncio.to_thread(
+                sync_broker_auth_from_db,
+                conn,
+                MOSQUITTO_AUTH_DIR,
+                backend_user=backend_user or "backend_service",
+                backend_password=backend_password or "backend_secret",
+                reload=True,
+            )
+
+        return {
+            "status": "deleted",
+            "plant_id": plant_id,
+            "broker_reloaded": broker_reloaded,
+        }
     finally:
         conn.close()
 
