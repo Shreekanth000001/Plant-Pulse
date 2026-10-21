@@ -403,7 +403,7 @@ def test_criterion_9_legacy_endpoints_preserved(server):
     assert status == 200, f"Legacy /api/queue-depths returned {status}: {data}"
 
     status, data = http_get(f"{server['base_url']}/api/units")
-    assert status == 200, f"Legacy /api/units returned {status}: {data}"
+    assert status == 404, f"Removed /api/units returned {status}: {data}"
 
 
 def test_plant_scoped_queue_depths_endpoint(server):

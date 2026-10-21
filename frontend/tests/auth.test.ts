@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import {
   fetchPlantDefinition,
   fetchPlantMachinesLatest,
+  fetchRecentUnits,
+  fetchUnitHistory,
   createWsTicket,
   getWsUrl,
   getApiBaseUrl,
@@ -316,3 +318,129 @@ test("WebSocket and API URL: derives host and protocol from window.location when
     target.window = originalWindow;
   }
 });
+
+test("Viewer Auth: fetchRecentUnits sends Authorization Bearer header to plant-scoped route", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedUrl = "";
+  let capturedHeaders: Record<string, string> = {};
+
+  try {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      capturedUrl = String(input);
+      capturedHeaders = (init?.headers as Record<string, string>) || {};
+      return new Response(
+        JSON.stringify([
+          {
+            unit_id: "unit_water_001",
+            status: "in_progress",
+            created_at: new Date().toISOString(),
+          },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }) as typeof fetch;
+
+    const units = await fetchRecentUnits(
+      "plant_water_district_9",
+      25,
+      "district9_secret_xyz"
+    );
+    assert.equal(units.length, 1);
+    assert.equal(units[0].unit_id, "unit_water_001");
+    assert(capturedUrl.includes("/api/plants/plant_water_district_9/units?limit=25"));
+    assert.equal(
+      capturedHeaders["Authorization"],
+      "Bearer district9_secret_xyz"
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Viewer Auth: fetchRecentUnits throws ApiError(401) on 401 response", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify({ detail: "Unauthorized" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    await assert.rejects(
+      async () => {
+        await fetchRecentUnits("plant_water_district_9", 20);
+      },
+      (err: unknown) => {
+        assert(err instanceof ApiError);
+        assert.equal(err.status, 401);
+        return true;
+      }
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Viewer Auth: fetchUnitHistory sends Authorization Bearer header to plant-scoped route", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedUrl = "";
+  let capturedHeaders: Record<string, string> = {};
+
+  try {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      capturedUrl = String(input);
+      capturedHeaders = (init?.headers as Record<string, string>) || {};
+      return new Response(
+        JSON.stringify({
+          unit_id: "unit_water_001",
+          status: "in_progress",
+          created_at: new Date().toISOString(),
+          stages: [],
+          qc_result: null,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }) as typeof fetch;
+
+    const history = await fetchUnitHistory(
+      "plant_water_district_9",
+      "unit_water_001",
+      "district9_secret_xyz"
+    );
+    assert.equal(history.unit_id, "unit_water_001");
+    assert(capturedUrl.includes("/api/plants/plant_water_district_9/units/unit_water_001"));
+    assert.equal(
+      capturedHeaders["Authorization"],
+      "Bearer district9_secret_xyz"
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Viewer Auth: fetchUnitHistory throws ApiError(401) on 401 response", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify({ detail: "Unauthorized" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    await assert.rejects(
+      async () => {
+        await fetchUnitHistory("plant_water_district_9", "unit_water_001");
+      },
+      (err: unknown) => {
+        assert(err instanceof ApiError);
+        assert.equal(err.status, 401);
+        return true;
+      }
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+

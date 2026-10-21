@@ -226,16 +226,28 @@ export async function fetchLatestMachines(): Promise<MachineStatus[]> {
 }
 
 /**
- * Fetch full history and QC result for a given unit.
+ * Fetch full history and QC result for a given unit within a plant.
  */
 export async function fetchUnitHistory(
-  unitId: string
+  plantId: string,
+  unitId: string,
+  token?: string | null
 ): Promise<UnitHistoryResponse> {
   const baseUrl = getApiBaseUrl();
+  const cleanPlantId = encodeURIComponent(plantId.trim());
   const cleanId = encodeURIComponent(unitId.trim());
-  const res = await fetch(`${baseUrl}/api/units/${cleanId}`, {
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token.trim()}`;
+  }
+  const res = await fetch(`${baseUrl}/api/plants/${cleanPlantId}/units/${cleanId}`, {
     cache: "no-store",
+    headers,
   });
+
+  if (res.status === 401) {
+    throw new ApiError("Unauthorized", 401);
+  }
 
   if (res.status === 404) {
     throw new ApiError(`Unit '${unitId}' not found in registry`, 404);
@@ -346,13 +358,27 @@ export async function fetchQueueDepths(): Promise<BackendQueueDepths> {
 }
 
 /**
- * Fetch most recently created units from registry.
+ * Fetch most recently created units for a plant from registry.
  */
-export async function fetchRecentUnits(limit: number = 20): Promise<RecentUnitItem[]> {
+export async function fetchRecentUnits(
+  plantId: string,
+  limit: number = 20,
+  token?: string | null
+): Promise<RecentUnitItem[]> {
   const baseUrl = getApiBaseUrl();
-  const res = await fetch(`${baseUrl}/api/units?limit=${limit}`, {
+  const cleanPlantId = encodeURIComponent(plantId.trim());
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token.trim()}`;
+  }
+  const res = await fetch(`${baseUrl}/api/plants/${cleanPlantId}/units?limit=${limit}`, {
     cache: "no-store",
+    headers,
   });
+
+  if (res.status === 401) {
+    throw new ApiError("Unauthorized", 401);
+  }
 
   if (!res.ok) {
     throw new ApiError(
