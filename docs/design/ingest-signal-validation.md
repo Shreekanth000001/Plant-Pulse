@@ -180,9 +180,20 @@ flowchart TD
     1. In `demo/simulator/simulator.py`, remove redundant `vibration` from `reading` (keep only `vibration_mms`).
     2. Add `_setpoint` keys to `plants/plant_demo_membrane.json` where setpoint tracking is desired, OR exclude them from simulator telemetry metrics to strictly match the declared catalog.
 
-### 3.5 Existing 122 Historical Rows in PostgreSQL
-- The 122 rows of undeclared signals in `telemetry_values` will be naturally dropped by the partition retention worker as partitions age past `RETENTION_DAYS`.
-- An optional idempotent cleanup query can be added to database migration scripts:
+### 3.5 Historical Undeclared Rows in Test Harness Benchmarks
+- During earlier offline benchmarking where an uninitialized test harness instantiated `IngestEngine(db_url)` with `plants=None`, the following audit query:
+  ```sql
+  SELECT count(*) 
+  FROM telemetry_values tv 
+  WHERE NOT EXISTS (
+      SELECT 1 FROM signals s 
+      WHERE s.plant_id = tv.plant_id 
+        AND s.machine_code = tv.machine_code 
+        AND s.signal_code = tv.signal_code
+  );
+  ```
+  yielded **122 historical rows** across `telemetry_values` partitions before filtering was re-verified.
+- On the live production stack, this query yields **0 rows** because `main.py` properly passes `plants=plants_registry`. Any legacy rows from test harness executions are naturally dropped by the daily partition retention worker as partitions age past `RETENTION_DAYS`, or can be immediately purged via:
   ```sql
   DELETE FROM telemetry_values tv
   WHERE NOT EXISTS (
