@@ -24,6 +24,7 @@ EXPECTED_TABLES = {
     "units",
     "stage_events",
     "qc_results",
+    "plant_members",
 }
 
 EXPECTED_PKS = {
@@ -39,6 +40,7 @@ EXPECTED_PKS = {
     "units": ["plant_id", "unit_id"],
     "stage_events": ["id"],
     "qc_results": ["id"],
+    "plant_members": ["plant_id", "user_id"],
 }
 
 
