@@ -1,3 +1,4 @@
+import { ClerkProvider } from "@clerk/nextjs";
 import type { Metadata } from "next";
 import { Suspense } from "react";
 import "./globals.css";
@@ -19,23 +20,25 @@ export default function RootLayout({
   return (
     <html lang="en" className="h-full antialiased">
       <body className="min-h-full flex flex-col text-slate-900 bg-slate-50 selection:bg-blue-100 selection:text-blue-900">
-        <WebSocketProvider>
-          <QCAlertToastContainer />
-          <AppShell>
-            <Suspense
-              fallback={
-                <div className="flex flex-col items-center justify-center min-h-[50vh] gap-3">
-                  <div className="w-8 h-8 rounded-full border-2 border-blue-600 border-t-transparent animate-spin" />
-                  <div className="text-xs text-slate-500 font-medium">
-                    Loading telemetry stream...
+        <ClerkProvider>
+          <WebSocketProvider>
+            <QCAlertToastContainer />
+            <AppShell>
+              <Suspense
+                fallback={
+                  <div className="flex flex-col items-center justify-center min-h-[50vh] gap-3">
+                    <div className="w-8 h-8 rounded-full border-2 border-blue-600 border-t-transparent animate-spin" />
+                    <div className="text-xs text-slate-500 font-medium">
+                      Loading telemetry stream...
+                    </div>
                   </div>
-                </div>
-              }
-            >
-              {children}
-            </Suspense>
-          </AppShell>
-        </WebSocketProvider>
+                }
+              >
+                {children}
+              </Suspense>
+            </AppShell>
+          </WebSocketProvider>
+        </ClerkProvider>
       </body>
     </html>
   );
