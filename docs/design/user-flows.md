@@ -92,8 +92,10 @@ The matrix below was populated from **real measured HTTP status codes and WebSoc
 | **Admin Plant Detail** (`/api/admin/plants/plant_water_district_9`) | GET | `401` | `401` | `403` | `200` | `200` | `200` |
 | **Admin Plant Detail** (`/api/admin/plants/plant_demo_membrane`) | GET | `401` | `401` | `403` | `403`*(Wrong plant)* | `200` | `200` |
 | **Admin Create Plant** (`POST /api/admin/plants`) | POST | `401` | `401` | `403` | `403` | `201` | `201` |
-| **Admin Edit Plant** (`PUT /api/admin/plants/{id}`) | PUT | `401` | `401` | `403` | `200`*(Own plant)* | `200` | `200` |
-| **Admin Rotate Creds** (`/api/admin/plants/{id}/rotate`) | POST | `401` | `401` | `403` | `403` | `200` | `200` |
+| **Admin Edit Plant (Own Plant)** (`PUT /api/admin/plants/{id}`) | PUT | `401` | `401` | `403` | `200`*(Own plant)* | `200` | `200` |
+| **Admin Edit Plant (Cross-Plant)** (`PUT /api/admin/plants/plant_demo_membrane`) | PUT | `401` | `401` | `403` | `403`*(Wrong plant)* | `200` | `200` |
+| **Admin Edit with Confirm Removals** (`PUT /api/admin/plants/{id}?confirm_removals=true`) | PUT | `401` | `401` | `403` | `403`*(Requires platform_admin)* | `200` | `200` |
+| **Admin Rotate Creds** (`/api/admin/plants/{plant_id}/credentials/rotate`) | POST | `401` | `401` | `403` | `403` | `200` | `200` |
 | **Admin Delete Plant** (`DELETE /api/admin/plants/{id}`) | DELETE | `401` | `401` | `403` | `403` | `200` | `200` |
 
 ### 2.2 WebSocket Ticket Lifecycle & Single-Use Verification
@@ -108,9 +110,52 @@ The WebSocket connection security was tested against a live running stack:
 | **Reusing Consumed Ticket** | `/ws/plant_water_district_9/telemetry?ticket=L8R5...` | `101 Switching Protocols` | `4401` | `"Unauthorized"` (replay rejected) |
 | **Invalid / Forged Ticket** | `/ws/plant_water_district_9/telemetry?ticket=fake_xyz` | `101 Switching Protocols` | `4401` | `"Unauthorized"` (rejected) |
 
+### 2.3 View Access for Platform Admins and Plant Managers on Token Plants
+
+A significant architectural dichotomy exists between the **administrative API** and the **public viewer API**:
+
+#### The Behavior & Root Cause
+When an authenticated `platform_admin` or `plant_manager` requests telemetry or machine states for a protected plant (such as `plant_water_district_9`, where `has_viewer_token=true`), public endpoints (`/api/plants/{plant_id}/machines/latest`, `/api/plants/{plant_id}/definition`, `/api/plants/{plant_id}/ws-ticket`) return **HTTP 401 Unauthorized**:
+```bash
+curl -s -H "Authorization: Bearer <clerk_admin_jwt>" http://127.0.0.1:8000/api/plants/plant_water_district_9/machines/latest
+# Returns: {"detail":"Unauthorized"} (HTTP 401)
+```
+
+**Root Cause ([`main.py#L250-L285`](file:///home/critic-coder/project/PlantPulse/main.py#L250-L285)):**
+The dependency `_verify_viewer_access` governs all public viewer endpoints. Its verification path is strictly hardcoded to the pre-shared secret string:
+```python
+token = authorization[7:].strip()
+token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+if not hmac.compare_digest(token_hash, expected_hash):
+    viewer_rate_limiter.record_failure(ip)
+    raise HTTPException(status_code=401, detail="Unauthorized")
+```
+It computes `hashlib.sha256(token)` against `plant.viewer_token_hash`. It **does not inspect Clerk JWT claims** or verify whether the caller holds administrative privileges. Consequently, a `platform_admin` possessing global authority to mutate, rotate credentials, or delete `plant_water_district_9` is locked out from viewing its dashboard unless they separately supply the raw viewer token string (`district9_read_secret_token_889`).
+
+#### Planned Unified RBAC Resolution
+In Clerk PR 3 / unified RBAC:
+1. `_verify_viewer_access` will evaluate authentication in a fallback sequence:
+   - Check if caller presents a valid Clerk JWT via `verify_admin_user()`.
+   - If user is `platform_admin`: grant immediate viewer access.
+   - If user is `plant_manager` and `user.plant_id == requested_plant_id`: grant immediate viewer access.
+   - Otherwise, evaluate `Authorization: Bearer <token>` against `plant.viewer_token_hash`.
+2. This eliminates the operational paradox where authorized factory owners cannot inspect machine cards without entering a secondary demo passcode.
+
 ---
 
 ## 3. Actor Journeys & Implementation Status
+
+### 3.1 Comprehensive Journeys Summary Table
+
+| Journey | Actor / Persona | Primary Objective | Entry Point / Protocol | Authentication Mechanism | State Mutated | Implementation Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **J1: Demo Visitor** | Public Evaluator / Auditor | Explore live operational factory data without setup | Web UI (`:3000`) & WS (`/ws/plant_demo_membrane/telemetry`) | None (Anonymous) | In-memory WS connection tracker | **Completed** (Production) |
+| **J2: Protected Plant Viewer** | Field Operator / Inspector | Access protected municipal booster telemetry | `#plant-selector` & `TokenEntryCard` | Pre-shared `viewer_token` string | In-memory viewer rate-limiter | **Completed** (Production) |
+| **J3: Self-Service User** | Newly Registered User | Explore administrative / management capabilities | Header "Sign In" $\rightarrow$ `/admin` | Clerk JWT (No role claim assigned) | Clerk user directory record | **Partial** (UI pending-role screen needed) |
+| **J4: Plant Manager** | Factory Production Lead | Provision factory line to first data ingestion | `/admin/plants/new` | Clerk JWT (`role="plant_manager"`) | Platform DB, Mosquitto ACL, Ingest registry | **Planned** (Gated by platform_admin role) |
+| **J5: Platform Admin** | Infrastructure Superuser | Platform-wide plant governance & secret rotation | `/admin` | Clerk JWT (`role="platform_admin"`) | DB, Mosquitto ACL, Ingest Engine | **Completed** (Production) |
+| **J6: IoT Edge Gateway** | Physical Hardware (PLC / Gateway) | Stream sensor metrics and state transitions | Mosquitto MQTT (`:1883` / `:8883`) | `device_{plant_id}` & PBKDF2 hash | PostgreSQL partitions, `machine_states` | **Production-Ready Contract** |
+| **J7: Dynamic Verification** | Automation / QA Harness | Verify hot-reload, ACL enforcement & filtering | Admin REST API & Mosquitto CLI | Bearer static token & MQTT | DB partitions, Mosquitto ACL reloaded | **Live Stack Verified** |
 
 ### Journey 1: Visitor on the Demo Plant
 - **Goal:** Explore live real-time factory operation without creating an account or entering tokens.
