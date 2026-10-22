@@ -23,7 +23,7 @@ import random
 import sys
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 try:
     import paho.mqtt.client as mqtt
@@ -122,7 +122,7 @@ def main() -> None:
     try:
         client.connect(args.broker_host, args.broker_port, keepalive=60)
         client.loop_start()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"Failed to connect to broker: {e}", file=sys.stderr)
         sys.exit(1)
 
@@ -137,7 +137,7 @@ def main() -> None:
     line_slots: list[dict | None] = [None] * len(STATIONS)
 
     unit_counter = int(time.time()) % 10000
-    date_prefix = datetime.now(timezone.utc).strftime("%Y%m%d")
+    date_prefix = datetime.now(UTC).strftime("%Y%m%d")
 
     good_counts = {st["code"]: 0 for st in STATIONS}
     reject_counts = {st["code"]: 0 for st in STATIONS}
@@ -148,7 +148,7 @@ def main() -> None:
     try:
         while True:
             step += 1
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             now_iso = now.isoformat()
 
             # 1. Advance the conveyor line from downstream (inspector) back to upstream (extractor)
