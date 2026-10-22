@@ -89,7 +89,7 @@ flowchart LR
     RET -->|scheduled partition drops & batched purge| DB
     THROTTLE -->|guards REST & WS tickets| API
     API -->|REST queries & downsampled history| UI
-    API -->|WebSocket rooms /ws/{plant}/telemetry| UI
+    API -->|WebSocket rooms /ws/:plant_id/telemetry| UI
     ME -->|owner CRUD & secret rotation| MYPLANTS
     API -->|Admin CRUD endpoints| ADMIN
 ```
