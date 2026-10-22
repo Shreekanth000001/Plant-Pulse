@@ -342,6 +342,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
                 sub_facility: area.area_code,
                 machine_state: snap?.state || "OFFLINE",
                 phase: snap?.sub_state || null,
+                current_unit_id: snap?.current_unit_id ?? null,
                 starved: false,
                 good_count: 0,
                 reject_count: 0,
@@ -374,6 +375,54 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
               assemblyToQc: 0,
             });
           }
+        }
+
+        // Recurring 5-second background sync to keep overview and last update indicator fresh
+        if (!pollingIntervalRef.current) {
+          pollingIntervalRef.current = setInterval(async () => {
+            if (!isCurrent || isCleanedUpRef.current) return;
+            try {
+              const [latestPoll, depthsPoll] = await Promise.all([
+                fetchPlantMachinesLatest(selectedPlantId, tokenToUse).catch(() => null),
+                def?.enabled_modules?.includes("product_traceability")
+                  ? fetchPlantQueueDepths(selectedPlantId, tokenToUse).catch(() => null)
+                  : null,
+              ]);
+              if (!isCurrent || isCleanedUpRef.current) return;
+
+              if (latestPoll && latestPoll.length > 0) {
+                setMachinesLatest(latestPoll);
+                setMachines((prev) => {
+                  let changed = false;
+                  const next = { ...prev };
+                  for (const m of latestPoll) {
+                    const existing = next[m.machine_code];
+                    if (existing) {
+                      changed = true;
+                      next[m.machine_code] = {
+                        ...existing,
+                        machine_state: m.state || existing.machine_state,
+                        phase: m.sub_state !== undefined ? m.sub_state : existing.phase,
+                        current_unit_id:
+                          m.current_unit_id !== undefined
+                            ? m.current_unit_id
+                            : existing.current_unit_id,
+                        signals: m.signals || existing.signals,
+                      };
+                    }
+                  }
+                  return changed ? next : prev;
+                });
+                setLastMessageAt(new Date().toISOString());
+              }
+
+              if (depthsPoll) {
+                setHandoffs(mapBackendQueueDepths(depthsPoll));
+              }
+            } catch {
+              // Ignore background poll errors
+            }
+          }, 5000);
         }
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {

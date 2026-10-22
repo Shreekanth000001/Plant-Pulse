@@ -72,6 +72,7 @@ export interface PlantMachineLatest {
   sub_state?: string | null;
   last_seen_at?: string | null;
   signals: Record<string, PlantMachineSignalValue>;
+  current_unit_id?: string | null;
 }
 
 export interface MachineStatus {
