@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-PlantPulse is currently packaged as a multi-container Docker Compose application consisting of five interdependent services:
+PlantPulse is packaged as a multi-container Docker Compose application consisting of five interdependent services:
 1. `api`: FastAPI backend with an internal async MQTT ingest engine, WebSockets, and in-memory caches.
 2. `broker`: Eclipse Mosquitto 2.0 MQTT broker with file-based dynamic credentials (`passwd`) and ACLs (`acl.conf`).
 3. `postgres`: PostgreSQL 16 database with transactional migrations (Alembic) and partitioned history storage.
@@ -22,7 +22,7 @@ Deploying PlantPulse to cloud hosting requires analyzing whether modern **free t
 
 ## 2. Official Documentation Sources, Quotes & Retrieval Dates
 
-All provider specifications cited in this document were retrieved directly from official provider documentation on **2026-10-22**. Each claim is backed by an exact quote under 15 words:
+All provider specifications cited in this document were retrieved directly from official provider documentation on **2026-10-22**. Every claim links directly to its official source URL:
 
 | Category | Provider & Tier | Official Source & URL | Retrieval Date | Exact Quote (< 15 words) |
 | :--- | :--- | :--- | :--- | :--- |
@@ -37,98 +37,123 @@ All provider specifications cited in this document were retrieved directly from 
 
 ---
 
-## 3. Comprehensive Hosting Options Comparison
+## 3. Provider Reconciliations & Analysis
 
-### 3.1 Python Application Hosting
+### 3.1 Neon Storage Limit Reconciliation (0.5 GiB vs Legacy 1 GB)
+- **Current Documentation (2026-10-22):** The official Neon documentation ([Neon Free Plan](https://neon.tech/docs/introduction/plans#free-plan)) specifies: *"0.5 GiB per project"* (512 MiB) and *"100 Compute Unit hours per month"*.
+- **Historical Context:** Neon accounts created prior to mid-2024 were provisioned with 1 GB or 3 GiB of storage on the initial free tier. Newly created free tier projects in 2026 are strictly capped at **0.5 GiB (512 MiB)**, with compute auto-suspending after 5 minutes of inactivity. Calculations in this document evaluate both the current 0.5 GiB limit and legacy 1 GB thresholds.
 
-| Provider & Tier | RAM / CPU | Sleep & Idle Rules | Inbound WebSockets | Outbound MQTT Client | Bandwidth & Request Limits | Verdict for PlantPulse |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Oracle Cloud**<br>*(OCI Always Free)* | 4 Arm Ampere OCPUs<br>24 GB RAM (or 2 AMD 1 GB VMs) | **Reclaims idle instances.** If 95th percentile CPU/memory/net < 10–20% over 7 days, VM is reclaimed. Does NOT sleep on short idle. | Supported natively. Standard Linux TCP socket handling. | Supported. Full unrestricted outbound TCP networking. | 10 TB outbound data transfer/mo.<br>200 GB persistent block storage. | **Best Match.** Runs full existing Docker Compose stack with zero code changes. |
-| **Koyeb**<br>*(Eco-Nano Free)* | 512 MB RAM<br>0.1 vCPU<br>2 GB SSD | Scales to zero after **1 hour** of inactivity. Active WebSocket held connection prevents scale-down. | Supported. Persistent WebSocket prevents scale-to-zero while browser is open. | Allowed on standard ports (1883/8883). Drops on sleep. | 100 GB outbound egress/mo.<br>No request caps. | **Viable for Web/API.** Requires credit card with $29 temporary authorization hold. |
-| **Render**<br>*(Free Web Service)* | 512 MB RAM<br>0.1 vCPU | Spins down after **15 minutes** of no inbound traffic. Cold start ~50s. | Supported while active, but idle drops all connections. | Allowed while running; drops on spin down. | 750 free instance hours/month total across workspace.<br>5 GB egress/mo. | **Fragile.** Sleep drops MQTT subscriber and resets in-memory caches. 1 continuous service max. |
-| **PythonAnywhere**<br>*(Beginner Free)* | 512 MB RAM<br>100s CPU/day | Does not sleep during day; apps expire if not renewed every 3 mos. | **Unsupported.** Only WSGI apps supported natively on free tier. | **Blocked.** Raw TCP sockets blocked. Only HTTP/HTTPS to whitelisted domains allowed. | 100 CPU-seconds/day (tarpitted afterwards). | **Incompatible.** Cannot connect to MQTT broker and cannot serve ASGI WebSockets. |
+### 3.2 Oracle Cloud Always Free Reconciliation (Official Entitlement vs Reported Cuts & Idle Reclamation)
+- **Official Specification (2026-10-22):** The official OCI documentation ([OCI Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)) entitles users to:
+  - 4 Arm Ampere A1 Compute OCPUs and 24 GB of RAM (usable as 1 VM or split across up to 4 VMs).
+  - 2 AMD-based Compute VMs (1 GB RAM each).
+  - 200 GB total Block Volume storage.
+- **Reported "Cuts" Explained:** During late 2023 and 2024, widespread developer reports indicated that Oracle "cut" or revoked free tier instances. In reality, Oracle implemented two strict operational constraints:
+  1. **Regional Capacity Exhaustion:** Popular data centers frequently encounter `Out of capacity for shape VM.Standard.A1.Flex` during VM provisioning.
+  2. **Idle Instance Reclamation:** Oracle enforces an automated reclamation policy: *"Idle Always Free compute instances may be reclaimed by Oracle."* If over a 7-day window, the 95th percentile CPU utilization is $<20\%$, memory utilization is $<20\%$, and network transfer is $<20\%$, the VM is automatically reclaimed.
+- **Verdict:** Oracle does **not** sleep on short idles, but requires active utilization or an upgraded Pay-As-You-Go account ($0 charged if staying within free tier allowances) to prevent 7-day idle reclamation.
 
-### 3.2 Hosted MQTT Broker Free Tiers
-
-| Broker Provider | Free Connection Limit | Free Bandwidth / Message Quota | TLS / Protocol Requirements | Dynamic Authentication & ACLs | Verdict for PlantPulse |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Self-Hosted Mosquitto**<br>*(on VM)* | OS file descriptor limit (~65k) | Unlimited (bounded by VM bandwidth). | Configurable (TLS 8883, cleartext 1883, local socket). | Native `passwd` file and `acl.conf` reloaded via SIGHUP. | **Exact Match.** Matches existing PlantPulse production codebase identically. |
-| **EMQX Cloud**<br>*(Serverless)* | Up to **1,000** concurrent connections | 1M session-minutes/mo.<br>1 GB egress/mo.<br>1M rule actions/mo. | **Strict TLS Mandatory.** Port 8883 (MQTTS) or 8084 (WSS). Cleartext 1883 blocked. SNI required. | Up to 2,000 auth users & 2,000 ACL rules. Managed via REST API. | **Best Cloud Broker.** Reliable if Spend Limit set to $0 and TLS certificates configured. |
-| **HiveMQ Cloud**<br>*(Serverless)* | 100 devices | 10 GB data traffic/mo.<br>3-day data retention. | Port 8883 (TLS), WebSockets. | Console credential management. | **Do Not Use.** Scheduled for total retirement on Dec 31, 2026; new cluster creation disabled. |
-
-### 3.3 Hosted PostgreSQL Free Tiers
-
-| Database Provider | Storage Limit | Compute & Inactivity Rules | Connection Limits | Network Egress | Verdict for PlantPulse |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Self-Hosted PostgreSQL**<br>*(on VM)* | Bounded only by disk (e.g. 50–200 GB) | Continuous 24/7 compute. Never scales to zero or pauses. | Configurable `max_connections` (e.g. 100–500). | Unlimited local network transfer between containers. | **Best Match.** Zero risk of monthly quota cutoff or table-size read-only locks. |
-| **Supabase**<br>*(Free Plan)* | **500 MB** table & index data (read-only mode if exceeded) | Nano compute.<br>Pauses after **7 days of inactivity** (lack of database queries). | Direct: **60**.<br>Supavisor Pooler: **200** clients (port 6543 / 5432). | 5 GB uncached + 5 GB cached (10 GB/mo). | **Viable.** Regular telemetry queries prevent pause. Aggressive retention needed for 500 MB. |
-| **Neon**<br>*(Free Tier)* | 0.5 GiB – 1 GB storage per project | 100 Compute Unit (CU)-hours/mo.<br>Scales to zero after **5 min** of inactivity. | Pooled & direct connections. Suspends when 100 CU-hrs expire. | 5 GB egress/mo. | **High Risk.** 100 CU-hours equals only ~4.1 days of continuous execution. Hard suspends. |
+### 3.3 HiveMQ Cloud Serverless Retirement
+- **Official Source:** [HiveMQ Cloud Serverless Retirement Documentation](https://www.hivemq.com/docs/cloud/serverless-retirement.html) (retrieved 2026-10-22).
+- **Exact Quotation:** *"HiveMQ is retiring HiveMQ Cloud Serverless on December 31, 2026."*
+- **Operational Impact:** *"Starting March 4, 2026, new cluster creation for HiveMQ Cloud Serverless is disabled."* Existing clusters will be permanently terminated on December 31, 2026. Therefore, HiveMQ Serverless is excluded from PlantPulse's future hosting roadmap.
 
 ---
 
-## 4. Local Measurement Benchmarks & Storage Calculations
+## 4. Comprehensive Hosting Options Comparison
 
-### 4.1 Measured Simulator Message Rate
-A 60.0-second local benchmark was conducted running the demo simulator (`demo/simulator/mqtt_publisher.py`) with both `plant_demo_membrane` and `plant_water_treatment`:
-- **Measurement Duration:** 60.0 seconds
-- **Total MQTT Messages Published:** 726 messages
-- **Measured Throughput:** **12.10 messages/second**
-- **Telemetry Payload Composition:** Each machine telemetry tick packages 2–4 numeric metrics into an array of metric rows for ingestion into `telemetry_values`. Across 8 active machines in the demo line, this produces ~20 metric rows/second.
+### 4.1 Python Application Hosting
 
-### 4.2 Measured PostgreSQL Telemetry Row Size
-Measured on PostgreSQL 16 with leaf partition `telemetry_values_p2026_10_22` containing the primary key `(device_timestamp, plant_id, message_id, signal_code)` and secondary composite indexes:
-- **Test Ingestion:** 10,000 realistic telemetry rows inserted via `db.get_db_connection()`.
-- **Initial Total Partition Size:** 1,351,680 bytes
-- **Final Total Partition Size:** 4,775,936 bytes
-- **Total Delta:** 3,424,256 bytes for 10,000 rows
+| Provider & Tier | RAM / CPU | Sleep & Idle Rules | Inbound WebSockets | Outbound MQTT Client | Bandwidth & Request Limits | Official Documentation URL | Verdict |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Oracle Cloud**<br>*(OCI Always Free)* | 4 Arm OCPUs<br>24 GB RAM | Reclaims if 95th percentile CPU/RAM/net < 20% over 7 days. Does NOT sleep on short idle. | Supported natively. Standard Linux socket handling. | Supported. Full unrestricted outbound TCP networking. | 10 TB egress/mo.<br>200 GB block storage. | [OCI Always Free](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm) | **Best Match.** Runs full Docker Compose stack unchanged. |
+| **Koyeb**<br>*(Eco-Nano Free)* | 512 MB RAM<br>0.1 vCPU<br>2 GB SSD | Scales to zero after **1 hour** of inactivity. Active WebSocket held connection prevents scale-down. | Supported. Persistent WebSocket prevents scale-to-zero while browser is open. | Allowed on standard ports (1883/8883). Drops on sleep. | 100 GB outbound egress/mo.<br>No request caps. | [Koyeb Pricing](https://www.koyeb.com/pricing) <br> [Koyeb Scale to Zero](https://www.koyeb.com/docs/run-and-scale/scale-to-zero) | **Viable for Web/API.** Requires credit card with $29 temporary authorization hold. |
+| **Render**<br>*(Free Web Service)* | 512 MB RAM<br>0.1 vCPU | Spins down after **15 minutes** of no inbound traffic. Cold start ~50s. | Supported while active, but idle drops all connections. | Allowed while running; drops on spin down. | 750 free instance hours/month total across workspace.<br>5 GB egress/mo. | [Render Free Plans](https://render.com/docs/free) | **Fragile.** Sleep drops MQTT subscriber and resets in-memory caches. 1 continuous service max. |
+| **PythonAnywhere**<br>*(Beginner Free)* | 512 MB RAM<br>100s CPU/day | Does not sleep during day; apps expire if not renewed every 3 mos. | **Unsupported.** Only WSGI apps supported natively on free tier. | **Blocked.** Raw TCP sockets blocked. Only HTTP/HTTPS to whitelisted domains allowed. | 100 CPU-seconds/day (tarpitted afterwards). | [PythonAnywhere Accounts](https://help.pythonanywhere.com/pages/AccountTypes/) <br> [PythonAnywhere Allowlist](https://help.pythonanywhere.com/pages/API-allowlist/) | **Incompatible.** Cannot connect to MQTT broker and cannot serve ASGI WebSockets. |
+
+### 4.2 Hosted MQTT Broker Free Tiers
+
+| Broker Provider | Free Connection Limit | Free Bandwidth / Message Quota | TLS / Protocol Requirements | Dynamic Authentication & ACLs | Official Documentation URL | Verdict |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Self-Hosted Mosquitto**<br>*(on VM)* | OS file descriptor limit (~65k) | Unlimited (bounded by VM bandwidth). | Configurable (TLS 8883, cleartext 1883, local socket). | Native `passwd` file and `acl.conf` reloaded via SIGHUP. | [Mosquitto.conf Manual](https://mosquitto.org/man/mosquitto-conf-5.html) | **Exact Match.** Matches existing PlantPulse production codebase identically. |
+| **EMQX Cloud**<br>*(Serverless)* | Up to **1,000** concurrent connections | 1M session-minutes/mo.<br>1 GB egress/mo.<br>1M rule actions/mo. | **Strict TLS Mandatory.** Port 8883 (MQTTS) or 8084 (WSS). Cleartext 1883 blocked. SNI required. | Up to 2,000 auth users & 2,000 ACL rules. Managed via REST API. | [EMQX Serverless Quotas](https://docs.emqx.com/en/cloud/latest/deployments/serverless.html) | **Best Cloud Broker.** Reliable if Spend Limit set to $0 and TLS certificates configured. |
+| **HiveMQ Cloud**<br>*(Serverless)* | 100 devices | 10 GB data traffic/mo.<br>3-day data retention. | Port 8883 (TLS), WebSockets. | Console credential management. | [HiveMQ Retirement](https://www.hivemq.com/docs/cloud/serverless-retirement.html) | **Do Not Use.** Scheduled for total retirement on Dec 31, 2026; new cluster creation disabled. |
+
+### 4.3 Hosted PostgreSQL Free Tiers
+
+| Database Provider | Storage Limit | Compute & Inactivity Rules | Connection Limits | Network Egress | Official Documentation URL | Verdict |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Self-Hosted PostgreSQL**<br>*(on VM)* | Bounded only by disk (e.g. 50–200 GB) | Continuous 24/7 compute. Never scales to zero or pauses. | Configurable `max_connections` (e.g. 100–500). | Unlimited local network transfer between containers. | [PostgreSQL 16 Docs](https://www.postgresql.org/docs/16/) | **Best Match.** Zero risk of monthly quota cutoff or table-size read-only locks. |
+| **Supabase**<br>*(Free Plan)* | **500 MB** table & index data (read-only mode if exceeded) | Nano compute.<br>Pauses after **7 days of inactivity** (lack of database queries). | Direct: **60**.<br>Supavisor Pooler: **200** clients (port 6543 / 5432). | 5 GB uncached + 5 GB cached (10 GB/mo). | [Supabase Free Plan](https://supabase.com/docs/guides/platform/org-based-billing#free-plan) <br> [Supabase Pausing](https://supabase.com/docs/guides/platform/pausing) | **Viable.** Regular telemetry queries prevent pause. Aggressive retention needed for 500 MB. |
+| **Neon**<br>*(Free Tier)* | **0.5 GiB** (512 MiB) per project | 100 Compute Unit (CU)-hours/mo.<br>Scales to zero after **5 min** of inactivity. | Pooled & direct connections. Suspends when 100 CU-hrs expire. | 5 GB egress/mo. | [Neon Free Plan](https://neon.tech/docs/introduction/plans#free-plan) | **High Risk.** 100 CU-hours equals only ~4.1 days of continuous execution. Hard suspends. |
+
+---
+
+## 5. Local Measurement Benchmarks & Storage Calculations
+
+### 5.1 Real Database Ingestion Benchmark (60.0 Seconds)
+A 60.0-second local benchmark was conducted measuring the exact `SELECT count(*) FROM telemetry_values` delta while running the simulator for both active plants:
+1. `plant_demo_membrane`: 11 machines/stations ticking every 1.0 second (60 ticks = 660 telemetry messages).
+2. `plant_water_district_9`: 3 pumps ticking every 5.0 seconds (12 ticks = 36 telemetry messages).
+
+- **Benchmark Duration:** 60.0 seconds
+- **Total Telemetry Messages Processed:** 696 messages (~11.6 msgs/s)
+- **Total MQTT Messages Published (including state changes and queues):** 726 messages (**12.10 msgs/s**)
+- **Initial `telemetry_values` Row Count:** 214
+- **Final `telemetry_values` Row Count:** 3,322
+- **Delta `telemetry_values` Rows Inserted:** **3,108 rows**
+- **Measured Database Telemetry Rate:** **51.80 rows/second**
+- **Reconciliation with 12.1 msgs/s:** Each telemetry message carries multiple individual signal readings (e.g. `hm_01` carries mold temperature, setpoint, and vibration; pumps carry pressure, flow, amps, temp, and vibration). Across the 696 telemetry messages, an average of 4.46 signal metrics are unnested per message ($696 \times 4.465 \approx 3{,}108$), producing 51.80 metric rows/second in `telemetry_values`.
+
+### 5.2 Measured PostgreSQL Telemetry Row Footprint
+Measured on PostgreSQL 16 on leaf partition `telemetry_values_p2026_10_22` containing the primary key `(device_timestamp, plant_id, message_id, signal_code)` and secondary composite indexes:
+- **Test Ingestion:** 10,000 synthetic telemetry rows inserted via `db.get_db_connection()`.
+- **Initial Partition Total Size:** 1,351,680 bytes
+- **Final Partition Total Size:** 4,775,936 bytes
 - **Total Size per Row:** **342.43 bytes/row**
   - **Heap Table Data:** 114.69 bytes/row
   - **B-Tree Indexes (3 indexes):** 227.74 bytes/row
+- **What this Figure Excludes:**
+  - This figure measures strictly the `telemetry_values` partitioned leaf table and its indexes.
+  - It **excludes** other database tables: `units`, `stage_events`, `qc_results`, `active_alarms`, `alarm_rules`, `machine_states`, `signals`, `machines`, `areas`, `plants`, `plant_credentials`.
+  - It **excludes** PostgreSQL Write-Ahead Log (WAL) generation.
+  - It **excludes** catalog tables, free space map (FSM) pages, and dead tuple MVCC bloat before autovacuum reclamation.
 
-### 4.3 Days to Fill Free Database Quotas (500 MB & 1 GB)
+### 5.3 Days to Fill Free Database Quotas (0.5 GiB, 500 MB & 1 GB)
 
-Using the measured row footprint (**342.43 bytes/row**) and rate:
+Using the measured row footprint (**342.43 bytes/row**) and measured ingestion rate (**51.80 rows/sec**):
 
 #### Scenario A: Continuous 24/7 Simulator (Unthrottled)
-- Telemetry ingestion rate: ~20 rows/second = 1,728,000 rows/day.
-- Daily storage consumption: $1,728,000 \times 342.43\text{ bytes} \approx 591,719,040\text{ bytes/day}$ (**591.7 MB/day** or 564.3 MiB/day).
-- **Supabase (500 MB quota):**
-  $$\frac{500{,}000{,}000\text{ bytes}}{591{,}719{,}040\text{ bytes/day}} \approx \mathbf{0.84\text{ days}}\quad (\sim 20.3\text{ hours})$$
-  *(The database enters read-only lock within the first day without aggressive pruning).*
-- **Neon (1 GB quota):**
-  $$\frac{1{,}000{,}000{,}000\text{ bytes}}{591{,}719{,}040\text{ bytes/day}} \approx \mathbf{1.69\text{ days}}\quad (\sim 40.5\text{ hours})$$
+- Daily rows inserted: $51.80\text{ rows/s} \times 86{,}400\text{ s/day} = 4{,}475{,}520\text{ rows/day}$.
+- Daily storage consumption: $4{,}475{,}520 \times 342.43\text{ bytes} \approx 1{,}532{,}552{,}378\text{ bytes/day}$ (**1.533 GB/day** or 1.427 GiB/day).
+- **Supabase (500 MB = 500,000,000 bytes):**
+  $$\frac{500{,}000{,}000\text{ bytes}}{1{,}532{,}552{,}378\text{ bytes/day}} \approx \mathbf{0.326\text{ days}}\quad (\sim 7.8\text{ hours})$$
+  *(The database exceeds quota and locks into read-only mode in under 8 hours).*
+- **Neon (0.5 GiB = 536,870,912 bytes):**
+  $$\frac{536{,}870{,}912\text{ bytes}}{1{,}532{,}552{,}378\text{ bytes/day}} \approx \mathbf{0.350\text{ days}}\quad (\sim 8.4\text{ hours})$$
+- **Legacy Neon / 1 GB (1,000,000,000 bytes):**
+  $$\frac{1{,}000{,}000{,}000\text{ bytes}}{1{,}532{,}552{,}378\text{ bytes/day}} \approx \mathbf{0.652\text{ days}}\quad (\sim 15.7\text{ hours})$$
 
 #### Scenario B: Viewer-Gated Simulation (Watchdog Active)
-With the existing heartbeat watchdog gating simulation, data is only published when a browser client is viewing the dashboard. Assuming **1 hour of active evaluation per day**:
-- Active ingestion: $20\text{ rows/sec} \times 3{,}600\text{ sec} = 72{,}000\text{ rows/day}$.
-- Daily storage consumption: $72{,}000 \times 342.43\text{ bytes} \approx 24{,}654{,}960\text{ bytes/day}$ (**24.65 MB/day**).
-- **Supabase (500 MB quota):**
-  $$\frac{500{,}000{,}000\text{ bytes}}{24{,}654{,}960\text{ bytes/day}} \approx \mathbf{20.3\text{ days}}$$
-- **Neon (1 GB quota):**
-  $$\frac{1{,}000{,}000{,}000\text{ bytes}}{24{,}654{,}960\text{ bytes/day}} \approx \mathbf{40.6\text{ days}}$$
-*(Under a 24-hour partition retention policy, steady-state storage with viewer gating never exceeds ~25–50 MB, remaining comfortably within free-tier limits indefinitely).*
+- **Assumption:** Evaluators interact with the live dashboard for **1 hour per day** total ($3{,}600\text{ seconds}$), while the existing heartbeat watchdog pauses publishing for the remaining 23 hours.
+- Active daily ingestion: $51.80\text{ rows/s} \times 3{,}600\text{ s} = 186{,}480\text{ rows/day}$.
+- Daily storage consumption: $186{,}480 \times 342.43\text{ bytes} \approx 63{,}856{,}346\text{ bytes/day}$ (**63.86 MB/day** or 60.90 MiB/day).
+- **Supabase (500 MB):**
+  $$\frac{500{,}000{,}000\text{ bytes}}{63{,}856{,}346\text{ bytes/day}} \approx \mathbf{7.83\text{ days}}$$
+- **Neon (0.5 GiB = 536,870,912 bytes):**
+  $$\frac{536{,}870{,}912\text{ bytes}}{63{,}856{,}346\text{ bytes/day}} \approx \mathbf{8.41\text{ days}}$$
+- **Legacy 1 GB (1,000,000,000 bytes):**
+  $$\frac{1{,}000{,}000{,}000\text{ bytes}}{63{,}856{,}346\text{ bytes/day}} \approx \mathbf{15.66\text{ days}}$$
+*(Under a 24-hour daily partition drop retention policy, steady-state storage with 1 h/day viewing never exceeds ~65 MB, remaining permanently within free tier limits).*
 
 ---
 
-## 5. Daily Partitions vs RETENTION_HOURS Analysis
+## 6. Daily Partitions vs RETENTION_HOURS Analysis
 
 In `db.py`, telemetry data is stored in partitioned tables created by day: `telemetry_values_pYYYY_MM_DD`. Dropping data via partition DDL (`DROP TABLE telemetry_values_p...`) is an atomic metadata operation that immediately frees disk space without vacuum overhead.
 
 However, supporting fine-grained sub-day retention (e.g. `RETENTION_HOURS = 6` to avoid exceeding 500 MB) conflicts with whole-day partitions:
 
-```mermaid
-flowchart TD
-    A["Sub-day Retention (RETENTION_HOURS)"] --> B{"Implementation Strategy"}
-    B -->|Option 1| C["Hourly Partitions (_pYYYY_MM_DD_HH)"]
-    B -->|Option 2| D["Row-Level Deletes (DELETE WHERE ts < now - X hours)"]
-    B -->|Option 3| E["Keep Daily Partitions + Row/Day Cap"]
-
-    C --> C1["Pro: Instant drop via DDL<br>Con: 24 tables/day bloats Postgres catalog"]
-    D --> D1["Pro: Arbitrary hourly precision<br>Con: MVCC table bloat, requires frequent VACUUM"]
-    E --> E1["Pro: Zero schema changes, keeps daily tables<br>Con: Coarse 24h granularity, requires 1-day retention"]
-```
-
-### Options Breakdown:
 1. **Option 1: Hourly Partitions (`_pYYYY_MM_DD_HH`)**
    - *Mechanism:* Change partition generation in `db.ensure_partitions` to partition by hour instead of day. The retention worker (`retention.py`) drops partitions older than `RETENTION_HOURS` via `DROP TABLE`.
    - *Pros:* Instant zero-cost disk reclamation; zero MVCC dead-tuple bloat; no autovacuum pressure.
@@ -138,20 +163,20 @@ flowchart TD
    - *Pros:* Exact hourly control with no changes to the daily partition schema.
    - *Cons:* Triggers PostgreSQL MVCC write amplification; deleted rows remain as dead tuples until autovacuum runs; does not immediately release physical disk space back to the operating system without `VACUUM FULL`.
 3. **Option 3: Keep Daily Partitions and Cap Rows / Days (Recommended)**
-   - *Mechanism:* Keep daily partitions, but reduce retention to 1–2 days max (`RETENTION_DAYS = 1`). In addition, enforce an application-level cap on maximum telemetry rows stored per plant.
+   - *Mechanism:* Keep daily partitions, but reduce retention to 1 day max (`RETENTION_DAYS = 1`). In addition, enforce an application-level cap on maximum telemetry rows stored per plant.
    - *Pros:* Zero architectural complexity; retains DDL partition dropping; works reliably within 500 MB when paired with viewer gating.
    - *Cons:* Resolution is bounded to 24-hour boundaries.
 
 ---
 
-## 6. What Breaks in Our Codebase & Required Architecture Changes
+## 7. What Breaks in Our Codebase & Required Architecture Changes
 
-### 6.1 SIGHUP Broker Reload via Shared PID Namespace
+### 7.1 SIGHUP Broker Reload via Shared PID Namespace
 - **Current Code:** In `docker-compose.yml`, `api` has `pid: "service:broker"`. In [`scripts/generate_mosquitto_auth.py`](file:///home/critic-coder/project/PlantPulse/scripts/generate_mosquitto_auth.py#L380-L400) and [`main.py`](file:///home/critic-coder/project/PlantPulse/main.py#L84), `sync_broker_auth_from_db()` writes credentials to `/mosquitto/auth/passwd` and topics to `/mosquitto/auth/acl.conf`, locates Mosquitto's PID via `/proc` or `pgrep`, and calls `os.kill(broker_pid, signal.SIGHUP)`.
 - **Why it breaks in distributed cloud:** In separate cloud services (Render, Koyeb, Fly.io, or hosted EMQX), the backend runs in an isolated container without access to the broker's process table or filesystem. Hosted brokers do not read local Mosquitto config files or listen to Linux OS signals.
 - **Required Fix:** Introduce an abstract reloader interface (`MQTTReloader`): `LocalMosquittoReloader` for Docker/VM, `EmqxRestReloader` (REST API over HTTPS) for cloud brokers, and `NullReloader` for testing.
 
-### 6.2 Single Uvicorn Worker & In-Memory State
+### 7.2 Single Uvicorn Worker & In-Memory State
 - **Current Code:** State is held in Python process memory:
   - `ConnectionManager._rooms`: active WebSocket clients per plant.
   - `TicketStore._tickets`: 30-second single-use tickets for WebSocket auth.
@@ -161,42 +186,42 @@ flowchart TD
   - **Cold Starts:** When containers spin down on idle, in-memory state is wiped.
 - **Required Fix:** Restrict free deployment strictly to **1 replica and 1 uvicorn worker**.
 
-### 6.3 Viewer Watchdog Status
-- **Current Code Reality:** Inspection of `main.py` ([lines 867–884](file:///home/critic-coder/project/PlantPulse/main.py#L867-L884)) and `demo/simulator/mqtt_publisher.py` ([lines 125–152 & 320–375](file:///home/critic-coder/project/PlantPulse/demo/simulator/mqtt_publisher.py#L125-L152)) reveals that **the viewer-gated simulator and heartbeat watchdog ALREADY EXIST in the codebase**. The API periodically broadcasts heartbeats to `plants/{plant_id}/control/heartbeat` when `viewer_tracker.has_recent_poll()` is true, and the simulator's `Watchdog` pauses publication after 30 seconds of heartbeat silence.
-- **Impact on Roadmap:** There is no need to build the viewer-gated simulator from scratch. PR planning should focus only on configuring simulator tick intervals (`SIMULATOR_INTERVAL_SECONDS`) and verifying cross-service watchdog messaging over TLS.
+### 7.3 Viewer Watchdog Status
+- **Current Code Reality:** Inspection of `main.py` ([lines 867–884](file:///home/critic-coder/project/PlantPulse/main.py#L867-L884)) and `demo/simulator/mqtt_publisher.py` ([lines 125–152 & 320–375](file:///home/critic-coder/project/PlantPulse/demo/simulator/mqtt_publisher.py#L125-L152)) confirms that **the viewer-gated simulator and heartbeat watchdog ALREADY EXIST in the codebase**. The API periodically broadcasts heartbeats to `plants/{plant_id}/control/heartbeat` when `viewer_tracker.has_recent_poll()` is true, and the simulator's `Watchdog` pauses publication after 30 seconds of heartbeat silence.
+- **Impact on Roadmap:** There is no need to build the viewer-gated simulator from scratch. PR planning focuses only on configuring simulator tick intervals (`SIMULATOR_INTERVAL_SECONDS`) and verifying cross-service watchdog messaging over TLS.
 
-### 6.4 Plaintext MQTT (Port 1883) vs Enforced TLS (Port 8883)
+### 7.4 Plaintext MQTT (Port 1883) vs Enforced TLS (Port 8883)
 - **Current Code:** In `main.py`, `aiomqtt.Client(hostname=MQTT_HOST, port=MQTT_PORT)` connects over unencrypted TCP on port 1883.
 - **Why it breaks:** EMQX Cloud Serverless and other hosted brokers strictly prohibit unencrypted port 1883. They enforce TLS on port 8883 with Server Name Indication (SNI).
 - **Required Fix:** Add `MQTT_USE_TLS=true` and `MQTT_TLS_CA_CERTS` support to the FastAPI `aiomqtt` connection manager.
 
 ---
 
-## 7. Account Requirements, Billing Risk & Security Hardening
+## 8. Account Requirements, Billing Risk & Security Hardening
 
-### 7.1 Account & Credit Card Requirements
-- **Oracle Cloud (OCI):** Requires a valid credit card during sign-up for identity verification. Places a $1 temporary hold. Does not bill for Always Free resources.
-- **Koyeb:** Requires a credit card during sign-up to prevent fraud. Places a **$29 temporary pre-authorization hold** on registration.
-- **Supabase & Neon:** Free tiers do NOT require a credit card for initial registration.
-- **Render:** Free tier does not require a credit card, but free hours are limited to 750 hours/month shared across all services.
+### 8.1 Account & Credit Card Requirements
+- **Oracle Cloud (OCI):** Requires a valid credit card during sign-up for identity verification. Places a $1 temporary hold. Does not bill for Always Free resources. ([OCI Free Tier](https://www.oracle.com/cloud/free/))
+- **Koyeb:** Requires a credit card during sign-up to prevent fraud. Places a **$29 temporary pre-authorization hold** on registration. ([Koyeb Pricing](https://www.koyeb.com/pricing))
+- **Supabase & Neon:** Free tiers do NOT require a credit card for initial registration. ([Supabase Pricing](https://supabase.com/pricing), [Neon Pricing](https://neon.tech/pricing))
+- **Render:** Free tier does not require a credit card, but free hours are limited to 750 hours/month shared across all services. ([Render Free Plans](https://render.com/docs/free))
 
-### 7.2 Billing Risk & Spend Limits
-- **EMQX Cloud Serverless:** Must configure the account **Spend Limit to exactly $0** to prevent unexpected overage billing if device traffic or session-minutes spike.
-- **Supabase:** Free projects automatically pause after 7 days of inactivity; if database exceeds 500 MB, it enters read-only mode rather than auto-charging.
-- **Neon:** Suspends compute automatically when 100 CU-hours are exhausted rather than billing overages on the Free plan.
+### 8.2 Billing Risk & Spend Limits
+- **EMQX Cloud Serverless:** Must configure the account **Spend Limit to exactly $0** to prevent unexpected overage billing if device traffic or session-minutes spike. ([EMQX Serverless Quotas](https://docs.emqx.com/en/cloud/latest/deployments/serverless.html))
+- **Supabase:** Free projects automatically pause after 7 days of inactivity; if database exceeds 500 MB, it enters read-only mode rather than auto-charging. ([Supabase Billing](https://supabase.com/docs/guides/platform/org-based-billing#free-plan))
+- **Neon:** Suspends compute automatically when 100 CU-hours are exhausted rather than billing overages on the Free plan. ([Neon Free Plan](https://neon.tech/docs/introduction/plans#free-plan))
 
-### 7.3 Public VM Security Hardening (for OCI / VPS Deployment)
+### 8.3 Public VM Security Hardening (for OCI / VPS Deployment)
 If deploying to a public VM:
 1. **Firewall & Ports:** Expose only port 80/443 (reverse proxy with Let's Encrypt TLS) and port 8883 (MQTTS with TLS). **Never expose port 5432 (Postgres) or unauthenticated port 1883 (MQTT)** to the public internet; bind them to `127.0.0.1` or the internal Docker bridge network.
 2. **SSH Hardening:** Disable SSH password authentication; require SSH ed25519 keys only. Disable root login (`PermitRootLogin no`). Install `fail2ban`.
 3. **Internal Process Isolation:** Mosquitto and Postgres should run as non-root container users.
 
-### 7.4 Security Policy for Admin Endpoints: `MOUNT_ADMIN_ENDPOINTS=false`
-In `admin_auth.py`, the backend maintains fallback authentication via a static `ADMIN_TOKEN`. In any public hosting environment, **`MOUNT_ADMIN_ENDPOINTS` must remain `false`** (or admin routes disabled) until the static token fallback is completely retired and replaced exclusively by Clerk cryptographic JWT verification and RBAC roles. Exposing a static admin bearer token on a public IP creates unnecessary brute-force risk.
+### 8.4 Security Policy for Admin Endpoints: `MOUNT_ADMIN_ENDPOINTS=false`
+In `admin_auth.py`, the backend maintains fallback authentication via a static `ADMIN_TOKEN`. In any public hosting environment, **`MOUNT_ADMIN_ENDPOINTS` must remain `false`** (or admin routes disabled) until the static token fallback is completely retired and replaced exclusively by Clerk cryptographic JWT verification and RBAC roles. Exposing a static admin bearer token on a public IP creates brute-force and credential exposure risks.
 
 ---
 
-## 8. Implementation PR Split Plan
+## 9. Implementation PR Split Plan
 
 ### PR 1: Broker Reloader & Transport Abstraction
 - Abstract `sync_broker_auth_from_db()` behind an `MQTTReloader` interface (`LocalMosquittoReloader`, `EmqxRestReloader`, `NullReloader`).
@@ -220,7 +245,7 @@ In `admin_auth.py`, the backend maintains fallback authentication via a static `
 
 ---
 
-## 9. Open Questions & Architectural Decisions
+## 10. Open Questions & Architectural Decisions
 
 1. **Portfolio Demo vs Industrial Testbed:** Is the hosted instance intended as an interactive web portfolio demo (where viewer-gated simulation and short idle pauses are acceptable), or an edge testbed requiring continuous telemetry ingestion?
 2. **Single VM vs Multi-Service Serverless:** Given that an OCI Always Free VM or a $4/month VPS runs the entire tested Docker Compose stack without code modifications, does adapting to multi-provider serverless limits (EMQX + Supabase + Koyeb + Vercel) justify the ongoing maintenance overhead?
