@@ -48,14 +48,16 @@ flowchart LR
     subgraph Edge Clients
         SIM["Demo Simulator<br/>(demo/simulator/runner.py)"]
         WATCH["Watchdog Timer<br/>(30s auto-idle cap)"]
+        DEVICE["Custom Device / Ingest Script<br/>(docker compose exec broker)"]
     end
 
     subgraph Messaging Layer
-        MQTT["Mosquitto Broker :1883<br/>(Topic ACLs & Password Auth)"]
+        MQTT["Mosquitto Broker :1883<br/>(Internal Docker Network<br/>Topic ACLs & Password Auth)"]
     end
 
     subgraph Platform Backend
         API["FastAPI Backend :8000<br/>(Uvicorn on 127.0.0.1)"]
+        ME["/api/me Routes<br/>(Ownership & Quota)"]
         INGEST["IngestEngine<br/>(Async batch writer)"]
         HEART["Heartbeat Emitter<br/>(5s ping when viewers active)"]
         RET["Retention Worker<br/>(Partition drop + batched deletes)"]
@@ -64,24 +66,31 @@ flowchart LR
 
     subgraph Persistence
         DB[("PostgreSQL 16<br/>(Time-partitioned telemetry)")]
+        MEMBERS[("plant_members Table<br/>(Clerk user_id ownership)")]
     end
 
     subgraph Client Application
         UI["Next.js Dashboard :3000<br/>(Dynamic Overview + Module Gating)"]
+        MYPLANTS["My Plants Portal /my-plants<br/>(Self-Service Management)"]
         ADMIN["Admin Portal /admin<br/>(Topology & Credential Management)"]
     end
 
     SIM -->|publishes canonical MQTT topics| MQTT
+    DEVICE -->|publishes canonical MQTT topics| MQTT
     API -->|subscribes plants/# & factory/#| MQTT
     API -->|emits control heartbeat| MQTT
     MQTT -->|heartbeat resets watchdog| WATCH
     WATCH -->|runs or pauses line| SIM
     API --> INGEST
+    API --> ME
+    ME -->|enforces quota & cascades| MEMBERS
+    MEMBERS --> DB
     INGEST -->|batched commits off loop| DB
     RET -->|scheduled partition drops & batched purge| DB
     THROTTLE -->|guards REST & WS tickets| API
     API -->|REST queries & downsampled history| UI
     API -->|WebSocket rooms /ws/{plant}/telemetry| UI
+    ME -->|owner CRUD & secret rotation| MYPLANTS
     API -->|Admin CRUD endpoints| ADMIN
 ```
 
@@ -137,6 +146,71 @@ PlantPulse includes a complete administrative facility management system mounted
   - Safe plant deletion requiring confirmation by typing the target `plant_id` (system plants are protected with disable badges).
   - One-time MQTT credential rotation modal with copyable passwords.
   - Definition export downloading sanitized JSON (strictly redacting all tokens, passwords, and secret hashes).
+
+---
+
+## Self-Service Plants & My Plants Portal
+
+PlantPulse enables authenticated users to register and manage personal manufacturing facilities through self-service APIs and the **`/my-plants`** interface:
+
+- **Authentication & Sign-In:** Users authenticate via Clerk through the navigation header controls (`Sign In` / `Sign Up`). When signed in, the header displays a **"My plants"** navigation link alongside account profile controls.
+- **Quota Enforced:** Each authenticated user may create up to **3 personal plants** (`canCreatePlant` in [`me-api.ts`](frontend/lib/me-api.ts#L113-L115), HTTP 409 Conflict if exceeded), subject to a platform-wide ceiling of 25 plants.
+- **One-Time Secret Issuance:** Upon facility creation (`POST /api/me/plants`), the backend provisions dedicated Mosquitto device credentials (`device_{plant_id}` with a cryptographically secure random password) and a random viewer access token (`viewer_{uuid}`). The response sends `Cache-Control: no-store` and displays secrets once inside the `AdminCredentialsModal` dialog. Plaintext passwords and tokens are never stored in the database; viewer tokens are persisted solely as SHA-256 hashes (`plants.viewer_token_hash`).
+- **Private Access & Seamless Ownership:** Newly registered plants are private by default. Plant owners can open the live dashboard and connect to WebSocket telemetry streams directly using their Clerk session JWT without entering a viewer token (`verify_plant_viewer` in [`main.py`](main.py#L299-L327)). External guests require the viewer token to access the facility.
+- **Connecting a Device (Internal Broker Notice):**
+  - **Network Isolation:** The Mosquitto broker runs internally within the Docker bridge network (port 1883 is not exposed on the host interface). Real external physical devices cannot connect directly today.
+  - **Publishing Telemetry:** Telemetry can be published directly from within the Docker environment using the container CLI:
+    ```bash
+    docker compose exec broker mosquitto_pub \
+      -u device_<plant_id> \
+      -P '<password>' \
+      -t 'plants/<plant_id>/assets/<machine_code>/telemetry' \
+      -m '{"schema_version":"1.0","plant_id":"<plant_id>","asset_id":"<machine_code>","device_timestamp":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'","message_id":"msg-001","payload":{"status":"RUNNING","metrics":{"<signal_code>":42.0}}}'
+    ```
+  - **Topic Pattern:** Validated by `topic_router.py`: `plants/{plant_id}/assets/{machine_code}/telemetry`.
+  - **Payload Schema:** Validated by `ingest.py`: requires `schema_version: "1.0"`, matching `plant_id` and `asset_id`, valid ISO 8601 UTC `device_timestamp` (bounded within -2h late and +5m future), non-empty `message_id`, and a `payload` dictionary with `status` and `metrics`.
+- **Secret Rotation:** Owners can rotate device credentials (`POST /api/me/plants/{plant_id}/credentials/rotate`) and viewer tokens (`POST /api/me/plants/{plant_id}/viewer-token/rotate`). Rotated secrets send `Cache-Control: no-store`, immediately rewrite Mosquitto auth files, and invalidate previous tokens.
+- **Safe Facility Deletion:** Owners can delete their facilities (`DELETE /api/me/plants/{plant_id}`) by confirming the plant ID in a confirmation modal. Deletion purges all plant telemetry values, units, stage events, QC results, members, and credentials, strips the device account from Mosquitto ACLs, and frees the user's plant quota. Built-in system and demo plants (`plant_demo_membrane`, `plant_water_district_9`) cannot be deleted or rotated via self-service endpoints (HTTP 403 / 404).
+
+---
+
+## Clerk Authentication & Local Self-Service Setup
+
+PlantPulse supports Clerk for user identity and role management. To run the self-service flow locally:
+
+### Environment Variables
+
+| Variable | Service | Required / Optional | Description |
+|---|---|---|---|
+| `CLERK_ISSUER` | Backend (`api`) | Required for Clerk auth | Clerk instance issuer URL (e.g., `https://<instance>.clerk.accounts.dev`) |
+| `CLERK_PEM_PUBLIC_KEY` | Backend (`api`) | Required (or `CLERK_JWKS_URL`) | RS256 PEM-formatted public key used to verify session JWT signatures locally |
+| `CLERK_JWKS_URL` | Backend (`api`) | Optional | JWKS URL fallback for fetching Clerk public keys dynamically |
+| `CLERK_AUTHORIZED_PARTIES` | Backend (`api`) | Optional | Comma-separated list of allowed `azp` authorized party origins (e.g., `http://localhost:3000`) |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Frontend (`dashboard`) | Required for Clerk UI | Clerk publishable API key (`pk_test_...`) |
+| `CLERK_SECRET_KEY` | Frontend (`dashboard`) | Required for Clerk SSR | Clerk backend secret key (`sk_test_...`) |
+| `NEXT_PUBLIC_CLERK_SIGN_IN_URL` | Frontend (`dashboard`) | Optional (Default: `/sign-in`) | Frontend route for user sign-in |
+| `NEXT_PUBLIC_CLERK_SIGN_UP_URL` | Frontend (`dashboard`) | Optional (Default: `/sign-up`) | Frontend route for user registration |
+| `NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL` | Frontend (`dashboard`) | Optional (Default: `/`) | Redirect path after successful sign-in |
+| `NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL` | Frontend (`dashboard`) | Optional (Default: `/`) | Redirect path after successful sign-up |
+
+### Developer Step-by-Step Walkthrough
+
+1. **Create a Clerk Project:** Sign up at [clerk.com](https://clerk.com), create a new application, and copy your **Publishable Key** and **Secret Key**.
+2. **Retrieve PEM Public Key:** In the Clerk Dashboard under **Configure > API Keys > Show JWT public key**, copy the PEM public key.
+3. **Configure `.env`:** Add the keys to your `.env` file:
+   ```env
+   CLERK_ISSUER=https://<your-subdomain>.clerk.accounts.dev
+   CLERK_PEM_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"
+   CLERK_AUTHORIZED_PARTIES=http://localhost:3000
+   NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_...
+   CLERK_SECRET_KEY=sk_test_...
+   ```
+4. **Start Stack:**
+   ```bash
+   docker compose up -d
+   ```
+5. **Sign In & Access My Plants:** Open [`http://localhost:3000`](http://localhost:3000) in your browser. Click **Sign In** in the header, complete authentication, and click the **My plants** link.
+6. **Register Facility & Test Telemetry:** Click **+ Register New Plant**, submit a new plant topology, save the one-time device credentials, and publish a test telemetry message using the displayed `docker compose exec broker mosquitto_pub` command. Click **Open dashboard** to observe live updates.
 
 ---
 
@@ -264,11 +338,11 @@ Tests execute against a PostgreSQL database configured via `DATABASE_URL`. In CI
 # 1. Start test PostgreSQL container:
 docker run -d --name plantpulse-test-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16-alpine
 
-# 2. Run backend pytest suite (253 passed)
+# 2. Run backend pytest suite (269 passed)
 export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/plantpulse_test"
 pytest -v
 
-# 3. Frontend unit tests (63 passed)
+# 3. Frontend unit tests (67 passed)
 cd frontend && npm test
 
 # 4. Linting & code formatting
@@ -283,21 +357,26 @@ codespell --skip="*.db*,*.wal,*.shm,./venv,./frontend/node_modules,./frontend/.n
 
 This is a portfolio and learning project demonstrating distributed industrial IoT telemetry patterns. The following limitations are intentionally documented:
 
-1. **Public Demo Passwords & Tokens in `.env.example`:** Pre-configured demo credentials (e.g., `MQTT_PASSWORD`, `WATER_MQTT_PASSWORD`, and `PLANT_WATER_DISTRICT_9_VIEWER_TOKEN`) are included in `.env.example` to allow zero-setup out-of-the-box evaluation. In production environments, credentials should be randomly generated and injected through external secret managers.
-2. **In-Memory Rate Limiter Reset & Proxy IP Sharing:** Rate-limiting attempt histories are maintained in memory and reset whenever the API process restarts. Because client socket IPs are evaluated directly without trusting `X-Forwarded-For`, clients situated behind a shared reverse proxy or corporate NAT pool share a single rate-limiting bucket.
-3. **Partition Key in Deduplication Constraint:** Native PostgreSQL time partitioning requires the partition key (`device_timestamp`) to be included in all unique constraints and primary keys on partitioned tables. As a result, the primary key of `telemetry_values` is `(device_timestamp, plant_id, message_id, signal_code)`. If an edge device retry generates a new timestamp rather than retaining the original sample timestamp, the message will be stored twice. When retried QoS 1 redelivery preserves the original timestamp, duplicates are cleanly dropped via `ON CONFLICT DO NOTHING`.
-4. **At-Most-Once Delivery Inside API:** The IngestEngine buffers incoming MQTT telemetry in an asynchronous queue before committing batched inserts. An abrupt server termination or container kill will drop in-flight uncommitted measurements.
-5. **Partition-Drop Retention Window:** Measurements older than `RETENTION_DAYS` (default 30) are purged by dropping matching daily leaf partition tables (`DROP TABLE telemetry_values_pYYYY_MM_DD`), immediately reclaiming disk space. Out-of-window timestamps arriving outside managed partition boundaries are rejected by PostgreSQL because no catch-all default partition is configured.
-6. **Clerk Authentication Transition & Static `ADMIN_TOKEN` Fallback:** User authentication via Clerk (PRs #97 and #98) is fully implemented for administrative access and plant scoping (`platform_admin` and `plant_manager`). The legacy static `ADMIN_TOKEN` remains functional alongside Clerk for backward compatibility until explicitly retired. In `admin_auth.py`, a non-empty token is strictly required (`if not admin_token and not clerk_configured: raise HTTPException(503)`), while 32+ characters are recommended for cryptographic security; when valid, it grants full `platform_admin` privileges.
-7. **No Viewer Token Removal in Admin UI:** The Admin UI allows rotating or updating existing plant viewer tokens, but clearing a token back to public unauthenticated access is not supported from the interface (preserving the existing token hash on blank submission). Making a protected plant public requires manual database intervention.
-8. **Stored Plants Violating Validation Caps Skipped on Startup:** If historical or manually edited database rows contain plant definitions exceeding new validation constraints (e.g. >100 machines, >500 signals, or >57-character `plant_id`), `load_plants_from_db` logs a `WARNING` and skips the invalid plant so the platform continues booting cleanly for valid facilities.
+1. **No HTTP Telemetry Ingest:** Telemetry ingestion is strictly supported via MQTT over the Mosquitto broker. Backend HTTP REST endpoints handle plant management, authentication, and history downsampling, but do not accept device sensor ingest payloads directly.
+2. **No Topology Editing for Self-Service Owners:** Plant owners on `/my-plants` can define initial topologies, rotate device credentials and viewer tokens, and delete their plants. In-place topology edits (renaming areas, adding/removing machines, editing signals) are restricted to platform administrators in `/admin`.
+3. **No Email-Based Invitations:** Sharing private plants with external viewers is performed out-of-band by distributing the generated viewer token. There is currently no built-in email invitation flow or multi-user access control list for individual private plants.
+4. **`ADMIN_TOKEN` Fallback Gated by `MOUNT_ADMIN_ENDPOINTS`:** When `MOUNT_ADMIN_ENDPOINTS=false`, all `/api/admin/*` endpoints return 404 Not Found. The legacy static `ADMIN_TOKEN` fallback only applies to `/api/admin` when mounted. The self-service routes under `/api/me` are always mounted and require a valid Clerk user JWT.
+5. **In-Memory Rate Limiter Reset & Proxy IP Sharing:** Rate-limiting attempt histories and lockout state (e.g. 5 failed token attempts in 60s) reside in Python process memory and reset whenever the API process restarts. Because client socket IPs are evaluated directly without trusting `X-Forwarded-For`, clients situated behind a shared reverse proxy or corporate NAT pool share a single rate-limiting bucket.
+6. **Public Demo Passwords & Tokens in `.env.example`:** Pre-configured demo credentials (e.g., `MQTT_PASSWORD`, `WATER_MQTT_PASSWORD`, and `PLANT_WATER_DISTRICT_9_VIEWER_TOKEN`) are included in `.env.example` to allow zero-setup out-of-the-box evaluation. In production environments, credentials should be randomly generated and injected through external secret managers.
+7. **Partition Key in Deduplication Constraint:** Native PostgreSQL time partitioning requires the partition key (`device_timestamp`) to be included in all unique constraints and primary keys on partitioned tables. As a result, the primary key of `telemetry_values` is `(device_timestamp, plant_id, message_id, signal_code)`. If an edge device retry generates a new timestamp rather than retaining the original sample timestamp, the message will be stored twice. When retried QoS 1 redelivery preserves the original timestamp, duplicates are cleanly dropped via `ON CONFLICT DO NOTHING`.
+8. **At-Most-Once Delivery Inside API:** The IngestEngine buffers incoming MQTT telemetry in an asynchronous queue before committing batched inserts. An abrupt server termination or container kill will drop in-flight uncommitted measurements.
+9. **Partition-Drop Retention Window:** Measurements older than `RETENTION_DAYS` (default 30) are purged by dropping matching daily leaf partition tables (`DROP TABLE telemetry_values_pYYYY_MM_DD`), immediately reclaiming disk space. Out-of-window timestamps arriving outside managed partition boundaries are rejected by PostgreSQL because no catch-all default partition is configured.
+10. **Stored Plants Violating Validation Caps Skipped on Startup:** If historical or manually edited database rows contain plant definitions exceeding validation constraints (e.g. >100 machines, >500 signals, or >57-character `plant_id`), `load_plants_from_db` logs a `WARNING` and skips the invalid plant so the platform continues booting cleanly for valid facilities.
 
 ---
 
 ## Roadmap
 
 ### Planned Features
-- **Self-Service Plants & Multi-Tenant Provisioning:** User-driven facility creation, invite-only onboarding, and scoped plant manager assignments (see [`docs/design/self-service-plants.md`](docs/design/self-service-plants.md)).
+- **Invite-by-Email & Multi-Member Permissions:** Email-based user invitations and scoped permission tiers (`viewer`, `operator`, `manager`) for self-service plants.
+- **HTTP Telemetry Ingest with Per-Plant API Keys:** Direct HTTPS POST ingest endpoints authenticated via per-plant device API keys for edge microcontrollers or third-party webhooks unable to run MQTT clients.
+- **Self-Service Owner Topology Editing:** In-place machine, area, and signal reconfiguration for plant owners directly within `/my-plants`.
+- **Retire `ADMIN_TOKEN` (Clerk PR 3):** Full retirement of the transitional static `ADMIN_TOKEN` fallback, requiring Clerk authentication with a `platform_admin` role claim for all administrative operations.
 - **Cloud Hosting & Serverless Deployment:** Migration to zero-cost cloud infrastructure (OCI Always Free / Koyeb + Supabase + EMQX Cloud) with viewer-gated simulation (see [`docs/design/hosting-feasibility.md`](docs/design/hosting-feasibility.md)).
 
 ### Future Exploration (Backlog Ideas)
