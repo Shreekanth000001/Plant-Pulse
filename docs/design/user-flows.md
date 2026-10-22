@@ -190,6 +190,51 @@ The WebSocket connection security was tested against a live running stack:
     }
     ```
 
+### Journey 7: Live Stack Verification: Dynamic Plant Creation, ACL Enforcement & Ingest Hot-Reload
+A live end-to-end journey test was executed against the running Docker Compose stack to verify dynamic provisioning, Mosquitto ACL scoping, signal filtering, and zero-downtime schema updates:
+
+1. **Plant Provisioning (`POST /api/admin/plants`):**
+   - Created test tenant `plant_test_journey` with 1 machine (`press_01`) and 2 signals (`pressure_bar`, `temp_c`).
+   - Admin API returned HTTP `201 Created` with `broker_reloaded: true`.
+   - Captured one-time device credentials:
+     - Username: `device_plant_test_journey`
+     - Password: `U-RK6LrvFPEnCjK28_Z5deAkuMIpjWoTe1OPlsf2R0c`
+   - Broker `/mosquitto/auth/acl.conf` was dynamically written with `user device_plant_test_journey` / `topic readwrite plants/plant_test_journey/#` and reloaded via `SIGHUP`.
+
+2. **Step (a): Valid Telemetry Publication:**
+   - Published telemetry conforming to `ingest.py` schema via internal broker CLI:
+     ```bash
+     docker compose exec broker mosquitto_pub -u device_plant_test_journey -P "..." \
+       -t "plants/plant_test_journey/assets/press_01/telemetry" \
+       -m '{"schema_version":"1.0","plant_id":"plant_test_journey","asset_id":"press_01","device_timestamp":"2026-10-22T11:17:39Z","message_id":"journey-test-msg-001","payload":{"metrics":{"pressure_bar":15.75,"temp_c":52.3}}}'
+     ```
+   - **Database Ingestion:** Verified 2 rows inserted in `telemetry_values` (`pressure_bar` = 15.75, `temp_c` = 52.3).
+   - **Machine State:** `GET /api/plants/plant_test_journey/machines/latest` returned `press_01` with both signals.
+   - **Plant Overview:** `GET /api/plants/plant_test_journey/definition` returned HTTP `200` with the complete plant definition.
+
+3. **Step (b): Undeclared Signal Handling:**
+   - Emitted message `journey-test-msg-002-undeclared` containing valid metric `pressure_bar: 18.0` and undeclared metric `vibration: 8.4`.
+   - `IngestEngine` evaluated `valid_signal_codes = {'pressure_bar', 'temp_c'}`.
+   - Filter check triggered `continue` for `vibration`. Exactly 1 row (`pressure_bar`) was inserted into `telemetry_values`; zero rows were stored for `vibration`.
+
+4. **Step (c): Cross-Plant Topic Publication (ACL Denial):**
+   - Attempted publication using `device_plant_test_journey` credentials to another plant's topic: `plants/plant_demo_membrane/assets/hm_01/telemetry`.
+   - Mosquitto ACL denied the publish:
+     - Standard MQTT v3.1.1: Packet dropped by broker according to spec.
+     - MQTT v5 (`-V 5 -q 1`): Broker explicitly returned `Warning: Publish 1 failed: Not authorized.`
+   - Database verification confirmed **0 rows inserted** for `plant_demo_membrane`.
+
+5. **Step (d): Schema Update & Ingest Hot-Reload (`PUT /api/admin/plants/{id}`):**
+   - Called `PUT /api/admin/plants/plant_test_journey` adding a 3rd signal: `rpm` (Motor Speed, unit `rpm`).
+   - Received HTTP `200 OK`. `main.py` invoked `ingest_engine.update_plant(plant)` in memory.
+   - Published telemetry message with `rpm: 1450.0`, `pressure_bar: 22.1`, `temp_c: 48.0`.
+   - Verified that `IngestEngine` **immediately accepted and stored all 3 signals without restarting the container or worker**. `GET /api/plants/plant_test_journey/machines/latest` reported `rpm` = 1450.0.
+
+6. **Cleanup:**
+   - Called `DELETE /api/admin/plants/plant_test_journey`.
+   - API returned HTTP `200 OK` (`{"status": "deleted", "broker_reloaded": true}`).
+   - Verified database cascade deletion of telemetry and broker ACL reload removing `device_plant_test_journey`. Subsequent queries to `/api/plants/plant_test_journey/definition` return `404 Not Found`.
+
 ---
 
 ## 4. Architectural Gaps & Trade-off Analysis
