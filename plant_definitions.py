@@ -245,7 +245,18 @@ class AdminCredentialRotateResponse(BaseModel):
 
 class AdminPlantCreatedResponse(AdminPlantDetail):
     one_time_device_credentials: list[AdminDeviceCredential] | None = None
+    one_time_viewer_token: str | None = None
+    viewer_token: str | None = None
     broker_reloaded: bool = True
+
+
+class MyPlantSummary(BaseModel):
+    plant_id: str
+    name: str
+    timezone: str
+    has_viewer_token: bool
+    role: str = "owner"
+    created_at: str | None = None
 
 
 def get_plant_viewer_token_env(plant_id: str) -> str | None:
@@ -306,9 +317,7 @@ def load_plants_from_db(conn: Any) -> dict[str, PlantDefinition]:
     """Load and reconstruct all plant definitions from the platform database."""
     plants: dict[str, PlantDefinition] = {}
     cur = conn.cursor()
-    cur.execute(
-        "SELECT id, name, timezone, viewer_token_hash FROM plants ORDER BY id;"
-    )
+    cur.execute("SELECT id, name, timezone, viewer_token_hash FROM plants ORDER BY id;")
     plant_rows = cur.fetchall()
 
     for p_row in plant_rows:

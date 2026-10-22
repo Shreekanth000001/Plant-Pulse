@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import aiomqtt
+import jwt
 from fastapi import (
     APIRouter,
     Depends,
@@ -49,11 +50,14 @@ from starlette.types import Message, Receive, Scope, Send
 
 from admin_auth import (
     AdminUser,
+    ClerkUser,
+    _decode_clerk_jwt,
     get_client_ip,
     require_plant_access,
     require_platform_admin,
     verify_admin_token,
     verify_admin_user,
+    verify_clerk_user,
     viewer_rate_limiter,
 )
 from db import ensure_partitions, get_database_url, get_db_connection
@@ -66,6 +70,7 @@ from plant_definitions import (
     AdminPlantSummary,
     AreaDefinition,
     MachineDefinition,
+    MyPlantSummary,
     PlantDefinition,
     PlantSummary,
     PublicPlantDefinition,
@@ -274,14 +279,57 @@ def verify_plant_viewer(
         viewer_rate_limiter.record_failure(ip)
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    # 3. Constant-time token verification
+    # 3. Constant-time viewer token verification
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    if not hmac.compare_digest(token_hash, expected_hash):
-        viewer_rate_limiter.record_failure(ip)
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    if hmac.compare_digest(token_hash, expected_hash):
+        viewer_rate_limiter.record_success(ip)
+        return
 
-    # 4. Success clears prior failures
-    viewer_rate_limiter.record_success(ip)
+    # 4. Static ADMIN_TOKEN verification (platform_admin)
+    admin_token = os.getenv("ADMIN_TOKEN")
+    if admin_token and secrets.compare_digest(
+        token.encode("utf-8"), admin_token.encode("utf-8")
+    ):
+        viewer_rate_limiter.record_success(ip)
+        return
+
+    # 5. Clerk JWT verification (platform_admin or plant owner in plant_members)
+    try:
+        payload = _decode_clerk_jwt(token)
+    except (jwt.PyJWTError, ValueError):
+        payload = None
+
+    if payload:
+        meta = payload.get("metadata")
+        if not isinstance(meta, dict):
+            meta = payload.get("public_metadata")
+        if not isinstance(meta, dict):
+            meta = {}
+        role = meta.get("role") or payload.get("role")
+        user_id = payload.get("sub", "")
+
+        # platform_admin can view all plants
+        if role == "platform_admin":
+            viewer_rate_limiter.record_success(ip)
+            return
+
+        # Owner check against plant_members table
+        if user_id:
+            conn = get_db_connection()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT 1 FROM plant_members WHERE plant_id = %s AND user_id = %s AND role = 'owner';",
+                    (plant_id, user_id),
+                )
+                if cur.fetchone():
+                    viewer_rate_limiter.record_success(ip)
+                    return
+            finally:
+                conn.close()
+
+    viewer_rate_limiter.record_failure(ip)
+    raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 class ConnectionManager:
@@ -876,7 +924,7 @@ class AdminBodyLimitMiddleware:
         if scope["type"] == "http":
             path = scope.get("path", "")
             method = scope.get("method", "").upper()
-            if method in ("POST", "PUT") and path.startswith("/api/admin"):
+            if method in ("POST", "PUT") and path.startswith(("/api/admin", "/api/me")):
                 bytes_read = 0
 
                 async def limited_receive() -> Message:
@@ -925,8 +973,10 @@ app.add_middleware(AdminBodyLimitMiddleware)
 
 @app.middleware("http")
 async def track_viewer_activity(request: Request, call_next):
-    if request.url.path.startswith("/api/") and not request.url.path.startswith(
-        "/api/admin"
+    if (
+        request.url.path.startswith("/api/")
+        and not request.url.path.startswith("/api/admin")
+        and not request.url.path.startswith("/api/me")
     ):
         viewer_tracker.record_poll()
     return await call_next(request)
@@ -2145,6 +2195,178 @@ async def admin_delete_plant(
         }
     finally:
         conn.close()
+
+
+MAX_PLANTS_PER_USER: int = 3
+MAX_PLANTS_TOTAL: int = 25
+RESERVED_PLANT_IDS: frozenset[str] = frozenset(
+    {
+        "plant_demo_membrane",
+        "plant_water_district_9",
+        "admin",
+        "me",
+        "demo",
+        "system",
+        "test",
+    }
+)
+
+me_router = APIRouter(prefix="/api/me", tags=["me"])
+
+
+@me_router.get(
+    "/plants",
+    response_model=list[MyPlantSummary],
+    response_model_exclude_none=True,
+)
+def me_list_plants(
+    response: Response,
+    current_user: Annotated[ClerkUser, Depends(verify_clerk_user)],
+) -> list[MyPlantSummary]:
+    response.headers["Cache-Control"] = "no-store"
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT p.id as plant_id, p.name, p.timezone,
+                   (p.viewer_token_hash IS NOT NULL) as has_viewer_token,
+                   pm.role, pm.created_at
+            FROM plant_members pm
+            JOIN plants p ON p.id = pm.plant_id
+            WHERE pm.user_id = %s
+            ORDER BY pm.created_at ASC;
+            """,
+            (current_user.user_id,),
+        )
+        rows = cur.fetchall()
+        return [
+            MyPlantSummary(
+                plant_id=row["plant_id"],
+                name=row["name"],
+                timezone=row["timezone"],
+                has_viewer_token=bool(row["has_viewer_token"]),
+                role=row["role"],
+                created_at=(
+                    row["created_at"].isoformat()
+                    if hasattr(row["created_at"], "isoformat")
+                    else (
+                        str(row["created_at"])
+                        if row["created_at"] is not None
+                        else None
+                    )
+                ),
+            )
+            for row in rows
+        ]
+    finally:
+        conn.close()
+
+
+@me_router.post(
+    "/plants",
+    response_model=AdminPlantCreatedResponse,
+    response_model_exclude_none=True,
+    status_code=201,
+)
+async def me_create_plant(
+    plant: PlantDefinition,
+    response: Response,
+    current_user: Annotated[ClerkUser, Depends(verify_clerk_user)],
+) -> AdminPlantCreatedResponse:
+    response.headers["Cache-Control"] = "no-store"
+
+    # Reserved ID check
+    if plant.plant_id.lower() in RESERVED_PLANT_IDS:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Plant ID '{plant.plant_id}' is reserved",
+        )
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+
+        # Global cap check (25 total plants)
+        cur.execute("SELECT count(*) as cnt FROM plants;")
+        total_plants = cur.fetchone()["cnt"]
+        if total_plants >= MAX_PLANTS_TOTAL:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Global plant capacity reached ({MAX_PLANTS_TOTAL})",
+            )
+
+        # Per-user quota check (3 plants per user)
+        cur.execute(
+            "SELECT count(*) as cnt FROM plant_members WHERE user_id = %s;",
+            (current_user.user_id,),
+        )
+        user_plants = cur.fetchone()["cnt"]
+        if user_plants >= MAX_PLANTS_PER_USER:
+            raise HTTPException(
+                status_code=409,
+                detail=f"User plant limit reached ({MAX_PLANTS_PER_USER})",
+            )
+
+        # Collision check
+        cur.execute("SELECT 1 FROM plants WHERE id = %s;", (plant.plant_id,))
+        if cur.fetchone():
+            raise HTTPException(
+                status_code=409,
+                detail=f"Plant '{plant.plant_id}' already exists",
+            )
+
+        # New plants are private: generate viewer token and return once
+        generated_viewer_token = secrets.token_urlsafe(32)
+        plant.viewer_token = generated_viewer_token
+        plant.viewer_token_hash = hashlib.sha256(
+            generated_viewer_token.encode("utf-8")
+        ).hexdigest()
+
+        # Sync plant topology and device credentials into DB
+        generated_creds = _sync_single_plant(conn, plant, touch_credentials=True)
+
+        # Record ownership in plant_members
+        cur.execute(
+            """
+            INSERT INTO plant_members (user_id, plant_id, role)
+            VALUES (%s, %s, 'owner')
+            ON CONFLICT (plant_id, user_id) DO NOTHING;
+            """,
+            (current_user.user_id, plant.plant_id),
+        )
+        conn.commit()
+
+        plants_registry[plant.plant_id] = plant
+        if ingest_engine:
+            ingest_engine.update_plant(plant)
+
+        broker_reloaded = False
+        if MOSQUITTO_AUTH_DIR.exists():
+            backend_user, backend_password = get_mqtt_credentials()
+            broker_reloaded = await asyncio.to_thread(
+                sync_broker_auth_from_db,
+                conn,
+                MOSQUITTO_AUTH_DIR,
+                backend_user=backend_user or "backend_service",
+                backend_password=backend_password or "backend_secret",
+                reload=True,
+            )
+
+        detail = _fetch_admin_plant_detail(conn, plant.plant_id)
+        creds_return = generated_creds if generated_creds else None
+        return AdminPlantCreatedResponse(
+            **detail.model_dump(),
+            one_time_device_credentials=creds_return,
+            broker_reloaded=broker_reloaded,
+            one_time_viewer_token=generated_viewer_token,
+            viewer_token=generated_viewer_token,
+        )
+    finally:
+        conn.close()
+
+
+app.include_router(me_router)
 
 
 def build_app(mount_admin: bool | None = None) -> FastAPI:

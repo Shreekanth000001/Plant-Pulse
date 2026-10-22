@@ -272,3 +272,55 @@ def require_plant_access(plant_id: str, user: AdminUser) -> None:
         status_code=403,
         detail="Forbidden: Insufficient privileges",
     )
+
+
+@dataclass
+class ClerkUser:
+    user_id: str
+    role: str | None = None
+    plant_id: str | None = None
+
+
+def verify_clerk_user(
+    request: Request,
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+) -> ClerkUser:
+    """Security dependency for /api/me routes verifying any signed-in user with a valid Clerk JWT (with or without a role claim)."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail="Missing or invalid Bearer token",
+        )
+
+    token = authorization[7:].strip()
+    if not token:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing or invalid Bearer token",
+        )
+
+    try:
+        payload = _decode_clerk_jwt(token)
+    except (jwt.PyJWTError, ValueError):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid token",
+        )
+
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid token: missing sub claim",
+        )
+
+    meta = payload.get("metadata")
+    if not isinstance(meta, dict):
+        meta = payload.get("public_metadata")
+    if not isinstance(meta, dict):
+        meta = {}
+
+    role = meta.get("role") or payload.get("role")
+    plant_id = meta.get("plant_id") or payload.get("plant_id")
+
+    return ClerkUser(user_id=str(user_id), role=role, plant_id=plant_id)
