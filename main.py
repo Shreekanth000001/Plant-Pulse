@@ -75,6 +75,7 @@ from plant_definitions import (
     PlantSummary,
     PublicPlantDefinition,
     SignalDefinition,
+    ViewerTokenRotateResponse,
     load_plants,
     load_plants_from_db,
 )
@@ -2141,6 +2142,36 @@ async def admin_rotate_plant_credentials(
         conn.close()
 
 
+async def _purge_plant_data_and_reload(conn: Any, plant_id: str) -> bool:
+    cur = conn.cursor()
+    plants_registry.pop(plant_id, None)
+    if ingest_engine:
+        ingest_engine.remove_plant(plant_id)
+    plant_queue_depths.pop(plant_id, None)
+    ticket_store.revoke_plant(plant_id)
+
+    await manager.close_room(plant_id, code=4404, reason="Plant deleted")
+
+    await asyncio.to_thread(_batched_delete_telemetry, conn, plant_id)
+
+    cur.execute("DELETE FROM plant_credentials WHERE plant_id = %s;", (plant_id,))
+    cur.execute("DELETE FROM plants WHERE id = %s;", (plant_id,))
+    conn.commit()
+
+    broker_reloaded = False
+    if MOSQUITTO_AUTH_DIR.exists():
+        backend_user, backend_password = get_mqtt_credentials()
+        broker_reloaded = await asyncio.to_thread(
+            sync_broker_auth_from_db,
+            conn,
+            MOSQUITTO_AUTH_DIR,
+            backend_user=backend_user or "backend_service",
+            backend_password=backend_password or "backend_secret",
+            reload=True,
+        )
+    return broker_reloaded
+
+
 @admin_router.delete("/plants/{plant_id}")
 async def admin_delete_plant(
     plant_id: str,
@@ -2162,32 +2193,7 @@ async def admin_delete_plant(
                 detail=f"Plant '{plant_id}' not found",
             )
 
-        plants_registry.pop(plant_id, None)
-        if ingest_engine:
-            ingest_engine.remove_plant(plant_id)
-        plant_queue_depths.pop(plant_id, None)
-        ticket_store.revoke_plant(plant_id)
-
-        await manager.close_room(plant_id, code=4404, reason="Plant deleted")
-
-        await asyncio.to_thread(_batched_delete_telemetry, conn, plant_id)
-
-        cur.execute("DELETE FROM plant_credentials WHERE plant_id = %s;", (plant_id,))
-        cur.execute("DELETE FROM plants WHERE id = %s;", (plant_id,))
-        conn.commit()
-
-        broker_reloaded = False
-        if MOSQUITTO_AUTH_DIR.exists():
-            backend_user, backend_password = get_mqtt_credentials()
-            broker_reloaded = await asyncio.to_thread(
-                sync_broker_auth_from_db,
-                conn,
-                MOSQUITTO_AUTH_DIR,
-                backend_user=backend_user or "backend_service",
-                backend_password=backend_password or "backend_secret",
-                reload=True,
-            )
-
+        broker_reloaded = await _purge_plant_data_and_reload(conn, plant_id)
         return {
             "status": "deleted",
             "plant_id": plant_id,
@@ -2361,6 +2367,186 @@ async def me_create_plant(
             broker_reloaded=broker_reloaded,
             one_time_viewer_token=generated_viewer_token,
             viewer_token=generated_viewer_token,
+        )
+    finally:
+        conn.close()
+
+
+def _require_plant_ownership(plant_id: str, current_user: ClerkUser) -> None:
+    """Verifies that current_user is either platform_admin or an owner of plant_id in plant_members.
+    Raises 404 if the plant does not exist or user is not authorized.
+    """
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM plants WHERE id = %s;", (plant_id,))
+        if not cur.fetchone():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Plant '{plant_id}' not found",
+            )
+        if current_user.role == "platform_admin":
+            return
+        cur.execute(
+            "SELECT 1 FROM plant_members WHERE plant_id = %s AND user_id = %s AND role = 'owner';",
+            (plant_id, current_user.user_id),
+        )
+        if not cur.fetchone():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Plant '{plant_id}' not found",
+            )
+    finally:
+        conn.close()
+
+
+@me_router.get(
+    "/plants/{plant_id}",
+    response_model=AdminPlantDetail,
+    response_model_exclude_none=True,
+)
+def me_get_plant_detail(
+    plant_id: str,
+    response: Response,
+    current_user: Annotated[ClerkUser, Depends(verify_clerk_user)],
+) -> AdminPlantDetail:
+    response.headers["Cache-Control"] = "no-store"
+    _require_plant_ownership(plant_id, current_user)
+    conn = get_db_connection()
+    try:
+        return _fetch_admin_plant_detail(conn, plant_id)
+    finally:
+        conn.close()
+
+
+@me_router.delete("/plants/{plant_id}")
+async def me_delete_plant(
+    plant_id: str,
+    response: Response,
+    current_user: Annotated[ClerkUser, Depends(verify_clerk_user)],
+) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    # Demo and system plants can never be deleted here
+    if plant_id in RESERVED_PLANT_IDS or plant_id in SYSTEM_PLANT_IDS:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot delete system or demo plant '{plant_id}'",
+        )
+    _require_plant_ownership(plant_id, current_user)
+
+    conn = get_db_connection()
+    try:
+        broker_reloaded = await _purge_plant_data_and_reload(conn, plant_id)
+        return {
+            "status": "deleted",
+            "plant_id": plant_id,
+            "broker_reloaded": broker_reloaded,
+        }
+    finally:
+        conn.close()
+
+
+@me_router.post(
+    "/plants/{plant_id}/credentials/rotate",
+    response_model=AdminCredentialRotateResponse,
+    response_model_exclude_none=True,
+)
+async def me_rotate_plant_credentials(
+    plant_id: str,
+    response: Response,
+    current_user: Annotated[ClerkUser, Depends(verify_clerk_user)],
+) -> AdminCredentialRotateResponse:
+    response.headers["Cache-Control"] = "no-store"
+    _require_plant_ownership(plant_id, current_user)
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT username, client_id FROM plant_credentials WHERE plant_id = %s ORDER BY username LIMIT 1;",
+            (plant_id,),
+        )
+        row = cur.fetchone()
+        if row:
+            username = row["username"]
+            client_id = row["client_id"]
+        else:
+            username = f"device_{plant_id}"
+            client_id = f"client_{plant_id}"
+
+        new_password = secrets.token_urlsafe(32)
+        new_hash = hash_password_pbkdf2(new_password)
+
+        cur.execute(
+            """
+            INSERT INTO plant_credentials (plant_id, username, client_id, password_hash, is_active)
+            VALUES (%s, %s, %s, %s, true)
+            ON CONFLICT (plant_id, username) DO UPDATE SET
+                client_id = excluded.client_id,
+                password_hash = excluded.password_hash,
+                is_active = excluded.is_active;
+            """,
+            (plant_id, username, client_id, new_hash),
+        )
+        conn.commit()
+
+        broker_reloaded = False
+        if MOSQUITTO_AUTH_DIR.exists():
+            backend_user, backend_password = get_mqtt_credentials()
+            broker_reloaded = await asyncio.to_thread(
+                sync_broker_auth_from_db,
+                conn,
+                MOSQUITTO_AUTH_DIR,
+                backend_user=backend_user or "backend_service",
+                backend_password=backend_password or "backend_secret",
+                reload=True,
+            )
+
+        return AdminCredentialRotateResponse(
+            plant_id=plant_id,
+            username=username,
+            password=new_password,
+            broker_reloaded=broker_reloaded,
+        )
+    finally:
+        conn.close()
+
+
+@me_router.post(
+    "/plants/{plant_id}/viewer-token/rotate",
+    response_model=ViewerTokenRotateResponse,
+    response_model_exclude_none=True,
+)
+async def me_rotate_viewer_token(
+    plant_id: str,
+    response: Response,
+    current_user: Annotated[ClerkUser, Depends(verify_clerk_user)],
+) -> ViewerTokenRotateResponse:
+    response.headers["Cache-Control"] = "no-store"
+    _require_plant_ownership(plant_id, current_user)
+
+    new_viewer_token = secrets.token_urlsafe(32)
+    new_viewer_hash = hashlib.sha256(new_viewer_token.encode("utf-8")).hexdigest()
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE plants SET viewer_token_hash = %s WHERE id = %s;",
+            (new_viewer_hash, plant_id),
+        )
+        conn.commit()
+
+        if plant_id in plants_registry:
+            plants_registry[plant_id].viewer_token = new_viewer_token
+            plants_registry[plant_id].viewer_token_hash = new_viewer_hash
+
+        ticket_store.revoke_plant(plant_id)
+        await manager.close_room(plant_id, code=4401, reason="Viewer token rotated")
+
+        return ViewerTokenRotateResponse(
+            plant_id=plant_id,
+            viewer_token=new_viewer_token,
         )
     finally:
         conn.close()

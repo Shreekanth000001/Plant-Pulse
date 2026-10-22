@@ -243,6 +243,11 @@ class AdminCredentialRotateResponse(BaseModel):
     broker_reloaded: bool
 
 
+class ViewerTokenRotateResponse(BaseModel):
+    plant_id: str
+    viewer_token: str
+
+
 class AdminPlantCreatedResponse(AdminPlantDetail):
     one_time_device_credentials: list[AdminDeviceCredential] | None = None
     one_time_viewer_token: str | None = None
