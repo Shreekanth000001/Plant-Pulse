@@ -42,7 +42,7 @@ Every occurrence of `ADMIN_TOKEN` and the admin brute-force throttle across the 
 - [`docker-compose.yml#L89`](file:///home/critic-coder/project/PlantPulse/docker-compose.yml#L89): `ADMIN_TOKEN: ${ADMIN_TOKEN:-}` under `api` service environment.
 - [`.env.example#L34`](file:///home/critic-coder/project/PlantPulse/.env.example#L34): `ADMIN_TOKEN=` template variable.
 - [`README.md#L122, L150, L291`](file:///home/critic-coder/project/PlantPulse/README.md): Architecture documentation detailing `ADMIN_TOKEN` fallback, non-empty requirement, and 32+ character recommendation.
-- [`docs/demo-script.md#L18, L23-L27, L140, L162`](file:///home/critic-coder/project/PlantPulse/docs/demo-script.md): Demonstration script instructions for entering `demo_admin_secret_token_2026_32char_len` into Shot 5.
+- [`docs/demo-script.md#L18, L23-L27, L140, L162`](file:///home/critic-coder/project/PlantPulse/docs/demo-script.md): Demonstration script instructions for entering `demo_admin_secret_token_2026_32char_len` (public demo value) into Shot 5.
 - [`docs/design/hosting-feasibility.md#L293, L325`](file:///home/critic-coder/project/PlantPulse/docs/design/hosting-feasibility.md): Hosting security section requiring `MOUNT_ADMIN_ENDPOINTS=false` until `ADMIN_TOKEN` is removed.
 
 ### 1.4 Test Suite References
@@ -133,10 +133,10 @@ To allow rapid development and testing without requiring live internet access or
     - The private key is generated as an unencrypted 2048-bit PKCS#8 RSA key.
     - **Filesystem Location:** Stored exclusively in user home directory at `~/.plantpulse/dev_clerk_rsa.pem` with strict filesystem permissions (`chmod 0600`).
     - **Never in Repository or Images:** The file resides strictly outside the project repository directory and is never copied into Docker container images or committed to version control.
-    - **Refusal in Hosted Environments:** The script checks runtime environment variables at invocation. If any hosted, staging, or production marker is detected (`RENDER`, `KOYEB_SERVICE_NAME`, `VERCEL`, `ORACLE_INSTANCE_ID`, `ENVIRONMENT=production`, `ENVIRONMENT=staging`), the script **immediately halts with an exit code of 1**:
+    - **Refusal in Non-Development Environments (Strict Allow-List Guard):** The script enforces an explicit allow-list: it refuses to execute unless the environment variable `APP_ENV` is explicitly set to `"development"`. If `APP_ENV` is unset, empty, or set to any other value (e.g., `production`, `staging`, `test`), the script **immediately halts with an exit code of 1**:
       ```python
-      if any(os.getenv(v) for v in ("RENDER", "KOYEB_SERVICE_NAME", "VERCEL", "ORACLE_INSTANCE_ID")) or os.getenv("ENVIRONMENT") in ("production", "staging"):
-          sys.exit("SECURITY ERROR: Refusing to generate or use dev private keys in hosted/production environments.")
+      if os.getenv("APP_ENV") != "development":
+          sys.exit("SECURITY ERROR: Refusing to generate or use dev private keys. APP_ENV must be explicitly set to 'development'.")
       ```
     - **Public Key & Tokens:** The script outputs the corresponding public key as `CLERK_PEM_PUBLIC_KEY` in `.env.local` and mints short-lived (1-hour) signed RS256 JWTs with `role="platform_admin"` or `role="plant_manager"`.
   - *Trade-off:* 100% production code parity. The FastAPI backend executes identical cryptographic RS256 signature verification in development as in cloud production. No mock bypasses exist in backend code.
@@ -164,11 +164,17 @@ Removing `ADMIN_TOKEN` eliminates static token brute-forcing. However, `MOUNT_AD
 
 | Evaluation Dimension | Option 1: Pure Clerk Everywhere (Recommended) | Option 2: Dev-Only Static Token (`DEV_ADMIN_TOKEN`) |
 | :--- | :--- | :--- |
-| **Mechanics** | Delete static token entirely. Accessing `/admin` requires either a live Clerk account or running `scripts/generate_dev_clerk_token.py` locally. | Retain optional `DEV_ADMIN_TOKEN` gated by `ENVIRONMENT == "development"`. Refuse token and error if hosted markers or non-dev env detected. |
-| **Security Posture** | **Zero backdoor surface.** Production codebase contains zero static token comparison logic. Zero risk of credential leakage. | Residual risk that host-detection heuristic is bypassed by unknown hosting environment or misconfigured `ENVIRONMENT`. |
+| **Mechanics** | Delete static token entirely. Accessing `/admin` requires either a live Clerk account or running `scripts/generate_dev_clerk_token.py` locally. | Retain optional `DEV_ADMIN_TOKEN` behind a strict allow-list guard (`APP_ENV == "development"`). Refuse token unconditionally unless `APP_ENV=development`. |
+| **Security Posture** | **Zero backdoor surface.** Production codebase contains zero static token comparison logic. Zero risk of credential leakage. | Residual risk if a container is mistakenly deployed to production with `APP_ENV=development` set in its environment. |
 | **Evaluation Friction** | Slightly higher: Evaluators must run the local minter script to mint a dev JWT or configure Clerk keys. | Zero friction: Evaluators can immediately test admin UI locally with `DEV_ADMIN_TOKEN=demo_token`. |
-| **Code Simplicity** | **High:** One single authentication path in `admin_auth.py` (RS256 JWT verify). Eliminates dual-auth branching. | **Low:** Must maintain dual-auth branches, environment inspection logic, and host-refusal guards in `admin_auth.py`. |
-| **Verdict** | **Adopt Option 1.** Zero-setup local evaluation is preserved via a frictionless 1-step script `scripts/generate_dev_clerk_token.py` that populates `.env.local` automatically. | Rejected due to long-term maintenance overhead and residual production risk. |
+| **Code Simplicity** | **High:** One single authentication path in `admin_auth.py` (RS256 JWT verify). Eliminates dual-auth branching. | **Low:** Must maintain dual-auth branches, environment inspection logic, and allow-list guards in `admin_auth.py`. |
+| **Verdict** | **Adopt Option 1.** Zero-setup local evaluation is preserved via a frictionless 1-step script `scripts/generate_dev_clerk_token.py` that populates `.env.local` automatically. | Secondary fallback only if developer friction is deemed unacceptable by reviewers. |
+
+### 3.7 Recommendation & My Lean
+**My Lean:** Lean towards **Option 1 (Pure Clerk Everywhere with Local Minter)**.
+- **Production Code Parity:** Option 1 guarantees that development and CI test rigs run the exact same RS256 cryptographic verification code path as production.
+- **Zero Backdoor Attack Surface:** Completely removing static token comparison logic from `admin_auth.py` eliminates the architectural danger of a fallback credential bypassing RBAC in production if environment flags are misconfigured.
+- **Friction Mitigation:** Running `python scripts/generate_dev_clerk_token.py` is a single, zero-dependency command that automatically provisions keys into `.env.local`, keeping local setup friction minimal while adhering to zero-trust standards.
 
 ---
 
