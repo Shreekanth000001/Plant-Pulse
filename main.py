@@ -46,7 +46,15 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 
-from admin_auth import get_client_ip, verify_admin_token, viewer_rate_limiter
+from admin_auth import (
+    AdminUser,
+    get_client_ip,
+    require_plant_access,
+    require_platform_admin,
+    verify_admin_token,
+    verify_admin_user,
+    viewer_rate_limiter,
+)
 from db import ensure_partitions, get_database_url, get_db_connection
 from ingest import IngestEngine, sync_plant_definitions
 from plant_definitions import (
@@ -337,6 +345,7 @@ plant_queue_depths: dict[str, dict[str, int]] = {}
 active_machine_units: dict[tuple[str, str], str] = {}
 active_units: dict[str, dict[str, Any]] = {}
 
+
 def _store_platform_unit_in_progress(plant_id: str, unit_id: str) -> None:
     if plant_id not in plants_registry:
         return
@@ -458,8 +467,6 @@ def _store_platform_qc_result(
         )
     finally:
         conn.close()
-
-
 
 
 @topic_router.on("telemetry")
@@ -725,7 +732,9 @@ def init_platform_db(database_url: str | None = None) -> None:
     repo_root = Path(__file__).resolve().parent
     ini_path = repo_root / "alembic.ini"
     alembic_url = url
-    if alembic_url.startswith("postgresql://") and not alembic_url.startswith("postgresql+psycopg://"):
+    if alembic_url.startswith("postgresql://") and not alembic_url.startswith(
+        "postgresql+psycopg://"
+    ):
         alembic_url = alembic_url.replace("postgresql://", "postgresql+psycopg://", 1)
 
     alembic_cfg = Config(str(ini_path))
@@ -799,7 +808,9 @@ async def lifespan(app: FastAPI):
             except Exception:
                 log.exception("Daily partition maintenance failed")
 
-    part_task = asyncio.create_task(partition_maintenance_worker(), name="partition-worker")
+    part_task = asyncio.create_task(
+        partition_maintenance_worker(), name="partition-worker"
+    )
 
     retention_worker: RetentionWorker | None = None
     if is_retention_worker_enabled():
@@ -1153,8 +1164,6 @@ async def plant_telemetry_ws(
         manager.disconnect_plant(plant_id, ws)
 
 
-
-
 @app.get(
     "/api/plants/{plant_id}/units",
     dependencies=[Depends(verify_plant_viewer)],
@@ -1355,9 +1364,7 @@ def plant_defect_rate_by_hour(plant_id: str) -> list[dict]:
             "hour": hour,
             "total_tested": b["total"],
             "failed": b["failed"],
-            "defect_rate": (
-                round(b["failed"] / b["total"], 3) if b["total"] else 0
-            ),
+            "defect_rate": (round(b["failed"] / b["total"], 3) if b["total"] else 0),
         }
         for hour, b in sorted(buckets.items())
     ]
@@ -1405,12 +1412,16 @@ admin_router = APIRouter(
 
 
 @admin_router.get("/health")
-def admin_health() -> dict:
+def admin_health(
+    current_user: Annotated[AdminUser, Depends(verify_admin_user)],
+) -> dict:
     return {"status": "ok"}
 
 
 @admin_router.get("/plants", response_model=list[AdminPlantSummary])
-def admin_list_plants() -> list[AdminPlantSummary]:
+def admin_list_plants(
+    current_user: Annotated[AdminUser, Depends(verify_admin_user)],
+) -> list[AdminPlantSummary]:
     conn = get_db_connection()
     try:
         cur = conn.cursor()
@@ -1418,6 +1429,8 @@ def admin_list_plants() -> list[AdminPlantSummary]:
             "SELECT id, name, timezone, viewer_token_hash FROM plants ORDER BY id;"
         )
         rows = cur.fetchall()
+        if current_user.role == "plant_manager":
+            rows = [row for row in rows if row["id"] == current_user.plant_id]
         return [
             AdminPlantSummary(
                 plant_id=row["id"],
@@ -1647,9 +1660,7 @@ def _sync_single_plant(
     return generated_creds
 
 
-def _fetch_admin_plant_detail(
-    conn: Any, plant_id: str
-) -> AdminPlantDetail:
+def _fetch_admin_plant_detail(conn: Any, plant_id: str) -> AdminPlantDetail:
     cur = conn.cursor()
     cur.execute(
         "SELECT id, name, timezone, viewer_token_hash FROM plants WHERE id = %s;",
@@ -1743,7 +1754,11 @@ def _fetch_admin_plant_detail(
 
 
 @admin_router.get("/plants/{plant_id}", response_model=AdminPlantDetail)
-def admin_get_plant_detail(plant_id: str) -> AdminPlantDetail:
+def admin_get_plant_detail(
+    plant_id: str,
+    current_user: Annotated[AdminUser, Depends(verify_admin_user)],
+) -> AdminPlantDetail:
+    require_plant_access(plant_id, current_user)
     conn = get_db_connection()
     try:
         return _fetch_admin_plant_detail(conn, plant_id)
@@ -1758,7 +1773,9 @@ def admin_get_plant_detail(plant_id: str) -> AdminPlantDetail:
     status_code=201,
 )
 async def admin_create_plant(
-    plant: PlantDefinition, response: Response
+    plant: PlantDefinition,
+    response: Response,
+    current_user: Annotated[AdminUser, Depends(require_platform_admin)],
 ) -> AdminPlantCreatedResponse:
     response.headers["Cache-Control"] = "no-store"
     conn = get_db_connection()
@@ -1813,7 +1830,14 @@ async def admin_update_plant(
     plant_id: str,
     plant: PlantDefinition,
     confirm_removals: bool = False,
+    current_user: Annotated[AdminUser, Depends(verify_admin_user)] = None,
 ) -> AdminPlantDetail:
+    if confirm_removals and current_user.role != "platform_admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden: confirm_removals requires platform_admin role",
+        )
+    require_plant_access(plant_id, current_user)
     if plant.plant_id != plant_id:
         raise HTTPException(
             status_code=400,
@@ -1933,7 +1957,9 @@ async def admin_update_plant(
     response_model=AdminCredentialRotateResponse,
 )
 async def admin_rotate_plant_credentials(
-    plant_id: str, response: Response
+    plant_id: str,
+    response: Response,
+    current_user: Annotated[AdminUser, Depends(require_platform_admin)],
 ) -> AdminCredentialRotateResponse:
     response.headers["Cache-Control"] = "no-store"
     conn = get_db_connection()
@@ -1997,7 +2023,10 @@ async def admin_rotate_plant_credentials(
 
 
 @admin_router.delete("/plants/{plant_id}")
-async def admin_delete_plant(plant_id: str) -> dict:
+async def admin_delete_plant(
+    plant_id: str,
+    current_user: Annotated[AdminUser, Depends(require_platform_admin)],
+) -> dict:
     if plant_id in SYSTEM_PLANT_IDS:
         raise HTTPException(
             status_code=403,
