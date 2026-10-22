@@ -118,9 +118,18 @@ To prevent unbounded database growth during extended runs, a scheduled backgroun
 
 PlantPulse includes a complete administrative facility management system mounted conditionally via environment variables:
 
-- **Activation:** Set `MOUNT_ADMIN_ENDPOINTS=true` and configure a 32+ character static `ADMIN_TOKEN`. When disabled, all `/api/admin/*` endpoints return 404 Not Found.
+- **Activation:** Set `MOUNT_ADMIN_ENDPOINTS=true`. When disabled, all `/api/admin/*` endpoints return 404 Not Found.
+- **Authentication & Roles:** Supports Clerk RS256 JWT user authentication (PRs #97 and #98) with role scoping (`platform_admin` and `plant_manager`), as well as a pre-shared static `ADMIN_TOKEN` (grants `platform_admin`) which remains active as a fallback until deprecated and removed. For `ADMIN_TOKEN`, [`admin_auth.py`](admin_auth.py#L170-L196) requires a **non-empty string** (`if not admin_token: raise HTTPException(503)`), comparing tokens in constant time via `secrets.compare_digest`. A length of **32+ characters** is recommended for production cryptographic entropy (as shown in [`AdminUnmountedScreen.tsx`](frontend/components/admin/AdminUnmountedScreen.tsx#L39)), but is not enforced by code.
+  - **Backend (`api`) Clerk Environment Variables:** `CLERK_PEM_PUBLIC_KEY`, `CLERK_JWKS_URL`, `CLERK_ISSUER`, `CLERK_AUTHORIZED_PARTIES`
+  - **Frontend (`dashboard`) Clerk Environment Variables:** `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, `NEXT_PUBLIC_CLERK_SIGN_IN_URL`, `NEXT_PUBLIC_CLERK_SIGN_UP_URL`, `NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL`, `NEXT_PUBLIC_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL`
+- **Input Validation & Security Caps (PR #100 / #101):**
+  - **Plant Name:** Length 1–128 characters; strictly rejects newlines (`\n`, `\r`) and ASCII control characters (< 32, 127–159).
+  - **Plant ID:** RegEx `^[a-z0-9_]{3,57}$` (capped at 57 characters so `device_{plant_id}` conforms to the 64-character MQTT username limit).
+  - **MQTT Credentials:** Usernames must match `^[a-z0-9_]{3,64}$`; passwords must not contain newlines, carriage returns, or control characters.
+  - **Topological Caps:** Maximum 100 machines per plant, maximum 100 signals per machine, maximum 500 signals total per plant (HTTP 422).
+  - **Request Body Size Limit:** Strict 1 MB cap (`MAX_ADMIN_BODY_BYTES = 1_048_576`) enforced via pure ASGI middleware on POST/PUT requests under `/api/admin/*`, returning HTTP 413 Payload Too Large without buffering large bodies into memory.
 - **Admin Portal (`/admin`):** A Next.js management interface providing:
-  - Token entry and session management (stored in React memory, never persisted to disk or `localStorage`).
+  - User sign-in via Clerk or static token fallback (tokens stored in React memory, never persisted to disk or `localStorage`).
   - Plant facility registry and summary cards.
   - Interactive multi-step form to create new plant topologies or import definitions from JSON.
   - In-place plant topology editor (renaming areas, adding/removing machines and signals).
@@ -138,8 +147,10 @@ PlantPulse employs defense-in-depth across the broker, API, database, and client
 1. **Broker Isolation & Topic ACLs:** Each simulated device authenticates with Mosquitto using dedicated credentials. ACL rules enforce read/write access strictly to `plants/{plant_id}/#`. The broker port (`1883`) is never exposed outside the Docker bridge network.
 2. **Viewer Access Tokens & Database Ownership:** Plant definition files (`plants/*.json`) contain zero plaintext passwords or viewer tokens. Secrets are seeded into PostgreSQL on first boot (when the `plants` table is empty) via environment variables by `seed_plants_if_empty` and `sync_plant_definitions`, while Alembic manages schema migrations. Viewer tokens are stored exclusively as SHA-256 hashes (`plants.viewer_token_hash`).
 3. **Single-Use WebSocket Tickets:** Protected WebSocket streams (`/ws/{plant_id}/telemetry`) require a short-lived ticket (`POST /api/plants/{plant_id}/ws-ticket`) issued with Bearer authorization. Tickets are valid for 30 seconds and consumed on first use to prevent secret leakage in URL query parameters and access logs.
-4. **Sliding-Window Rate Limiting:** Separate in-memory rate limiters protect Admin and Viewer endpoints. After 5 incorrect token guesses within a 60-second window, subsequent requests receive HTTP 429 (`Too Many Requests`) with a `Retry-After` header. Rate limiting checks the lockout status before parsing headers or comparing hashes, and malformed authorization headers count against the attempt budget.
-5. **No Reverse-Proxy Header Trust:** Client IP addresses are extracted directly from the underlying socket host without trusting `X-Forwarded-For` headers, preventing header spoofing attacks.
+4. **Clerk RS256 JWT Authentication & Scoped Roles:** Admin endpoints verify Clerk session JWTs in memory using `CLERK_PEM_PUBLIC_KEY` (or cached JWKS via `CLERK_JWKS_URL`), validating issuer, expiration, and authorized parties (`azp`). Roles distinguish full platform administrators (`platform_admin`) from plant-scoped managers (`plant_manager`). Static `ADMIN_TOKEN` remains supported as a transitional fallback.
+5. **Broker Auth Input Sanitization & Caps:** Admin plant creation and modification endpoints validate all topology names and MQTT credentials at the Pydantic and file-writing layers. Comments in `acl.conf` interpolate only validated `plant_id`, preventing newline injection into Mosquitto configuration.
+6. **Sliding-Window Rate Limiting:** Separate in-memory rate limiters protect Admin and Viewer endpoints. After 5 incorrect token guesses within a 60-second window, subsequent requests receive HTTP 429 (`Too Many Requests`) with a `Retry-After` header. Rate limiting checks the lockout status before parsing headers or comparing hashes, and malformed authorization headers count against the attempt budget.
+7. **No Reverse-Proxy Header Trust:** Client IP addresses are extracted directly from the underlying socket host without trusting `X-Forwarded-For` headers, preventing header spoofing attacks.
 
 ---
 
@@ -253,7 +264,7 @@ Tests execute against a PostgreSQL database configured via `DATABASE_URL`. In CI
 # 1. Start test PostgreSQL container:
 docker run -d --name plantpulse-test-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16-alpine
 
-# 2. Run backend pytest suite (199 passed)
+# 2. Run backend pytest suite (253 passed)
 export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/plantpulse_test"
 pytest -v
 
@@ -277,5 +288,23 @@ This is a portfolio and learning project demonstrating distributed industrial Io
 3. **Partition Key in Deduplication Constraint:** Native PostgreSQL time partitioning requires the partition key (`device_timestamp`) to be included in all unique constraints and primary keys on partitioned tables. As a result, the primary key of `telemetry_values` is `(device_timestamp, plant_id, message_id, signal_code)`. If an edge device retry generates a new timestamp rather than retaining the original sample timestamp, the message will be stored twice. When retried QoS 1 redelivery preserves the original timestamp, duplicates are cleanly dropped via `ON CONFLICT DO NOTHING`.
 4. **At-Most-Once Delivery Inside API:** The IngestEngine buffers incoming MQTT telemetry in an asynchronous queue before committing batched inserts. An abrupt server termination or container kill will drop in-flight uncommitted measurements.
 5. **Partition-Drop Retention Window:** Measurements older than `RETENTION_DAYS` (default 30) are purged by dropping matching daily leaf partition tables (`DROP TABLE telemetry_values_pYYYY_MM_DD`), immediately reclaiming disk space. Out-of-window timestamps arriving outside managed partition boundaries are rejected by PostgreSQL because no catch-all default partition is configured.
-6. **Static Admin Token Until Login Session (#55):** Admin authentication currently uses a static pre-shared Bearer secret (`ADMIN_TOKEN`). Interactive user accounts, database-backed roles, and session token rotation are cataloged for a subsequent milestone.
+6. **Clerk Authentication Transition & Static `ADMIN_TOKEN` Fallback:** User authentication via Clerk (PRs #97 and #98) is fully implemented for administrative access and plant scoping (`platform_admin` and `plant_manager`). The legacy static `ADMIN_TOKEN` remains functional alongside Clerk for backward compatibility until explicitly retired. In `admin_auth.py`, a non-empty token is strictly required (`if not admin_token and not clerk_configured: raise HTTPException(503)`), while 32+ characters are recommended for cryptographic security; when valid, it grants full `platform_admin` privileges.
 7. **No Viewer Token Removal in Admin UI:** The Admin UI allows rotating or updating existing plant viewer tokens, but clearing a token back to public unauthenticated access is not supported from the interface (preserving the existing token hash on blank submission). Making a protected plant public requires manual database intervention.
+8. **Stored Plants Violating Validation Caps Skipped on Startup:** If historical or manually edited database rows contain plant definitions exceeding new validation constraints (e.g. >100 machines, >500 signals, or >57-character `plant_id`), `load_plants_from_db` logs a `WARNING` and skips the invalid plant so the platform continues booting cleanly for valid facilities.
+
+---
+
+## Roadmap
+
+### Planned Features
+- **Self-Service Plants & Multi-Tenant Provisioning:** User-driven facility creation, invite-only onboarding, and scoped plant manager assignments (see [`docs/design/self-service-plants.md`](docs/design/self-service-plants.md)).
+- **Cloud Hosting & Serverless Deployment:** Migration to zero-cost cloud infrastructure (OCI Always Free / Koyeb + Supabase + EMQX Cloud) with viewer-gated simulation (see [`docs/design/hosting-feasibility.md`](docs/design/hosting-feasibility.md)).
+
+### Future Exploration (Backlog Ideas)
+- **Remote Machine Control (#24):** Bidirectional MQTT command topics to toggle actuators or setpoints.
+- **Alerts & Real-Time Notifications (#25):** Event-driven alert rules and webhook/email dispatch on threshold violations.
+- **Preventative Maintenance Scheduling (#26):** Asset operating hour tracking and maintenance interval countdowns.
+- **Overall Equipment Effectiveness (OEE) Metrics (#27):** Automated calculation of availability, performance, and quality scores.
+- **Live Weather Integration (#28):** Ingesting ambient temperature and humidity into the casting defect model.
+- **Bounded Simulator Queues with Backpressure (#30):** Flow-control between production stages when downstream buffers fill.
+- **Per-Plant Ingest Rate Limits (#32):** Token-bucket rate limiting on edge device MQTT ingestion.
