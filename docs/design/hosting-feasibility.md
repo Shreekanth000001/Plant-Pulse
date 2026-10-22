@@ -293,7 +293,7 @@ However, supporting fine-grained sub-day retention (e.g. `RETENTION_HOURS = 6` t
 ## 8. Account Requirements, Billing Risk & Security Hardening
 
 ### 8.1 Account & Credit Card Requirements
-- **Oracle Cloud (OCI):** Requires a valid credit card during sign-up for identity verification. Places a $1 temporary hold. Does not bill for Always Free resources. ([OCI Free Tier](https://www.oracle.com/cloud/free/))
+- **Oracle Cloud (OCI):** Requires a valid credit card during sign-up for identity verification. Places a $1 temporary hold. Does not bill for Always Free resources. ([OCI Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm))
 - **Koyeb:** Requires a credit card during sign-up to prevent fraud ([Koyeb Pricing](https://www.koyeb.com/pricing)). (Note: Community reports of a specific $29 temporary pre-authorization hold are unverified in official documentation).
 - **Supabase & Neon:** Free tiers do NOT require a credit card for initial registration. ([Supabase Pricing](https://supabase.com/pricing), [Neon Pricing](https://neon.tech/pricing))
 - **Render:** Free tier does not require a credit card, but free hours are limited to 750 hours/month shared across all services. ([Render Free Plans](https://render.com/docs/free))
