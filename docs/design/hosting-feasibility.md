@@ -93,7 +93,7 @@ All provider specifications cited in this document were retrieved directly from 
 ## 5. Local Measurement Benchmarks & Storage Calculations
 
 ### 5.1 Real Database Ingestion Benchmark (60.0 Seconds)
-A 60.0-second local benchmark was conducted measuring the exact `SELECT count(*) FROM telemetry_values` delta while running the simulator for both active plants:
+A 60.0-second local benchmark was conducted measuring the exact `SELECT count(*) FROM telemetry_values` delta while running the simulator for both active plants with an active viewer connected:
 1. `plant_demo_membrane`: 11 machines/stations ticking every 1.0 second (60 ticks = 660 telemetry messages).
 2. `plant_water_district_9`: 3 pumps ticking every 5.0 seconds (12 ticks = 36 telemetry messages).
 
@@ -104,48 +104,87 @@ A 60.0-second local benchmark was conducted measuring the exact `SELECT count(*)
 - **Final `telemetry_values` Row Count:** 3,322
 - **Delta `telemetry_values` Rows Inserted:** **3,108 rows**
 - **Measured Database Telemetry Rate:** **51.80 rows/second**
-- **Reconciliation with 12.1 msgs/s:** Each telemetry message carries multiple individual signal readings (e.g. `hm_01` carries mold temperature, setpoint, and vibration; pumps carry pressure, flow, amps, temp, and vibration). Across the 696 telemetry messages, an average of 4.46 signal metrics are unnested per message ($696 \times 4.465 \approx 3{,}108$), producing 51.80 metric rows/second in `telemetry_values`.
 
-### 5.2 Measured PostgreSQL Telemetry Row Footprint
+#### Machine Telemetry Breakdown (`SELECT plant_id, machine_code, count(*)`)
+
+| Plant ID | Machine Code | Metrics Emitted / Tick | 60s Ticks | 60s Total Rows |
+| :--- | :--- | :--- | :--- | :--- |
+| `plant_demo_membrane` | `am_01` (Assembly 1) | 6 | 60 | 360 |
+| `plant_demo_membrane` | `am_02` (Assembly 2) | 6 | 60 | 360 |
+| `plant_demo_membrane` | `am_03` (Assembly 3) | 6 | 60 | 360 |
+| `plant_demo_membrane` | `am_04` (Assembly 4) | 6 | 60 | 360 |
+| `plant_demo_membrane` | `cs_01` (Casting 1) | 6 | 60 | 360 |
+| `plant_demo_membrane` | `cs_02` (Casting 2) | 6 | 60 | 360 |
+| `plant_demo_membrane` | `hm_01` (Housing 1) | 4 | 60 | 240 |
+| `plant_demo_membrane` | `hm_02` (Housing 2) | 4 | 60 | 240 |
+| `plant_demo_membrane` | `qc_01` (QC Test 1) | 2 | 60 | 120 |
+| `plant_demo_membrane` | `qc_02` (QC Test 2) | 2 | 60 | 120 |
+| `plant_demo_membrane` | `qc_03` (QC Test 3) | 2 | 60 | 120 |
+| `plant_water_district_9` | `pump_01` (Intake P-101) | 5 | 12 | 60 |
+| `plant_water_district_9` | `pump_02` (Booster P-102) | 2 | 12 | 24 |
+| `plant_water_district_9` | `pump_03` (Standby P-103) | 2 | 12 | 24 |
+| **Total** | **14 machines** | **59 metrics** | — | **3,108 rows** |
+
+#### Explanation: 3,108 Rows vs ~2,030 Expected
+In the plant definition JSON files:
+- `plants/plant_demo_membrane.json` defines **32 signals** across 11 machines.
+- `plants/plant_water_district_9.json` defines **9 signals** across 3 machines.
+
+If only strictly defined signals were generated over the 60-second window (60 ticks for demo, 12 ticks for water):
+$$(32\text{ signals} \times 60\text{ ticks}) + (9\text{ signals} \times 12\text{ ticks}) = 1{,}920 + 108 = \mathbf{2{,}028\text{ rows}}\quad (\sim 2{,}030\text{ expected})$$
+
+However, `demo/simulator/simulator.py` generates **18 unmodeled metrics per tick** beyond the schema definitions:
+1. **Assembly stations (`am_01`–`am_04`):** The simulator generates unconfigured `torque_setpoint`, `seal_pressure_setpoint`, and duplicate `vibration` alongside `vibration_mms` (3 extra metrics $\times$ 4 machines = **12 extra metrics/tick**).
+2. **Casting machines (`cs_01`–`cs_02`):** The simulator generates unconfigured `viscosity_setpoint` and duplicate `vibration` (2 extra metrics $\times$ 2 machines = **4 extra metrics/tick**).
+3. **Housing molders (`hm_01`–`hm_02`):** The simulator generates duplicate `vibration` alongside `vibration_mms` (1 extra metric $\times$ 2 machines = **2 extra metrics/tick**).
+
+Total unmodeled metrics: $12 + 4 + 2 = 18\text{ metrics/tick}$.  
+Total metrics emitted per tick for `plant_demo_membrane`: $32 + 18 = 50\text{ metrics/tick}$.  
+- `plant_demo_membrane` rows: $50\text{ metrics/tick} \times 60\text{ ticks} = 3{,}000\text{ rows}$.
+- `plant_water_district_9` rows: $9\text{ metrics/tick} \times 12\text{ ticks} = 108\text{ rows}$.
+- **Reconciled Total:** $3{,}000 + 108 = \mathbf{3{,}108\text{ rows}}$.
+
+#### Duplicate Publisher Verification
+An audit was conducted to confirm that duplicate publishers were not inflating message rates. Inspection of running processes via `ps aux | grep -i -E "simulator|publisher"` confirmed that exactly one simulator process was active with zero duplicate background publishers.
+
+### 5.2 Measured PostgreSQL Telemetry Row Footprint (500,000 Row Benchmark)
 Measured on PostgreSQL 16 on leaf partition `telemetry_values_p2026_10_22` containing the primary key `(device_timestamp, plant_id, message_id, signal_code)` and secondary composite indexes:
-- **Test Ingestion:** 10,000 synthetic telemetry rows inserted via `db.get_db_connection()`.
-- **Initial Partition Total Size:** 1,351,680 bytes
-- **Final Partition Total Size:** 4,775,936 bytes
-- **Total Size per Row:** **342.43 bytes/row**
-  - **Heap Table Data:** 114.69 bytes/row
-  - **B-Tree Indexes (3 indexes):** 227.74 bytes/row
+- **Benchmark Scale:** 500,000 synthetic telemetry rows generated via `generate_series`.
+- **Initial Partition Total Size:** 4,497,408 bytes
+- **Final Partition Total Size:** 218,324,992 bytes
+- **Delta Bytes:** 213,827,584 bytes
+- **Total Size per Row:** **427.66 bytes/row**
+  - **Heap Table Data:** 116.87 bytes/row
+  - **B-Tree Indexes (3 composite indexes):** 310.77 bytes/row
 - **What this Figure Excludes:**
-  - This figure measures strictly the `telemetry_values` partitioned leaf table and its indexes.
+  - This figure measures strictly the `telemetry_values` partitioned leaf table and its 3 B-Tree indexes.
   - It **excludes** other database tables: `units`, `stage_events`, `qc_results`, `active_alarms`, `alarm_rules`, `machine_states`, `signals`, `machines`, `areas`, `plants`, `plant_credentials`.
   - It **excludes** PostgreSQL Write-Ahead Log (WAL) generation.
   - It **excludes** catalog tables, free space map (FSM) pages, and dead tuple MVCC bloat before autovacuum reclamation.
 
 ### 5.3 Days to Fill Free Database Quotas (0.5 GiB, 500 MB & 1 GB)
 
-Using the measured row footprint (**342.43 bytes/row**) and measured ingestion rate (**51.80 rows/sec**):
+Using the measured 500k-row footprint (**427.66 bytes/row**) and measured ingestion rate (**51.80 rows/sec**):
 
 #### Scenario A: Continuous 24/7 Simulator (Unthrottled)
 - Daily rows inserted: $51.80\text{ rows/s} \times 86{,}400\text{ s/day} = 4{,}475{,}520\text{ rows/day}$.
-- Daily storage consumption: $4{,}475{,}520 \times 342.43\text{ bytes} \approx 1{,}532{,}552{,}378\text{ bytes/day}$ (**1.533 GB/day** or 1.427 GiB/day).
+- Daily storage consumption: $4{,}475{,}520 \times 427.66\text{ bytes} \approx 1{,}914{,}001{,}075\text{ bytes/day}$ (**1.914 GB/day** or 1.783 GiB/day).
 - **Supabase (500 MB = 500,000,000 bytes):**
-  $$\frac{500{,}000{,}000\text{ bytes}}{1{,}532{,}552{,}378\text{ bytes/day}} \approx \mathbf{0.326\text{ days}}\quad (\sim 7.8\text{ hours})$$
-  *(The database exceeds quota and locks into read-only mode in under 8 hours).*
+  $$\frac{500{,}000{,}000\text{ bytes}}{1{,}914{,}001{,}075\text{ bytes/day}} \approx \mathbf{0.261\text{ days}}\quad (\sim 6.3\text{ hours})$$
+  *(The database exceeds quota and locks into read-only mode in ~6.3 hours).*
 - **Neon (0.5 GiB = 536,870,912 bytes):**
-  $$\frac{536{,}870{,}912\text{ bytes}}{1{,}532{,}552{,}378\text{ bytes/day}} \approx \mathbf{0.350\text{ days}}\quad (\sim 8.4\text{ hours})$$
-- **Legacy Neon / 1 GB (1,000,000,000 bytes):**
-  $$\frac{1{,}000{,}000{,}000\text{ bytes}}{1{,}532{,}552{,}378\text{ bytes/day}} \approx \mathbf{0.652\text{ days}}\quad (\sim 15.7\text{ hours})$$
+  $$\frac{536{,}870{,}912\text{ bytes}}{1{,}914{,}001{,}075\text{ bytes/day}} \approx \mathbf{0.280\text{ days}}\quad (\sim 6.7\text{ hours})$$
+- **Neon Official / 1 GB (1,000,000,000 bytes):**
+  $$\frac{1{,}000{,}000{,}000\text{ bytes}}{1{,}914{,}001{,}075\text{ bytes/day}} \approx \mathbf{0.522\text{ days}}\quad (\sim 12.5\text{ hours})$$
 
 #### Scenario B: Viewer-Gated Simulation (Watchdog Active)
 - **Assumption:** Evaluators interact with the live dashboard for **1 hour per day** total ($3{,}600\text{ seconds}$), while the existing heartbeat watchdog pauses publishing for the remaining 23 hours.
 - Active daily ingestion: $51.80\text{ rows/s} \times 3{,}600\text{ s} = 186{,}480\text{ rows/day}$.
-- Daily storage consumption: $186{,}480 \times 342.43\text{ bytes} \approx 63{,}856{,}346\text{ bytes/day}$ (**63.86 MB/day** or 60.90 MiB/day).
-- **Supabase (500 MB):**
-  $$\frac{500{,}000{,}000\text{ bytes}}{63{,}856{,}346\text{ bytes/day}} \approx \mathbf{7.83\text{ days}}$$
-- **Neon (0.5 GiB = 536,870,912 bytes):**
-  $$\frac{536{,}870{,}912\text{ bytes}}{63{,}856{,}346\text{ bytes/day}} \approx \mathbf{8.41\text{ days}}$$
-- **Legacy 1 GB (1,000,000,000 bytes):**
-  $$\frac{1{,}000{,}000{,}000\text{ bytes}}{63{,}856{,}346\text{ bytes/day}} \approx \mathbf{15.66\text{ days}}$$
-*(Under a 24-hour daily partition drop retention policy, steady-state storage with 1 h/day viewing never exceeds ~65 MB, remaining permanently within free tier limits).*
+- Daily storage consumption: $186{,}480 \times 427.66\text{ bytes} \approx 79{,}750{,}037\text{ bytes/day}$ (**79.75 MB/day** or 76.06 MiB/day).
+- **Days to fill without partition dropping:**
+  - **Supabase (500 MB):** $\frac{500{,}000{,}000\text{ bytes}}{79{,}750{,}037\text{ bytes/day}} \approx \mathbf{6.27\text{ days}}$
+  - **Neon (0.5 GiB = 536,870,912 bytes):** $\frac{536{,}870{,}912\text{ bytes}}{79{,}750{,}037\text{ bytes/day}} \approx \mathbf{6.73\text{ days}}$
+  - **Neon Official 1 GB (1,000,000,000 bytes):** $\frac{1{,}000{,}000{,}000\text{ bytes}}{79{,}750{,}037\text{ bytes/day}} \approx \mathbf{12.54\text{ days}}$
 
 ---
 
