@@ -17,12 +17,19 @@ interface EventItem {
 }
 
 export function LiveEventTicker() {
-  const { subscribeToTelemetry } = useFactoryWebSocket();
+  const { subscribeToTelemetry, selectedPlantId } = useFactoryWebSocket();
   const [events, setEvents] = useState<EventItem[]>([]);
+
+  useEffect(() => {
+    setEvents([]);
+  }, [selectedPlantId]);
 
   useEffect(() => {
     const unsubscribe = subscribeToTelemetry((msg) => {
       const topic = msg.topic || "";
+      if (topic.startsWith("plants/") && !topic.startsWith(`plants/${selectedPlantId}/`)) {
+        return;
+      }
       const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
       if (topic.endsWith("/result") || topic.includes("/qc_result")) {
@@ -122,7 +129,7 @@ export function LiveEventTicker() {
     return () => {
       unsubscribe();
     };
-  }, [subscribeToTelemetry]);
+  }, [subscribeToTelemetry, selectedPlantId]);
 
   return (
     <div className="bg-white border border-slate-200/90 rounded-3xl p-6 lg:p-7 shadow-xs flex flex-col gap-4 transition-all">

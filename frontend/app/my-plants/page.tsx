@@ -34,6 +34,11 @@ export default function MyPlantsPage() {
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Credential Modal State
   const [credModalOpen, setCredModalOpen] = useState(false);
@@ -270,7 +275,7 @@ export default function MyPlantsPage() {
 
   const isAtQuota = !canCreatePlant(plants.length, 3);
 
-  if (!isLoaded || !isSignedIn) {
+  if (!mounted || !isLoaded || !isSignedIn) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
         <div className="w-8 h-8 rounded-full border-2 border-blue-600 border-t-transparent animate-spin" />

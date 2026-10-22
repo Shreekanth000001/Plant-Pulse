@@ -1,3 +1,5 @@
+import binascii
+import logging
 import math
 import os
 import secrets
@@ -7,6 +9,8 @@ from collections.abc import Callable
 from typing import Annotated, Any
 
 from fastapi import Header, HTTPException, Request
+
+log = logging.getLogger(__name__)
 
 
 class RateLimiter:
@@ -91,6 +95,17 @@ def get_client_ip(request: Request) -> str:
     return "127.0.0.1"
 
 
+_jwks_clients: dict[str, Any] = {}
+
+
+def _get_jwks_client(url: str) -> Any:
+    from jwt import PyJWKClient
+
+    if url not in _jwks_clients:
+        _jwks_clients[url] = PyJWKClient(url, cache_jwk_set=True, lifespan=3600)
+    return _jwks_clients[url]
+
+
 def _decode_clerk_jwt(token: str) -> dict[str, Any]:
     """
     Decodes and validates a Clerk session JWT using RS256.
@@ -99,12 +114,29 @@ def _decode_clerk_jwt(token: str) -> dict[str, Any]:
     """
     public_key_pem = os.getenv("CLERK_PEM_PUBLIC_KEY")
     jwks_url = os.getenv("CLERK_JWKS_URL")
+    expected_issuer = os.getenv("CLERK_ISSUER")
+
+    if not public_key_pem and not jwks_url:
+        clerk_pk = os.getenv("CLERK_PUBLISHABLE_KEY") or os.getenv(
+            "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY"
+        )
+        if clerk_pk and ("pk_test_" in clerk_pk or "pk_live_" in clerk_pk):
+            try:
+                import base64
+
+                raw = clerk_pk.split("_", 2)[-1]
+                padded = raw + "=" * (-len(raw) % 4)
+                domain = base64.b64decode(padded).decode("utf-8").rstrip("$")
+                jwks_url = f"https://{domain}/.well-known/jwks.json"
+                if not expected_issuer:
+                    expected_issuer = f"https://{domain}"
+            except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
+                log.debug("Could not derive Clerk JWKS URL from publishable key: %s", exc)
 
     if not public_key_pem and not jwks_url:
         # Clerk auth is not configured; fail closed
         raise jwt.InvalidTokenError("Clerk authentication is not configured")
 
-    expected_issuer = os.getenv("CLERK_ISSUER")
     authorized_parties_str = os.getenv("CLERK_AUTHORIZED_PARTIES", "")
     authorized_parties = [
         p.strip() for p in authorized_parties_str.split(",") if p.strip()
@@ -114,9 +146,7 @@ def _decode_clerk_jwt(token: str) -> dict[str, Any]:
     if public_key_pem:
         key = public_key_pem.strip().replace("\\n", "\n")
     elif jwks_url:
-        from jwt import PyJWKClient
-
-        jwks_client = PyJWKClient(jwks_url, cache_jwk_set=True, lifespan=3600)
+        jwks_client = _get_jwks_client(jwks_url)
         signing_key = jwks_client.get_signing_key_from_jwt(token)
         key = signing_key.key
 
@@ -126,7 +156,7 @@ def _decode_clerk_jwt(token: str) -> dict[str, Any]:
         "options": {"verify_signature": True, "require": ["exp"]},
     }
     if expected_issuer:
-        decode_kwargs["issuer"] = expected_issuer
+        decode_kwargs["issuer"] = expected_issuer.rstrip("/")
         decode_kwargs["options"]["require"].append("iss")
 
     payload = jwt.decode(token, key, **decode_kwargs)
@@ -166,7 +196,10 @@ def verify_admin_user(
     # Server configuration check: fail closed if no auth is configured
     admin_token = os.getenv("ADMIN_TOKEN")
     clerk_configured = bool(
-        os.getenv("CLERK_PEM_PUBLIC_KEY") or os.getenv("CLERK_JWKS_URL")
+        os.getenv("CLERK_PEM_PUBLIC_KEY")
+        or os.getenv("CLERK_JWKS_URL")
+        or os.getenv("CLERK_PUBLISHABLE_KEY")
+        or os.getenv("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY")
     )
     if not admin_token and not clerk_configured:
         raise HTTPException(

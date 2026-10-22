@@ -24,6 +24,7 @@ interface StationInspectorModalProps {
   machine: MachineStatus | null;
   machineDef?: MachineDefinition;
   plantId?: string;
+  hasTraceability?: boolean;
   onClose: () => void;
 }
 
@@ -32,6 +33,7 @@ export function StationInspectorModal({
   machine,
   machineDef,
   plantId,
+  hasTraceability,
   onClose,
 }: StationInspectorModalProps) {
   const modalRef = useRef<HTMLDivElement>(null);
@@ -302,40 +304,42 @@ export function StationInspectorModal({
 
         {/* Modal Scrollable Body */}
         <div className="p-6 overflow-y-auto flex flex-col gap-6">
-          {/* Active Unit Banner */}
-          <div className="bg-slate-50/70 rounded-2xl p-4 flex items-center justify-between border border-slate-200">
-            <div>
-              <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-                Currently Processing Unit
-              </div>
-              {activeUnit ? (
-                <div className="flex items-center gap-2 mt-1">
-                  <span className="font-mono text-sm font-bold text-blue-600">
-                    {activeUnit}
-                  </span>
-                  {machine.phase && (
-                    <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-white text-slate-700 border border-slate-200">
-                      Phase: {machine.phase}
+          {/* Active Unit Banner (only rendered when product_traceability enabled or unit active) */}
+          {(hasTraceability || activeUnit) && (
+            <div className="bg-slate-50/70 rounded-2xl p-4 flex items-center justify-between border border-slate-200">
+              <div>
+                <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                  Currently Processing Unit
+                </div>
+                {activeUnit ? (
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="font-mono text-sm font-bold text-blue-600">
+                      {activeUnit}
                     </span>
-                  )}
-                </div>
-              ) : (
-                <div className="text-xs text-slate-400 italic mt-1 font-sans">
-                  Station currently waiting for incoming buffer unit.
-                </div>
+                    {machine.phase && (
+                      <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-white text-slate-700 border border-slate-200">
+                        Phase: {machine.phase}
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-xs text-slate-400 italic mt-1 font-sans">
+                    Station currently waiting for incoming buffer unit.
+                  </div>
+                )}
+              </div>
+
+              {activeUnit && (
+                <Link
+                  href={`/units/${encodeURIComponent(activeUnit)}`}
+                  className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-xs transition-all flex items-center gap-1.5"
+                >
+                  <span>Trace Unit Journey</span>
+                  <span>→</span>
+                </Link>
               )}
             </div>
-
-            {activeUnit && (
-              <Link
-                href={`/units/${encodeURIComponent(activeUnit)}`}
-                className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-xs transition-all flex items-center gap-1.5"
-              >
-                <span>Trace Unit Journey</span>
-                <span>→</span>
-              </Link>
-            )}
-          </div>
+          )}
 
           {/* Mechanical Diagnostics & Vibration Wear */}
           <div className="bg-slate-50/70 rounded-2xl p-5 flex flex-col gap-3 border border-slate-200">
