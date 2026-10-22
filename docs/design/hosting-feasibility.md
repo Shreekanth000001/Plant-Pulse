@@ -186,6 +186,21 @@ Using the measured 500k-row footprint (**427.66 bytes/row**) and measured ingest
   - **Neon (0.5 GiB = 536,870,912 bytes):** $\frac{536{,}870{,}912\text{ bytes}}{79{,}750{,}037\text{ bytes/day}} \approx \mathbf{6.73\text{ days}}$
   - **Neon Official 1 GB (1,000,000,000 bytes):** $\frac{1{,}000{,}000{,}000\text{ bytes}}{79{,}750{,}037\text{ bytes/day}} \approx \mathbf{12.54\text{ days}}$
 
+#### Scenario B.1: Viewer-Gated Steady-State Storage (2 Daily Partitions + Other Tables)
+- **Partition Retention Assumption:** Under `RETENTION_DAYS = 1`, the retention worker maintains up to **2 active daily partitions** at steady state (the current day's active partition plus yesterday's partition awaiting the daily cleanup run).
+- **Telemetry Partitions Footprint:**
+  $$2 \times 79.75\text{ MB/day} = \mathbf{159.50\text{ MB}}\quad (152.1\text{ MiB})$$
+- **Other Tables Footprint (Measured Baseline & Operational Estimate):**
+  - **Measured public tables baseline:** Exactly **0.78 MB** (819,200 bytes across `signals`, `machines`, `qc_results`, `plant_credentials`, `stage_events`, `areas`, `plants`, `units`, `machine_states`, `alembic_version`, `active_alarms`, and `alarm_rules`).
+  - **2-day operational accumulation estimate:** Accounting for ~72 completed units (36 units/h $\times$ 2 h), ~300 stage events, and ~70 QC test rows over 2 active viewing hours, non-telemetry tables grow by ~0.7 MB to an estimated **~1.5 MB**.
+- **Total Steady-State Database Size (Estimated):**
+  $$\text{Total Steady-State Storage} \approx 159.50\text{ MB} + 1.50\text{ MB} = \mathbf{\sim 161.0\text{ MB}}\quad (\textbf{Estimated Range: } 155\text{--}170\text{ MB})$$
+- **Free Tier Headroom & Quota Feasibility:**
+  - **Supabase (500 MB limit):** Consumes $\frac{161.0\text{ MB}}{500\text{ MB}} \approx \mathbf{32.2\%}$, leaving **~339 MB of safety headroom** (67.8% buffer).
+  - **Neon (0.5 GiB / 536.87 MB limit):** Consumes $\frac{161.0\text{ MB}}{536.87\text{ MB}} \approx \mathbf{30.0\%}$, leaving **~375 MB of safety headroom** (70.0% buffer).
+  - **Neon Official (1 GB / 1,000 MB limit):** Consumes $\frac{161.0\text{ MB}}{1{,}000\text{ MB}} \approx \mathbf{16.1\%}$, leaving **~839 MB of safety headroom** (83.9% buffer).
+- **Conclusion:** Under viewer gating with a 24-hour daily partition drop policy, steady-state storage permanently hovers around ~161 MB, remaining safely within free tier limits without risk of read-only quota locks.
+
 ---
 
 ## 6. Daily Partitions vs RETENTION_HOURS Analysis
