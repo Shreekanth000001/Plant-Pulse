@@ -98,8 +98,8 @@ flowchart LR
 
 PlantPulse provides time-series trend analysis for machine sensor readings via an interactive chart modal and downsampled API query:
 
-- **Endpoint:** `GET /api/plants/{plant_id}/signals/{machine_code}/{signal_code}/history`
-- **Time Windows:** Supported via query parameter `range` (`1h`, `6h`, `12h`, `24h`, default `1h`).
+- **Endpoint:** `GET /api/plants/{plant_id}/machines/{machine_code}/signals/{signal_code}/history`
+- **Time Windows:** Supported via query parameters `start` and `end` (ISO 8601 UTC timestamps; default window is the last 1 hour, maximum window is 24 hours, minimum 10 seconds).
 - **Adaptive Downsampling:** Queries accept `points` (bounded between 10 and 500, default 300) and group timestamps into even time buckets using PostgreSQL `date_bin`, computing `avg_value`, `min_value`, and `max_value`.
 - **Gap Detection:** Frontend chart rendering detects gaps exceeding 2x the expected interval and inserts sentinel breaks to prevent misleading straight-line interpolation during simulator idle periods.
 
@@ -109,8 +109,8 @@ PlantPulse provides time-series trend analysis for machine sensor readings via a
 
 To prevent unbounded database growth during extended runs, a scheduled background worker continuously enforces a configurable retention window:
 
-- **Configuration:** Controlled by `RETENTION_DAYS` (default `30` days) and `ENABLE_RETENTION_WORKER` (default `true`, disabled in test environments).
-- **Non-Blocking Batched Deletes:** Deletions run off the main event loop in chunks of 50,000 rows (`DELETE FROM telemetry_values WHERE (device_timestamp, plant_id, message_id, signal_code) IN (SELECT ... LIMIT 50000)`) until all expired telemetry is purged. In PR 2, partition dropping replaces row deletes for telemetry data.
+- **Configuration:** Controlled by `RETENTION_DAYS` (default `30` days) and `ENABLE_RETENTION_WORKER` (default `true`, disabled in test environments). Upcoming partitions are pre-created across range `[today-1 .. today+7]` at startup and daily.
+- **Partition Drops & Batched Purges:** Telemetry data is purged by dropping expired daily partitions (`DROP TABLE telemetry_values_pYYYY_MM_DD`) older than `RETENTION_DAYS`, immediately reclaiming physical disk space without vacuum locking. Associated operational data in `units`, `stage_events`, and `qc_results` are cleaned using non-blocking composite-key batched deletes in chunks of 50,000 rows off the main event loop.
 
 ---
 
@@ -136,7 +136,7 @@ PlantPulse includes a complete administrative facility management system mounted
 PlantPulse employs defense-in-depth across the broker, API, database, and client layers:
 
 1. **Broker Isolation & Topic ACLs:** Each simulated device authenticates with Mosquitto using dedicated credentials. ACL rules enforce read/write access strictly to `plants/{plant_id}/#`. The broker port (`1883`) is never exposed outside the Docker bridge network.
-2. **Viewer Access Tokens & Database Ownership:** Plant definition files (`plants/*.json`) contain zero plaintext passwords or viewer tokens. Secrets are seeded into SQLite (`platform.db`) on first boot via environment variables. Viewer tokens are stored exclusively as SHA-256 hashes (`plants.viewer_token_hash`).
+2. **Viewer Access Tokens & Database Ownership:** Plant definition files (`plants/*.json`) contain zero plaintext passwords or viewer tokens. Secrets are seeded into PostgreSQL on first boot (when the `plants` table is empty) via environment variables by `seed_plants_if_empty` and `sync_plant_definitions`, while Alembic manages schema migrations. Viewer tokens are stored exclusively as SHA-256 hashes (`plants.viewer_token_hash`).
 3. **Single-Use WebSocket Tickets:** Protected WebSocket streams (`/ws/{plant_id}/telemetry`) require a short-lived ticket (`POST /api/plants/{plant_id}/ws-ticket`) issued with Bearer authorization. Tickets are valid for 30 seconds and consumed on first use to prevent secret leakage in URL query parameters and access logs.
 4. **Sliding-Window Rate Limiting:** Separate in-memory rate limiters protect Admin and Viewer endpoints. After 5 incorrect token guesses within a 60-second window, subsequent requests receive HTTP 429 (`Too Many Requests`) with a `Retry-After` header. Rate limiting checks the lockout status before parsing headers or comparing hashes, and malformed authorization headers count against the attempt budget.
 5. **No Reverse-Proxy Header Trust:** Client IP addresses are extracted directly from the underlying socket host without trusting `X-Forwarded-For` headers, preventing header spoofing attacks.
@@ -167,7 +167,7 @@ Verify service health:
 docker compose ps
 ```
 
-All services will show `(healthy)`:
+Core services will show `(healthy)` (while `simulator` shows `Up`, as it has no healthcheck):
 - `plantpulse-broker-1`: Mosquitto broker (internal `1883/tcp`)
 - `plantpulse-postgres-1`: PostgreSQL 16 database (internal `5432/tcp`)
 - `plantpulse-api-1`: FastAPI backend on `http://127.0.0.1:8000`
@@ -253,11 +253,11 @@ Tests execute against a PostgreSQL database configured via `DATABASE_URL`. In CI
 # 1. Start test PostgreSQL container:
 docker run -d --name plantpulse-test-pg -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16-alpine
 
-# 2. Run backend pytest suite (195 passed)
+# 2. Run backend pytest suite (199 passed)
 export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/plantpulse_test"
 pytest -v
 
-# 3. Frontend unit tests (59 passed)
+# 3. Frontend unit tests (63 passed)
 cd frontend && npm test
 
 # 4. Linting & code formatting
@@ -274,9 +274,8 @@ This is a portfolio and learning project demonstrating distributed industrial Io
 
 1. **Public Demo Passwords & Tokens in `.env.example`:** Pre-configured demo credentials (e.g., `MQTT_PASSWORD`, `WATER_MQTT_PASSWORD`, and `PLANT_WATER_DISTRICT_9_VIEWER_TOKEN`) are included in `.env.example` to allow zero-setup out-of-the-box evaluation. In production environments, credentials should be randomly generated and injected through external secret managers.
 2. **In-Memory Rate Limiter Reset & Proxy IP Sharing:** Rate-limiting attempt histories are maintained in memory and reset whenever the API process restarts. Because client socket IPs are evaluated directly without trusting `X-Forwarded-For`, clients situated behind a shared reverse proxy or corporate NAT pool share a single rate-limiting bucket.
-3. **Legacy `/api` Endpoints Unauthenticated:** Legacy endpoints retained for backwards compatibility (`/api/units`, `/api/summary`) are unauthenticated. Production deployments should disable or deprecate legacy routes.
-4. **Partition Key in Deduplication Constraint:** Native PostgreSQL time partitioning requires the partition key (`device_timestamp`) to be included in all unique constraints and primary keys on partitioned tables. As a result, the primary key of `telemetry_values` is `(device_timestamp, plant_id, message_id, signal_code)`. If an edge device retry generates a new timestamp rather than retaining the original sample timestamp, the message will be stored twice. When retried QoS 1 redelivery preserves the original timestamp, duplicates are cleanly dropped via `ON CONFLICT DO NOTHING`.
-5. **At-Most-Once Delivery Inside API:** The IngestEngine buffers incoming MQTT telemetry in an asynchronous queue before committing batched inserts. An abrupt server termination or container kill will drop in-flight uncommitted measurements.
-6. **Partition-Drop Retention Window:** Measurements older than `RETENTION_DAYS` (default 30) are purged by dropping matching daily leaf partition tables (`DROP TABLE telemetry_values_pYYYY_MM_DD`), immediately reclaiming disk space. Out-of-window timestamps arriving outside managed partition boundaries are rejected by PostgreSQL because no catch-all default partition is configured.
-7. **Static Admin Token Until Login Session (#55):** Admin authentication currently uses a static pre-shared Bearer secret (`ADMIN_TOKEN`). Interactive user accounts, database-backed roles, and session token rotation are cataloged for a subsequent milestone.
-8. **No Viewer Token Removal in Admin UI:** The Admin UI allows rotating or updating existing plant viewer tokens, but clearing a token back to public unauthenticated access is not supported from the interface (preserving the existing token hash on blank submission). Making a protected plant public requires manual database intervention.
+3. **Partition Key in Deduplication Constraint:** Native PostgreSQL time partitioning requires the partition key (`device_timestamp`) to be included in all unique constraints and primary keys on partitioned tables. As a result, the primary key of `telemetry_values` is `(device_timestamp, plant_id, message_id, signal_code)`. If an edge device retry generates a new timestamp rather than retaining the original sample timestamp, the message will be stored twice. When retried QoS 1 redelivery preserves the original timestamp, duplicates are cleanly dropped via `ON CONFLICT DO NOTHING`.
+4. **At-Most-Once Delivery Inside API:** The IngestEngine buffers incoming MQTT telemetry in an asynchronous queue before committing batched inserts. An abrupt server termination or container kill will drop in-flight uncommitted measurements.
+5. **Partition-Drop Retention Window:** Measurements older than `RETENTION_DAYS` (default 30) are purged by dropping matching daily leaf partition tables (`DROP TABLE telemetry_values_pYYYY_MM_DD`), immediately reclaiming disk space. Out-of-window timestamps arriving outside managed partition boundaries are rejected by PostgreSQL because no catch-all default partition is configured.
+6. **Static Admin Token Until Login Session (#55):** Admin authentication currently uses a static pre-shared Bearer secret (`ADMIN_TOKEN`). Interactive user accounts, database-backed roles, and session token rotation are cataloged for a subsequent milestone.
+7. **No Viewer Token Removal in Admin UI:** The Admin UI allows rotating or updating existing plant viewer tokens, but clearing a token back to public unauthenticated access is not supported from the interface (preserving the existing token hash on blank submission). Making a protected plant public requires manual database intervention.
