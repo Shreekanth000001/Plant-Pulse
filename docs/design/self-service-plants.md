@@ -87,7 +87,7 @@ Every page under [`frontend/app`](file:///home/critic-coder/project/PlantPulse/f
 | :--- | :--- | :--- |
 | **Authorization** | Creation requires `platform_admin`. | Authenticated Clerk user can create their own plant. |
 | **Ownership** | `plants` table has no owner column. | `plants.owner_user_id` tracks creator; user receives scoped permissions. |
-| **RBAC Storage** | Roles checked solely via Clerk JWT claims. | PostgreSQL `user_roles` table tracks fine-grained plant roles. |
+| **RBAC Storage** | Roles checked solely via Clerk JWT claims. | Roles evaluated via proposed model (under student evaluation). |
 | **Quota Enforcement** | 100 machines / 500 signals per plant; 1 MB body limit (PR #100). | Proposed default: **1 plant per user** (student decision pending). |
 | **Sign-up Model** | Public Clerk sign-up enabled. | Proposed default: **Invite-only sign-up** (student decision pending). |
 | **Ingest Protocol** | Mosquitto MQTT broker subscriber only. | **MQTT ingest kept until hosting is decided**; HTTP ingest deferred to later PR. |
@@ -113,31 +113,44 @@ To protect infrastructure resources and simplify the initial multi-tenant deploy
 
 ---
 
-### 4.2 Ownership & Permission Model
+### 4.2 Ownership & Permission Model: Proposed Options for Decision
 
-#### Option A: PostgreSQL Ownership & Role Storage (`plants.owner_user_id` + `user_roles` table) — *Recommended*
+Three architectural options are proposed for managing plant ownership and role-based access control. A final decision will be made by the student before implementation:
+
+#### Option A: PostgreSQL `user_roles` Table + `plants.owner_user_id` (Proposed Option)
 - **Mechanism:**
   - Add `owner_user_id VARCHAR(128) NOT NULL` to the `plants` table.
-  - Introduce a dedicated `user_roles` table in PostgreSQL mapping `user_id`, `plant_id`, and `role`.
-  - When `POST /api/plants` is called, the backend extracts `current_user.user_id` (Clerk `sub`) and records ownership in `plants` and `user_roles`.
+  - Introduce a dedicated `user_roles` table in PostgreSQL mapping `user_id`, `plant_id`, and `role` (`'owner'`, `'plant_manager'`, `'operator'`, `'viewer'`).
+  - When `POST /api/plants` is called, the backend extracts `current_user.user_id` (Clerk `sub`) and records ownership locally in `plants` and `user_roles`.
 - **Pros:**
   - Instant authorization without waiting for Clerk token refresh.
   - Zero external dependency on Clerk Backend API calls during plant creation.
   - Easily supports multi-plant access without inflating JWT size.
 - **Cons:**
-  - Requires a database query during authorization checks (mitigated via in-memory caching).
+  - Requires a local database query during authorization checks (mitigated via in-memory caching).
+  - Shifts role management away from Clerk dashboard into local SQL tables.
 
-#### Option B: Clerk User `public_metadata` Mutation via Clerk Backend API
+#### Option B: Clerk User `public_metadata` Mutation via Clerk Backend API (Proposed Option)
 - **Mechanism:**
   - Backend calls Clerk Backend API (`PATCH https://api.clerk.com/v1/users/{user_id}/metadata`) to assign roles or append `plant_id` to `public_metadata`.
 - **Server Secret Key Requirement:**
   - **Important:** Mutating user metadata from the backend requires `CLERK_SECRET_KEY` on the server environment. Without `CLERK_SECRET_KEY`, the backend cannot authenticate requests to Clerk's Backend API.
 - **Pros:**
   - Roles and plant permissions are embedded directly in the JWT claims.
+  - Role assignments can be audited and edited directly from the Clerk web dashboard.
 - **Cons:**
   - **Token Refresh Lag:** Clerk session tokens live for **60 seconds** ([Clerk Docs: Session tokens](https://clerk.com/docs/guides/sessions/session-tokens)). A user's browser token will not reflect the newly assigned metadata until refreshed ~50s later, causing immediate subsequent API requests to fail with 403 unless explicitly refreshed.
   - **Cookie Size Limits:** Clerk recommends custom metadata claims stay under **1.2 KB** due to browser 4 KB cookie limits ([Clerk Docs: Session tokens size limitations](https://clerk.com/docs/guides/sessions/session-tokens#size-limitations)).
-  - **Rate Limits & Outages:** Adds external HTTP failure modes to plant creation.
+  - **Rate Limits & External Dependency:** Adds external HTTP failure modes to plant creation.
+
+#### Option C: Clerk Organizations (1 Organization = 1 Plant) (Proposed Option)
+- **Mechanism:**
+  - Each plant maps to a Clerk Organization. Creating a plant creates a Clerk Organization; the creator is assigned Organization Admin.
+- **Pros:**
+  - Native multi-user team collaboration and member invitations handled entirely by Clerk out of the box.
+- **Cons:**
+  - The Clerk Free plan restricts Organizations features and member seats ([Clerk Docs: Organizations](https://clerk.com/docs/guides/organizations/overview)).
+  - Heavy architectural overhead for single-developer and hobbyist IoT projects.
 
 ---
 
@@ -161,9 +174,9 @@ To prevent the "blank screen" problem when a user provisions their first plant:
 
 ---
 
-## 5. PostgreSQL Schema Evolution & Roles Table Design
+## 5. Proposed Database Schema Evolution (For Option A Evaluation)
 
-To support self-service ownership and scoped permissions without Clerk metadata lag, the following PostgreSQL schema changes are required:
+If Option A is selected by the student, the following PostgreSQL schema changes would be introduced:
 
 ### 5.1 Proposed Schema Migration
 
@@ -191,7 +204,7 @@ UPDATE plants SET owner_user_id = 'platform_admin' WHERE owner_user_id IS NULL;
 ```
 
 ### 5.2 Roles Table Integration with `admin_auth.py`
-In `admin_auth.py`, `verify_admin_user` will be expanded to evaluate permissions using a tiered model:
+In `admin_auth.py`, `verify_admin_user` would evaluate permissions using a tiered model:
 1. **Platform Admin:** Verified via Clerk `role == "platform_admin"` or static `ADMIN_TOKEN`. Possesses global superuser access across all plants.
 2. **Plant Owner / Manager:** Verified by checking if `(current_user.user_id, plant_id)` exists in `user_roles` with `role IN ('owner', 'plant_manager')`. Grants full configuration and machine management rights for that specific plant.
 3. **Viewer:** Granted read-only dashboard access.
@@ -200,8 +213,8 @@ In `admin_auth.py`, `verify_admin_user` will be expanded to evaluate permissions
 
 ## 6. Implementation PR Split Plan
 
-- **PR 1: Database Schema Migration & Roles Table**
-  - Add `owner_user_id` to `plants` table and create `user_roles` table via Alembic.
+- **PR 1: Database Schema Migration & Roles Model (Pending Option Decision)**
+  - Add `owner_user_id` to `plants` table and create `user_roles` table via Alembic (if Option A chosen).
   - Implement `RoleRepository` for managing user-plant role associations.
   - Update `admin_auth.py` to evaluate local `user_roles` alongside Clerk JWT claims.
   - *Risk:* Low. Pure database migration with backward compatibility.
