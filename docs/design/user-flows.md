@@ -207,33 +207,64 @@ In Clerk PR 3 / unified RBAC:
 
 ### Journey 6: IoT / Edge Device Operator Onboarding Hardware
 - **Goal:** Configure physical edge gateways (e.g., Advantech, Siemens IOT2050, Raspberry Pi CM4) to publish industrial metrics into PlantPulse.
-- **Exact Connection Requirements for Real Devices:**
-  - **MQTT Broker Host:** DNS hostname (e.g., `mqtt.plantpulse.example.com` or private VPC IP).
-  - **MQTT Port:** `1883` (plaintext inside private IoT network) or `8883` (MQTTS with TLS 1.3 for internet traversal).
-  - **Authentication:** Username `device_{plant_id}` (e.g., `device_plant_solar_pack`) and PBKDF2-hashed password copied from admin creation modal.
-  - **MQTT Client ID:** Unique identifier e.g., `edge_{plant_id}_{mac_address}`.
-  - **Topic Contract:**
-    - Telemetry metrics: `plants/{plant_id}/assets/{machine_code}/telemetry`
-    - Machine state updates: `plants/{plant_id}/assets/{machine_code}/state`
-  - **Payload Schema (Verified in [`ingest.py#L290-L375`](file:///home/critic-coder/project/PlantPulse/ingest.py#L290-L375)):**
-    ```json
-    {
-      "schema_version": "1.0",
-      "message_id": "018d3a12-789a-7c9b-90f1-123456789abc",
-      "plant_id": "plant_solar_pack",
-      "asset_id": "molding_press_01",
-      "device_timestamp": "2026-10-22T14:30:00.000Z",
-      "payload_type": "telemetry",
-      "payload": {
-        "status": "RUNNING",
-        "sub_status": "NORMAL_CYCLE",
-        "metrics": {
-          "hydraulic_pressure_bar": 142.5,
-          "oil_temperature_c": 48.2
-        }
-      }
+
+#### Topic Pattern Reconciliation (`plants/{id}/telemetry` vs `plants/{id}/assets/{asset}/telemetry`)
+- **Historical vs Implementation Contract:** Early planning documentation referenced a collapsed 3-segment topic `plants/{plant_id}/telemetry`.
+- **Verified Codebase Contract:** In `topic_router.py` (line 20) and `ingest.py` (lines 297–304), ingestion strictly mandates the canonical 5-segment asset-scoped topic:
+  $$\text{Topic Pattern: } \texttt{plants/\{plant_id\}/assets/\{machine\_code\}/telemetry}$$
+  (and $\texttt{plants/\{plant_id\}/assets/\{machine\_code\}/state}$ for machine state transitions).
+- **Ingestion Rejection Rule:** `_validate_envelope` executes `parts = topic.split("/")`. If `len(parts) != 5`, `parts[0] != "plants"`, `parts[2] != "assets"`, or `parts[4] not in ("telemetry", "state")`, the engine immediately rejects the payload with `INVALID_TOPIC_SHAPE`. Messages published to `plants/{plant_id}/telemetry` fail immediately.
+
+#### Verified Device Operator Connection & Contract Table
+
+| Parameter | Value Today | Notes / Constraints |
+| :--- | :--- | :--- |
+| **Broker Host** | `broker` (Internal Docker DNS) | Accessible only to containers on Docker network. |
+| **Port** | `1883` | Plaintext MQTT. **Not published to host** in `docker-compose.yml`. |
+| **TLS Today** | **None (Disabled)** | Plaintext cleartext MQTT; TLS on port 8883 is not configured today. |
+| **Username** | `device_{plant_id}` | E.g., `device_plant_water_district_9`, `device_plant_demo_membrane`. |
+| **Password** | Generated at creation / rotation | PBKDF2-SHA512 hashed in Mosquitto passwd file. |
+| **Client ID** | Any string (e.g., `edge_{plant_id}_{unit}`) | Must be unique per client session. |
+| **Published Topics** | `plants/{plant_id}/assets/{machine_code}/telemetry`<br>`plants/{plant_id}/assets/{machine_code}/state` | Scoped by Mosquitto ACL: `topic readwrite plants/{plant_id}/#`. |
+| **Envelope Schema** | `schema_version`: `"1.0"` (string)<br>`plant_id`: string (matches topic)<br>`asset_id`: string (matches machine_code)<br>`device_timestamp`: ISO 8601 string<br>`message_id`: string<br>`payload.metrics`: object | Enforced by `ingest.py` lines 291–405. Unknown assets or mismatched plant IDs rejected. |
+
+> [!WARNING]
+> **Port 1883 Not Published Boundary:**
+> In `docker-compose.yml` line 34, the broker service defines `expose: ["1883"]` rather than `ports: ["1883:1883"]`. Port 1883 is accessible only on the internal Docker container network (`plantpulse_default`). **A real external physical edge device cannot connect to PlantPulse today.** External connectivity requires either publishing port `1883` to the host interface, routing through a reverse proxy, or provisioning port `8883` with TLS certificates (Option A in Section 4.2).
+
+#### Verified Telemetry JSON Envelope Example
+
+```json
+{
+  "schema_version": "1.0",
+  "plant_id": "plant_water_district_9",
+  "asset_id": "pump_01",
+  "device_timestamp": "2026-10-22T12:00:00Z",
+  "message_id": "msg-edge-pump01-001",
+  "payload": {
+    "metrics": {
+      "discharge_pressure_bar": 4.82,
+      "flow_rate_m3h": 142.5
     }
-    ```
+  }
+}
+```
+
+#### Verified Machine State JSON Envelope Example
+
+```json
+{
+  "schema_version": "1.0",
+  "plant_id": "plant_water_district_9",
+  "asset_id": "pump_01",
+  "device_timestamp": "2026-10-22T12:00:00Z",
+  "message_id": "msg-edge-pump01-002",
+  "payload": {
+    "status": "RUNNING",
+    "sub_status": "NORMAL_BOOST"
+  }
+}
+```
 
 ### Journey 7: Live Stack Verification: Dynamic Plant Creation, ACL Enforcement & Ingest Hot-Reload
 A live end-to-end journey test was executed against the running Docker Compose stack to verify dynamic provisioning, Mosquitto ACL scoping, signal filtering, and zero-downtime schema updates:
