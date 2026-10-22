@@ -9,7 +9,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 # Copy application sources
-COPY tsconfig.json next.config.ts eslint.config.mjs ./
+COPY tsconfig.json next.config.ts eslint.config.mjs proxy.ts ./
 COPY public ./public
 COPY types ./types
 COPY lib ./lib
@@ -21,9 +21,11 @@ COPY app ./app
 ARG NEXT_PUBLIC_API_URL=http://localhost:8000
 ARG NEXT_PUBLIC_WS_URL=ws://localhost:8000
 ARG NEXT_PUBLIC_DEMO_HINTS=true
+ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=""
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
     NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL \
-    NEXT_PUBLIC_DEMO_HINTS=$NEXT_PUBLIC_DEMO_HINTS
+    NEXT_PUBLIC_DEMO_HINTS=$NEXT_PUBLIC_DEMO_HINTS \
+    NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 
 # Build the Next.js production artifact
 RUN npm run build

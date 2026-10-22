@@ -9,6 +9,7 @@ import {
   formatLastUpdated,
   getConnectionModeLabel,
 } from "../../lib/plant-utils";
+import { SignInButton, SignUpButton, Show, UserButton } from "@clerk/nextjs";
 
 interface HeaderProps {
   onToggleSidebar?: () => void;
@@ -274,6 +275,25 @@ export function Header({ onToggleSidebar }: HeaderProps) {
               <span>{currentTime}</span>
             </div>
           )}
+
+          {/* Clerk Authentication Controls */}
+          <div className="flex items-center gap-2 pl-2 border-l border-slate-200">
+            <Show when="signed-out">
+              <SignInButton mode="modal">
+                <button className="px-2.5 py-1 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg border border-slate-200 transition-colors cursor-pointer">
+                  Sign In
+                </button>
+              </SignInButton>
+              <SignUpButton mode="modal">
+                <button className="px-2.5 py-1 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-xs transition-colors cursor-pointer">
+                  Sign Up
+                </button>
+              </SignUpButton>
+            </Show>
+            <Show when="signed-in">
+              <UserButton />
+            </Show>
+          </div>
         </div>
       </div>
     </header>
