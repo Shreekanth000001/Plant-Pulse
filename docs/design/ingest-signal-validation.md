@@ -10,8 +10,8 @@
 
 ## 1. Executive Summary & Root Cause Analysis
 
-### 1.1 The Symptom
-A database audit of `telemetry_values` revealed **18 distinct undeclared machine/signal pairs** inserted across 122 historical simulator cycles:
+### 1.1 The Symptom & Live Stack Audit
+A database audit of `telemetry_values` during test harness execution revealed **18 distinct undeclared machine/signal pairs** inserted across historical simulator cycles:
 ```sql
 SELECT DISTINCT machine_code, signal_code 
 FROM telemetry_values tv 
@@ -28,8 +28,11 @@ ORDER BY machine_code, signal_code;
 - `cs_01`–`cs_02`: `vibration`, `viscosity_setpoint` (4 pairs)
 - `hm_01`–`hm_02`: `vibration` (2 pairs)
 
+#### Live Stack Verification (Clean Production Behavior)
+A 60-second live test was executed on the running Docker Compose stack with an active WebSocket viewer connected. A subsequent SQL query against PostgreSQL `telemetry_values` returned **0 undeclared rows**. In production, `main.py` passes `plants=plants_registry` to `IngestEngine`, enabling the machine signal filter and dropping undeclared metrics. The 18 undeclared rows observed earlier originated exclusively from standalone test/benchmark harnesses that instantiated `IngestEngine` without plant definitions.
+
 ### 1.2 Verified Root Cause
-Investigation of `ingest.py` and `demo/simulator/simulator.py` established four interconnected flaws that caused undeclared signals to bypass filtering:
+Investigation of `ingest.py`, `main.py`, and `demo/simulator/simulator.py` established how the defect manifested in harnesses and the inherent fail-open vulnerability:
 
 1. **Constructor Parameter Binding:** In [`ingest.py#L217-L231`](file:///home/critic-coder/project/PlantPulse/ingest.py#L217-L231), the constructor signature is:
    ```python
