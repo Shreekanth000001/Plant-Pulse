@@ -39,20 +39,38 @@ All provider specifications cited in this document were retrieved directly from 
 
 ## 3. Provider Reconciliations & Analysis
 
-### 3.1 Neon Storage Limit Reconciliation (0.5 GiB vs Official 1 GB)
-- **Current Official Documentation (retrieved 2026-10-22):** The official Neon documentation ([Neon Plans](https://neon.tech/docs/introduction/plans)) specifies: *"Free plan users get 1 GB of Postgres storage per project, up to 20 GB total across all projects"*, with compute allowances of *"100 CU-hours/project/month"* and compute scale-down after *"5 min inactivity; cannot disable"*.
-- **Legacy / Conservative Context:** Earlier documentation and community benchmarks cited a 0.5 GiB (512 MiB) cap. Because some free projects or previous tiers operated under 0.5 GiB, calculations in this document evaluate both the conservative 0.5 GiB threshold and the official 1 GB quota.
+### 3.1 Neon Compute & Storage Limits Reconciliation
+- **Current Official Documentation (retrieved 2026-10-22):** The official Neon documentation ([Neon Plans](https://neon.tech/docs/introduction/plans)) specifies:
+  - **Storage:** *"Free plan users get 1 GB of Postgres storage per project, up to 20 GB total across all projects"*.
+  - **Compute:** Free tier includes *"100 CU-hours/project/month (enough to run a 0.25 CU compute in a project for 400 hours/month)."* Compute scales down after *"5 min inactivity; cannot disable"*, with autoscaling up to 2 CU (≈8 GB RAM).
+- **Continuous Execution Calculation at Autoscaling Minimum (0.25 CU):**
+  - Neon's documentation explicitly calculates that 100 CU-hours equates to **400 hours of 0.25 CU compute**.
+  - In continuous 24/7 execution:
+    $$\frac{400\text{ hours}}{24\text{ hours/day}} \approx \mathbf{16.67\text{ days}}$$
+  - If ingestion load triggers autoscaling above the 0.25 CU baseline (e.g. 0.5 CU = 200 hours = 8.33 days; 1.0 CU = 100 hours = 4.17 days; 2.0 CU = 50 hours = 2.08 days), the quota is consumed significantly faster. Whether a continuous ingestion pipeline with periodic partition maintenance can run sustainably at 0.25 CU without bursting to higher CU values is **Unverified**.
+- **Write Failure on Exceeding 1 GB Quota:**
+  - When storage exceeds the 1 GB cap, Neon automatically places the project into a read-only locked state where **all `INSERT`, `UPDATE`, and `DELETE` queries fail**.
+  - Because `DELETE` queries fail once the quota is breached, standard row-level deletion cannot recover the database without upgrading. Operators must maintain strict safety headroom (e.g., keeping steady-state storage below 500 MB) and rely on partition dropping (`DROP TABLE`) before the 1 GB limit is breached.
+- **Legacy / Conservative Context:** Earlier documentation and community benchmarks cited a 0.5 GiB (512 MiB) cap. Calculations in this document evaluate both the conservative 0.5 GiB threshold and the official 1 GB quota.
 
-### 3.2 Oracle Cloud Always Free Reconciliation (Official Entitlement vs Conflicting Evidence & Idle Reclamation)
+### 3.2 Oracle Cloud Always Free Reconciliation (Official Entitlement vs 7-Day Idle Reclamation & Billing Risk)
 - **Official Specification (retrieved 2026-10-22, page updated 2026-06-12):** The official OCI documentation ([OCI Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)) entitles users to:
-  - *"All tenancies get the first 1,500 OCPU hours and 9,000 GB hours per month for free for VM instances using the VM.Standard.A1.Flex shape (Arm processor). For Always Free tenancies, this is equivalent to 2 OCPUs and 12 GB of memory."*
+  - **2 Arm OCPUs and 12 GB RAM:** *"All tenancies get the first 1,500 OCPU hours and 9,000 GB hours per month for free for VM instances using the VM.Standard.A1.Flex shape (Arm processor). For Always Free tenancies, this is equivalent to 2 OCPUs and 12 GB of memory."*
   - 2 AMD-based Compute VMs (1 GB RAM each).
   - 200 GB total Block Volume storage.
 - **Conflicting Evidence & Reported Cuts:** In 2026, widespread developer reports cited a reduction from the historical 4 OCPUs and 24 GB of RAM. The official documentation dated 2026-06-12 provides conflicting evidence against those older 4 OCPU / 24 GB claims, confirming the current free entitlement is officially 1,500 OCPU-hours and 9,000 GB-hours (2 OCPUs and 12 GB of memory).
-- **Operational Constraints & Reclamation:**
-  1. **Regional Capacity Exhaustion:** Popular data centers frequently encounter `Out of capacity for shape VM.Standard.A1.Flex` during VM provisioning.
-  2. **Idle Instance Reclamation:** Oracle enforces an automated reclamation policy: *"Idle Always Free compute instances may be reclaimed by Oracle."* If over a 7-day window, the 95th percentile CPU utilization is $<20\%$, memory utilization is $<20\%$, and network transfer is $<20\%$, the VM is automatically reclaimed.
-- **Verdict:** Oracle does **not** sleep on short idles, but requires active utilization or an upgraded Pay-As-You-Go account ($0 charged if staying within free tier allowances) to prevent 7-day idle reclamation.
+- **7-Day Idle Reclamation Criteria:**
+  Oracle enforces an automated reclamation policy: *"Idle Always Free compute instances may be reclaimed by Oracle."* A VM or bare metal compute instance is deemed idle and marked for reclamation if, over any consecutive 7-day period, **all three** of the following metrics are true:
+  1. CPU utilization for the 95th percentile is $< 20\%$
+  2. Network utilization is $< 20\%$
+  3. Memory utilization is $< 20\%$
+- **Assessment of Viewer-Gated Stack Against 7-Day Idle Rule:**
+  - In a viewer-gated deployment where simulators pause during unviewed hours (23 hours/day), the entire application stack runs near idle for over 95% of the week.
+  - As a result, 95th-percentile CPU, network, and memory utilization will routinely measure below 5–10%, directly satisfying Oracle's 7-day idle reclamation criteria.
+  - Without artificial background load generation or continuous traffic, a viewer-gated PlantPulse deployment on OCI Always Free faces an acute risk of automated VM reclamation.
+- **Pay As You Go (PAYG) Suggestion & Billing Risk:**
+  - Oracle documentation suggests upgrading the account to Pay As You Go to exempt instances from idle reclamation (Always Free resources remain $0 as long as usage remains within free allowances).
+  - However, upgrading to PAYG introduces substantial **billing risk**: any misconfiguration, accidental provisioning of additional shapes or boot volumes, or network traffic spikes exceeding 10 TB will automatically bill the registered credit card without a hard spending cutoff.
 
 ### 3.3 HiveMQ Cloud Serverless Retirement
 - **Official Source:** [HiveMQ Cloud Serverless End of Life Documentation](https://docs.hivemq.com/hivemq-cloud/serverless-end-of-life.html) (retrieved 2026-10-22).
@@ -67,7 +85,7 @@ All provider specifications cited in this document were retrieved directly from 
 
 | Provider & Tier | RAM / CPU | Sleep & Idle Rules | Inbound WebSockets | Outbound MQTT Client | Bandwidth & Request Limits | Official Documentation URL | Verdict |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Oracle Cloud**<br>*(OCI Always Free)* | 2 Arm OCPUs<br>12 GB RAM | Reclaims if 95th percentile CPU/RAM/net < 20% over 7 days. Does NOT sleep on short idle. | Supported natively. Standard Linux socket handling. | Supported. Full unrestricted outbound TCP networking. | 10 TB egress/mo.<br>200 GB block storage. | [OCI Always Free](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm) | **Best Match.** Runs full Docker Compose stack unchanged. |
+| **Oracle Cloud**<br>*(OCI Always Free)* | 2 Arm OCPUs<br>12 GB RAM | Reclaims if 95th percentile CPU, RAM, and network are all < 20% over 7 days. | Supported natively. Standard Linux socket handling. | Supported. Full unrestricted outbound TCP networking. | 10 TB egress/mo.<br>200 GB block storage. | [OCI Always Free](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm) | **At Risk.** Viewer-gated idle triggers 7-day reclamation (<20% CPU/RAM/net). Upgrading to PAYG avoids reclamation but adds billing risk. |
 | **Koyeb**<br>*(Free Instance)* | 512 MB RAM<br>0.1 vCPU<br>2 GB SSD | Scales to zero after **1 hour** of inactivity. Active WebSocket held connection prevents scale-down. | Supported. Persistent WebSocket prevents scale-to-zero while browser is open. | Allowed on standard ports (1883/8883). Drops on sleep. | 100 GB outbound egress/mo.<br>No request caps. | [Koyeb Pricing](https://www.koyeb.com/pricing) <br> [Koyeb Scale to Zero](https://www.koyeb.com/docs/run-and-scale/scale-to-zero) | **Viable for Web/API.** Free Instance automatically scales down to zero after 1h idle. |
 | **Render**<br>*(Free Web Service)* | 512 MB RAM<br>0.1 vCPU | Spins down after **15 minutes** of no inbound traffic. Cold start ~50s. | Supported while active, but idle drops all connections. | Allowed while running; drops on spin down. | 750 free instance hours/month total across workspace.<br>5 GB egress/mo. | [Render Free Plans](https://render.com/docs/free) | **Fragile.** Sleep drops MQTT subscriber and resets in-memory caches. 1 continuous service max. |
 | **PythonAnywhere**<br>*(Beginner Free)* | 512 MB RAM<br>100s CPU/day | Does not sleep during day; apps expire if not renewed every 3 mos. | **Unsupported.** Only WSGI apps supported natively on free tier. | **Blocked.** Raw TCP sockets blocked. Only HTTP/HTTPS to whitelisted domains allowed. | 100 CPU-seconds/day (tarpitted afterwards). | [PythonAnywhere Accounts](https://help.pythonanywhere.com/pages/AccountTypes/) <br> [PythonAnywhere Allowlist](https://help.pythonanywhere.com/pages/API-allowlist/) | **Incompatible.** Cannot connect to MQTT broker and cannot serve ASGI WebSockets. |
@@ -86,7 +104,7 @@ All provider specifications cited in this document were retrieved directly from 
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Self-Hosted PostgreSQL**<br>*(on VM)* | Bounded only by disk (e.g. 50–200 GB) | Continuous 24/7 compute. Never scales to zero or pauses. | Configurable `max_connections` (e.g. 100–500). | Unlimited local network transfer between containers. | [PostgreSQL 16 Docs](https://www.postgresql.org/docs/16/) | **Best Match.** Zero risk of monthly quota cutoff or table-size read-only locks. |
 | **Supabase**<br>*(Free Plan)* | **500 MB** table & index data (read-only mode if exceeded) | Nano compute.<br>Pauses after **7 days of inactivity** (lack of database queries). | Direct: **60**.<br>Supavisor Pooler: **200** clients (port 6543 / 5432). | 5 GB uncached + 5 GB cached (10 GB/mo). | [Supabase Free Plan](https://supabase.com/docs/guides/platform/org-based-billing#free-plan) <br> [Supabase Pausing](https://supabase.com/docs/guides/platform/pausing) | **Viable.** Regular telemetry queries prevent pause. Aggressive retention needed for 500 MB. |
-| **Neon**<br>*(Free Tier)* | **1 GB** (up to 20 GB across 100 projects; 0.5 GiB conservative) | 100 Compute Unit (CU)-hours/mo.<br>Scales to zero after **5 min** of inactivity. | Pooled & direct connections. Suspends when 100 CU-hrs expire. | 5 GB egress/mo. | [Neon Plans](https://neon.tech/docs/introduction/plans) | **High Risk.** 100 CU-hours equals only ~4.1 days of continuous execution. Hard suspends. |
+| **Neon**<br>*(Free Tier)* | **1 GB** (exceeding cap causes all inserts/updates/deletes to fail) | 100 CU-hours/mo (0.25 CU for 400 h = ~16.7 days continuous). Scales to zero after **5 min** idle. | Pooled & direct connections. Suspends when 100 CU-hrs expire. | 5 GB egress/mo. | [Neon Plans](https://neon.tech/docs/introduction/plans) | **High Risk.** 100 CU-hours lasts only ~16.7 days at 0.25 CU min (and only ~4.1 days at 1 CU). Exceeding 1 GB breaks all writes. |
 
 ---
 
@@ -312,3 +330,4 @@ In `admin_auth.py`, the backend maintains fallback authentication via a static `
 
 1. **Koyeb $29 Pre-Authorization Hold:** Third-party community reports state that Koyeb charges a temporary $29 pre-authorization hold upon adding a payment card. Official documentation at `https://www.koyeb.com/pricing` confirms payment card verification to prevent fraud, but does not state the specific $29 amount. This claim is categorized as **Unverified**.
 2. **Neon 0.5 GiB Quota:** Historical developer posts and earlier tier benchmarks cited a 0.5 GiB (512 MiB) project quota. Official documentation at `https://neon.tech/docs/introduction/plans` explicitly documents 1 GB per project (up to 20 GB across 100 projects). The 0.5 GiB figure is retained strictly as an unverified legacy threshold or conservative baseline scenario.
+3. **Neon Continuous 0.25 CU Autoscaling Floor:** Neon officially documents that 100 CU-hours equals 400 hours of 0.25 CU compute (~16.67 days continuous). Whether an active IoT ingestion workload with periodic index updates and partition maintenance can sustainably run at the 0.25 CU minimum without triggering autoscaling bursts to 0.5–2.0 CU is **Unverified** without live production telemetry.
