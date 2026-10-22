@@ -1,7 +1,9 @@
 import argparse
 import base64
 import hashlib
+import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -16,6 +18,30 @@ if str(repo_root) not in sys.path:
 from typing import Any
 
 from plant_definitions import PlantDefinition, load_plants
+
+logger = logging.getLogger("mosquitto_auth")
+
+USERNAME_REGEX = re.compile(r"^[a-z0-9_]{3,64}$")
+PLANT_ID_REGEX = re.compile(r"^[a-z0-9_]{3,57}$")
+
+
+def is_valid_username(username: str) -> bool:
+    return bool(username and USERNAME_REGEX.fullmatch(username))
+
+
+def is_valid_plant_id(plant_id: str) -> bool:
+    return bool(plant_id and PLANT_ID_REGEX.fullmatch(plant_id))
+
+
+def is_valid_password(password: str) -> bool:
+    if not password:
+        return False
+    if any(c in password for c in ("\n", "\r")):
+        return False
+    for ch in password:
+        if ord(ch) < 32 or (127 <= ord(ch) <= 159):
+            return False
+    return True
 
 
 def _write_auth_file_atomic(dest_path: Path, content: str) -> None:
@@ -56,6 +82,9 @@ def generate_acl_content(
     backend_user: str = "backend_service",
 ) -> str:
     """Generate Mosquitto ACL file content strictly scoping topics by plant_id."""
+    if not is_valid_username(backend_user):
+        raise ValueError(f"Invalid backend MQTT username: {backend_user}")
+
     lines: list[str] = [
         "# PlantPulse Mosquitto ACL Configuration",
         "# Auto-generated from plant definitions. Do not edit manually.",
@@ -68,8 +97,27 @@ def generate_acl_content(
 
     for plant_id in sorted(plants.keys()):
         plant = plants[plant_id]
-        lines.append(f"# Plant: {plant.name} ({plant.plant_id})")
+        if not is_valid_plant_id(plant.plant_id):
+            logger.warning(
+                "Skipping invalid plant_id '%s' in ACL generation", plant.plant_id
+            )
+            continue
+        lines.append(f"# Plant: {plant.plant_id}")
         for cred in plant.mqtt_credentials:
+            if not is_valid_username(cred.username):
+                logger.warning(
+                    "Skipping invalid username '%s' for plant '%s' in ACL generation",
+                    cred.username,
+                    plant.plant_id,
+                )
+                continue
+            if cred.password is not None and not is_valid_password(cred.password):
+                logger.warning(
+                    "Skipping user '%s' with invalid password from ACL for plant '%s'",
+                    cred.username,
+                    plant.plant_id,
+                )
+                continue
             lines.append(f"user {cred.username}")
             lines.append(f"topic readwrite plants/{plant.plant_id}/#")
         lines.append("")
@@ -85,6 +133,13 @@ def generate_auth_files(
     backend_password: str | None = None,
 ) -> tuple[Path, Path]:
     """Generate Mosquitto password and ACL files from plants/*.json."""
+    if not is_valid_username(backend_user):
+        raise ValueError(f"Invalid backend MQTT username: {backend_user}")
+    if not backend_password or not is_valid_password(backend_password):
+        raise ValueError(
+            "Backend MQTT password is required and must not contain control characters (backend_password). Refusing to generate authentication with missing secret."
+        )
+
     plants = load_plants(plants_dir)
 
     # 1. Generate ACL file
@@ -93,21 +148,35 @@ def generate_auth_files(
 
     # 2. Generate password file
     passwd_lines: list[str] = []
-
-    if not backend_password:
-        raise ValueError(
-            "Backend MQTT password is required (backend_password). Refusing to generate authentication with missing secret."
-        )
     passwd_lines.append(f"{backend_user}:{hash_password(backend_password)}")
 
     for plant in sorted(plants.values(), key=lambda p: p.plant_id):
+        if not is_valid_plant_id(plant.plant_id):
+            logger.warning(
+                "Skipping invalid plant_id '%s' in passwd generation", plant.plant_id
+            )
+            continue
         for cred in plant.mqtt_credentials:
+            if not is_valid_username(cred.username):
+                logger.warning(
+                    "Skipping invalid username '%s' for plant '%s' in passwd generation",
+                    cred.username,
+                    plant.plant_id,
+                )
+                continue
             pwd = cred.password
             if not pwd:
                 raise ValueError(
                     f"Missing MQTT password for device '{cred.username}' (plant '{plant.plant_id}'). "
                     f"Configure DEVICE_{cred.username.upper()}_PASSWORD or appropriate environment variable."
                 )
+            if not is_valid_password(pwd):
+                logger.warning(
+                    "Skipping invalid password for device '%s' (plant '%s')",
+                    cred.username,
+                    plant.plant_id,
+                )
+                continue
             passwd_lines.append(f"{cred.username}:{hash_password(pwd)}")
 
     _write_auth_file_atomic(passwd_path, "\n".join(passwd_lines) + "\n")
@@ -190,9 +259,12 @@ def sync_broker_auth_from_db(
     if backend_password is None:
         backend_password = os.getenv("BACKEND_MQTT_PASSWORD")
 
-    if not backend_password:
+    if not backend_user or not is_valid_username(backend_user):
+        raise ValueError(f"Invalid backend MQTT username: {backend_user}")
+
+    if not backend_password or not is_valid_password(backend_password):
         raise ValueError(
-            "Backend MQTT password is required (BACKEND_MQTT_PASSWORD). Refusing to generate authentication with missing secret."
+            "Backend MQTT password is required and must not contain control characters (BACKEND_MQTT_PASSWORD). Refusing to generate authentication with missing secret."
         )
 
     cur = conn.cursor()
@@ -210,17 +282,45 @@ def sync_broker_auth_from_db(
     b_hash = _get_cached_backend_hash(backend_user, backend_password)
     passwd_lines.append(f"{backend_user}:{b_hash}")
 
+    creds_by_plant: dict[str, list[str]] = {}
     for row in cred_rows:
+        pid = row["plant_id"]
         u = row["username"]
         h = row["password_hash"]
+
+        if not is_valid_plant_id(pid):
+            logger.warning(
+                "Skipping invalid plant_id '%s' for credential '%s'",
+                pid,
+                u,
+            )
+            continue
+
+        if not is_valid_username(u):
+            logger.warning(
+                "Skipping invalid username '%s' for plant '%s'",
+                u,
+                pid,
+            )
+            continue
+
+        if not h or any(c in h for c in ("\n", "\r")):
+            logger.warning(
+                "Skipping invalid password_hash for user '%s' in plant '%s'",
+                u,
+                pid,
+            )
+            continue
+
         if not h.startswith("$7$"):
             h = hash_password_pbkdf2(h)
             cur.execute(
                 "UPDATE plant_credentials SET password_hash = %s WHERE plant_id = %s AND username = %s;",
-                (h, row["plant_id"], u),
+                (h, pid, u),
             )
             conn.commit()
         passwd_lines.append(f"{u}:{h}")
+        creds_by_plant.setdefault(pid, []).append(u)
 
     passwd_content = "\n".join(passwd_lines) + "\n"
 
@@ -235,16 +335,18 @@ def sync_broker_auth_from_db(
         "",
     ]
 
-    creds_by_plant: dict[str, list[str]] = {}
-    for row in cred_rows:
-        creds_by_plant.setdefault(row["plant_id"], []).append(row["username"])
-
     for p in plant_rows:
         pid = p["id"]
-        pname = p["name"]
+        if not is_valid_plant_id(pid):
+            logger.warning(
+                "Skipping invalid plant_id '%s' in plants table",
+                pid,
+            )
+            continue
+
         users = creds_by_plant.get(pid, [])
         if users:
-            acl_lines.append(f"# Plant: {pname} ({pid})")
+            acl_lines.append(f"# Plant: {pid}")
             for u in sorted(users):
                 acl_lines.append(f"user {u}")
                 acl_lines.append(f"topic readwrite plants/{pid}/#")
