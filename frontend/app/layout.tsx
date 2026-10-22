@@ -10,6 +10,11 @@ export const metadata: Metadata = {
   title: "PlantPulse — Industrial Operations & Quality Dashboard",
   description:
     "Real-time manufacturing telemetry, OEE efficiency, and unit quality traceability",
+  icons: {
+    icon: "/icon.svg",
+    shortcut: "/icon.svg",
+    apple: "/icon.svg",
+  },
 };
 
 export default function RootLayout({

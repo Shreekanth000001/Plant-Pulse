@@ -3,8 +3,10 @@
 import React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useUser } from "@clerk/nextjs";
 import { useFactoryWebSocket } from "../../context/WebSocketContext";
 import { isModuleEnabled } from "../../lib/plant-utils";
+import { useMounted } from "../../lib/useMounted";
 
 interface SidebarProps {
   isOpen?: boolean;
@@ -28,6 +30,8 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const pathname = usePathname();
   const { status, machines, plantDefinition, selectedPlantId } =
     useFactoryWebSocket();
+  const { isSignedIn, user } = useUser();
+  const mounted = useMounted();
 
   const machineList = Object.values(machines);
   const runningCount = machineList.filter(
@@ -135,7 +139,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                 </span>
               </div>
               <div className="text-[11px] text-slate-500">
-                Industrial IoT Cockpit
+                Plant Telemetry & Operations
               </div>
             </div>
           </Link>
@@ -239,18 +243,35 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
 
         {/* Bottom: Operator Shift Profile */}
         <div className="p-4 border-t border-slate-200 bg-slate-50/70 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-xs font-bold text-white shadow-xs">
-              SC
-            </div>
-            <div>
-              <div className="text-xs font-semibold text-slate-900">Shift Lead</div>
-              <div className="text-[10px] text-slate-500">
-                {plantDefinition?.timezone || "UTC"} • Active
+          <div className="flex items-center gap-3 min-w-0">
+            {mounted && isSignedIn && user?.imageUrl ? (
+              <img
+                src={user.imageUrl}
+                alt={user.fullName || "User avatar"}
+                className="w-8 h-8 rounded-full object-cover shadow-xs border border-slate-200 shrink-0"
+              />
+            ) : (
+              <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-xs font-bold text-white shadow-xs shrink-0">
+                {mounted && isSignedIn && user?.firstName
+                  ? `${user.firstName[0]}${user.lastName ? user.lastName[0] : ""}`.toUpperCase()
+                  : "OP"}
+              </div>
+            )}
+            <div className="min-w-0">
+              <div className="text-xs font-semibold text-slate-900 truncate max-w-[130px]">
+                {mounted && isSignedIn && user
+                  ? user.fullName ||
+                    user.firstName ||
+                    user.primaryEmailAddress?.emailAddress?.split("@")[0] ||
+                    "Operator"
+                  : "Plant Operator"}
+              </div>
+              <div className="text-[10px] text-slate-500 truncate max-w-[130px]">
+                Plant: {plantDefinition?.timezone || "UTC"}
               </div>
             </div>
           </div>
-          <div className="w-2 h-2 rounded-full bg-emerald-500 ring-4 ring-emerald-100" />
+          <div className="w-2 h-2 rounded-full bg-emerald-500 ring-4 ring-emerald-100 shrink-0" />
         </div>
       </aside>
     </>

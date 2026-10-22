@@ -159,7 +159,8 @@ PlantPulse enables authenticated users to register and manage personal manufactu
 - **Private Access & Seamless Ownership:** Newly registered plants are private by default. Plant owners can open the live dashboard and connect to WebSocket telemetry streams directly using their Clerk session JWT without entering a viewer token (`verify_plant_viewer` in [`main.py`](main.py#L299-L327)). External guests require the viewer token to access the facility.
 - **Connecting a Device (Internal Broker Notice):**
   - **Network Isolation:** The Mosquitto broker runs internally within the Docker bridge network (port 1883 is not exposed on the host interface). Real external physical devices cannot connect directly today.
-  - **Publishing Telemetry:** Telemetry can be published directly from within the Docker environment using the container CLI:
+  - **Initial Machine State (`OFFLINE`):** By design, machines in newly registered facilities initialize in `OFFLINE` status. The built-in background simulator daemon (`demo.simulator.runner`) exclusively generates synthetic data for the two pre-seeded demo facilities (`plant_demo_membrane` and `plant_water_district_9`). Custom self-service facilities require telemetry published by edge devices, the CLI publisher, or simulation scripts.
+  - **Publishing Single Telemetry Readings:** Telemetry can be published directly from within the Docker environment using the container CLI:
     ```bash
     docker compose exec broker mosquitto_pub \
       -u device_<plant_id> \
@@ -167,6 +168,23 @@ PlantPulse enables authenticated users to register and manage personal manufactu
       -t 'plants/<plant_id>/assets/<machine_code>/telemetry' \
       -m '{"schema_version":"1.0","plant_id":"<plant_id>","asset_id":"<machine_code>","device_timestamp":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'","message_id":"msg-001","payload":{"status":"RUNNING","metrics":{"<signal_code>":42.0}}}'
     ```
+  - **Streaming Continuous Telemetry (30-Second Loop):**
+    To simulate continuous live sensor streams, update the dashboard, and populate the signal history trend graph:
+    ```bash
+    for i in $(seq 1 30); do
+      ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+      val=$(awk -v i="$i" 'BEGIN{srand(); printf "%.2f", 40.0 + sin(i/3)*5 + (rand()*2)}')
+      docker compose exec -T broker mosquitto_pub \
+        -u "device_<plant_id>" \
+        -P "<password>" \
+        -t "plants/<plant_id>/assets/<machine_code>/telemetry" \
+        -m "{\"schema_version\":\"1.0\",\"plant_id\":\"<plant_id>\",\"asset_id\":\"<machine_code>\",\"source\":\"simulation\",\"device_timestamp\":\"$ts\",\"message_id\":\"msg-$i\",\"payload\":{\"status\":\"RUNNING\",\"metrics\":{\"<signal_code>\":$val}}}"
+      echo "[$i/30] Sent $ts: <signal_code>=$val"
+      sleep 1
+    done
+    ```
+  - **Differentiating Simulated vs. Real Hardware Telemetry:**
+    In industrial IoT deployments, synthetic testing streams are differentiated from physical device data by attaching a `"source"` attribute to the envelope (`"source": "simulation"` vs `"source": "hardware"`). PlantPulse's ingestion engine preserves all top-level envelope attributes in PostgreSQL (`telemetry_history.raw_payload`), allowing downstream query APIs, alarm rules, and analytics pipelines to isolate or badge synthetic test streams without corrupting production equipment audits.
   - **Topic Pattern:** Validated by `topic_router.py`: `plants/{plant_id}/assets/{machine_code}/telemetry`.
   - **Payload Schema:** Validated by `ingest.py`: requires `schema_version: "1.0"`, matching `plant_id` and `asset_id`, valid ISO 8601 UTC `device_timestamp` (bounded within -2h late and +5m future), non-empty `message_id`, and a `payload` dictionary with `status` and `metrics`.
 - **Secret Rotation:** Owners can rotate device credentials (`POST /api/me/plants/{plant_id}/credentials/rotate`) and viewer tokens (`POST /api/me/plants/{plant_id}/viewer-token/rotate`). Rotated secrets send `Cache-Control: no-store`, immediately rewrite Mosquitto auth files, and invalidate previous tokens.

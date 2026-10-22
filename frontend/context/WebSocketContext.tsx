@@ -233,6 +233,12 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         setPlantDefinition(null);
         setMachinesLatest([]);
         setMachines({});
+        setRecentQcResults([]);
+        setHandoffs({
+          housingToCasting: 0,
+          castingToAssembly: 0,
+          assemblyToQc: 0,
+        });
       });
       return;
     }
@@ -243,6 +249,13 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
       setIsTokenRequired(false);
       setPollingActive(false);
       setReconnectAttempt(0);
+      setRecentQcResults([]);
+      setHandoffs({
+        housingToCasting: 0,
+        castingToAssembly: 0,
+        assemblyToQc: 0,
+      });
+      setMachines({});
     });
     reconnectDelayRef.current = INITIAL_RECONNECT_DELAY_MS;
 

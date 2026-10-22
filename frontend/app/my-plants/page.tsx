@@ -22,6 +22,7 @@ import { AdminCredentialsModal } from "../../components/admin/AdminCredentialsMo
 import { AdminDeleteModal } from "../../components/admin/AdminDeleteModal";
 import { PlantCreateForm } from "../../components/admin/PlantCreateForm";
 import { safeLocalStorageSet } from "../../lib/plant-utils";
+import { useMounted } from "../../lib/useMounted";
 
 export default function MyPlantsPage() {
   const router = useRouter();
@@ -33,6 +34,7 @@ export default function MyPlantsPage() {
   const [isLoadingPlants, setIsLoadingPlants] = useState(true);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const mounted = useMounted();
   const [showCreateForm, setShowCreateForm] = useState(false);
 
   // Credential Modal State
@@ -270,7 +272,7 @@ export default function MyPlantsPage() {
 
   const isAtQuota = !canCreatePlant(plants.length, 3);
 
-  if (!isLoaded || !isSignedIn) {
+  if (!mounted || !isLoaded || !isSignedIn) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
         <div className="w-8 h-8 rounded-full border-2 border-blue-600 border-t-transparent animate-spin" />

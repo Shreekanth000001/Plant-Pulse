@@ -130,6 +130,7 @@ export default function LiveOverviewPage() {
           machine={selectedMachine}
           machineDef={selectedMachineDef}
           plantId={selectedPlantId}
+          hasTraceability={hasTraceability}
           onClose={() => setSelectedMachineId(null)}
         />
       )}
@@ -416,6 +417,7 @@ export default function LiveOverviewPage() {
                           key={m.machine_id}
                           machine={m}
                           machineDef={areaMachinesDef.find((d) => d.machine_code === m.machine_id)}
+                          hasTraceability={hasTraceability}
                           onInspect={() => setSelectedMachineId(m.machine_id)}
                         />
                       ))}
@@ -461,7 +463,7 @@ export default function LiveOverviewPage() {
       </div>
 
       {/* 4. Real-Time Factory Floor Event Stream (Audit Log) */}
-      <LiveEventTicker />
+      {hasTraceability && <LiveEventTicker />}
     </div>
   );
 }
