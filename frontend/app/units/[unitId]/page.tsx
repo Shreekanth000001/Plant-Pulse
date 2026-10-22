@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useMemo, Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useParams } from "next/navigation";
+import { useAuth } from "@clerk/nextjs";
 import { fetchUnitHistory, ApiError } from "../../../lib/api";
 import { safeSessionStorageGet } from "../../../lib/plant-utils";
 import { TokenEntryCard } from "../../../components/telemetry/TokenEntryCard";
@@ -95,6 +96,7 @@ function UnitDetailContent() {
       ? rawParams.unitId[0]
       : "";
 
+  const { isSignedIn, getToken } = useAuth();
   const {
     machines,
     selectedPlantId,
@@ -126,21 +128,28 @@ function UnitDetailContent() {
     if (!unitId) return;
     let isMounted = true;
 
-    const token = safeSessionStorageGet<string | null>(
-      `plantpulse_viewer_token_${selectedPlantId}`,
-      null
-    );
+    const loadUnit = async () => {
+      let token = safeSessionStorageGet<string | null>(
+        `plantpulse_viewer_token_${selectedPlantId}`,
+        null
+      );
+      if (!token && isSignedIn) {
+        try {
+          token = await getToken();
+        } catch (e) {
+          console.warn("Failed to get Clerk token for unit detail:", e);
+        }
+      }
 
-    fetchUnitHistory(selectedPlantId, unitId, token)
-      .then((data) => {
+      try {
+        const data = await fetchUnitHistory(selectedPlantId, unitId, token);
         if (!isMounted) return;
         setUnit(data);
         setNotFound(false);
         setErrorMessage(null);
         setAuthRequired(false);
         setLoading(false);
-      })
-      .catch((err: unknown) => {
+      } catch (err: unknown) {
         if (!isMounted) return;
         if (err instanceof ApiError && err.status === 401) {
           setAuthRequired(true);
@@ -164,12 +173,14 @@ function UnitDetailContent() {
           setErrorMessage(message || "Failed to load unit history");
         }
         setLoading(false);
-      });
+      }
+    };
 
+    loadUnit();
     return () => {
       isMounted = false;
     };
-  }, [unitId, activeMachine, selectedPlantId]);
+  }, [unitId, activeMachine, selectedPlantId, isSignedIn, getToken]);
 
   // Polling for in-progress units to auto-update when stage finishes
   useEffect(() => {

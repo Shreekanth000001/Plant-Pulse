@@ -177,6 +177,13 @@ PlantPulse enables authenticated users to register and manage personal manufactu
       sleep 1
     done
     ```
+  - **Simulating Full Production Line with Serialized Units:**
+    To simulate physical products (e.g. bottles or parts) advancing along the line with real-time unit tracking, stage completion events, and optical quality inspections:
+    ```bash
+    # Runs the multi-station simulator generating continuous telemetry, serialized units, and QC verdicts
+    ./scripts/simulate_juice_plant.sh 30 "<password>"
+    ```
+    This script coordinates conveyor progression across all stations, emits MES stage transitions on `plants/<id>/modules/traceability/stage_event`, reports end-of-line quality inspections on `plants/<id>/modules/quality/qc_result`, and tracks buffer queues on `plants/<id>/modules/traceability/queue_depths`.
   - **Differentiating Simulated vs. Real Hardware Telemetry:**
     In industrial IoT deployments, synthetic testing streams are differentiated from physical device data by attaching a `"source"` attribute to the envelope (`"source": "simulation"` vs `"source": "hardware"`). PlantPulse's ingestion engine preserves all top-level envelope attributes in PostgreSQL (`telemetry_history.raw_payload`), allowing downstream query APIs, alarm rules, and analytics pipelines to isolate or badge synthetic test streams without corrupting production equipment audits.
   - **Topic Pattern:** Validated by `topic_router.py`: `plants/{plant_id}/assets/{machine_code}/telemetry`.

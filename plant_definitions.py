@@ -406,9 +406,14 @@ def load_plants_from_db(conn: Any) -> dict[str, PlantDefinition]:
             ]
 
             enabled_modules = (
-                ["core", "alarms", "product_traceability", "quality_inspection"]
-                if p_id == "plant_demo_membrane"
-                else ["core", "alarms"]
+                ["core", "alarms"]
+                if p_id == "plant_water_district_9"
+                else [
+                    "core",
+                    "alarms",
+                    "product_traceability",
+                    "quality_inspection",
+                ]
             )
             plants[p_id] = PlantDefinition(
                 plant_id=p_id,

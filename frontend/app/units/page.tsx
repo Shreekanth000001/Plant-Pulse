@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { useAuth } from "@clerk/nextjs";
 import { fetchRecentUnits, getErrorMessage, ApiError } from "../../lib/api";
 import { safeSessionStorageGet } from "../../lib/plant-utils";
 import { TokenEntryCard } from "../../components/telemetry/TokenEntryCard";
@@ -47,6 +48,7 @@ const STAGE_LABELS: Record<string, { label: string; icon: React.ReactNode }> = {
 
 export default function UnitsIndexPage() {
   const router = useRouter();
+  const { isSignedIn, getToken } = useAuth();
   const {
     machines,
     selectedPlantId,
@@ -69,10 +71,17 @@ export default function UnitsIndexPage() {
       setLoading(true);
       setError(null);
       setAuthRequired(false);
-      const token = safeSessionStorageGet<string | null>(
+      let token = safeSessionStorageGet<string | null>(
         `plantpulse_viewer_token_${selectedPlantId}`,
         null
       );
+      if (!token && isSignedIn) {
+        try {
+          token = await getToken();
+        } catch (e) {
+          console.warn("Failed to get Clerk token for units:", e);
+        }
+      }
       const data = await fetchRecentUnits(selectedPlantId, 30, token);
       setRecentUnits(data);
     } catch (err: unknown) {
@@ -85,22 +94,27 @@ export default function UnitsIndexPage() {
     } finally {
       setLoading(false);
     }
-  }, [selectedPlantId]);
+  }, [selectedPlantId, isSignedIn, getToken]);
 
   useEffect(() => {
     let isMounted = true;
-    const token = safeSessionStorageGet<string | null>(
-      `plantpulse_viewer_token_${selectedPlantId}`,
-      null
-    );
-
-    fetchRecentUnits(selectedPlantId, 30, token)
-      .then((data) => {
+    (async () => {
+      let token = safeSessionStorageGet<string | null>(
+        `plantpulse_viewer_token_${selectedPlantId}`,
+        null
+      );
+      if (!token && isSignedIn) {
+        try {
+          token = await getToken();
+        } catch (e) {
+          console.warn("Failed to get Clerk token for units:", e);
+        }
+      }
+      try {
+        const data = await fetchRecentUnits(selectedPlantId, 30, token);
         if (!isMounted) return;
         setRecentUnits(data);
-        setLoading(false);
-      })
-      .catch((err: unknown) => {
+      } catch (err: unknown) {
         if (!isMounted) return;
         if (err instanceof ApiError && err.status === 401) {
           setAuthRequired(true);
@@ -108,13 +122,14 @@ export default function UnitsIndexPage() {
         } else {
           setError(getErrorMessage(err, "Failed to load recent units"));
         }
-        setLoading(false);
-      });
-
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    })();
     return () => {
       isMounted = false;
     };
-  }, [selectedPlantId]);
+  }, [selectedPlantId, isSignedIn, getToken]);
 
   // Extract currently active units from live machines telemetry
   const activeInFlightUnits = useMemo(() => {
