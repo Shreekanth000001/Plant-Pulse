@@ -8,6 +8,7 @@ import React, {
   useState,
   useCallback,
 } from "react";
+import { useAuth } from "@clerk/nextjs";
 import {
   getWsUrl,
   createWsTicket,
@@ -110,6 +111,13 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const [isTokenRequired, setIsTokenRequired] = useState(false);
   const [pollingActive, setPollingActive] = useState(false);
 
+  const { isSignedIn, isLoaded, getToken } = useAuth();
+  const clerkAuthFailedRef = useRef<Record<string, boolean>>({});
+
+  useEffect(() => {
+    clerkAuthFailedRef.current = {};
+  }, [isSignedIn]);
+
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -140,6 +148,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
 
   const submitViewerToken = useCallback(
     (token: string) => {
+      delete clerkAuthFailedRef.current[selectedPlantId];
       safeSessionStorageSet(`plantpulse_viewer_token_${selectedPlantId}`, token);
       setTokenMap((prev) => ({ ...prev, [selectedPlantId]: token }));
       setTokenError(null);
@@ -149,8 +158,10 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   );
 
   const clearViewerToken = useCallback(() => {
+    clerkAuthFailedRef.current[selectedPlantId] = true;
     safeSessionStorageRemove(`plantpulse_viewer_token_${selectedPlantId}`);
     setTokenMap((prev) => {
+      if (!prev[selectedPlantId]) return prev;
       const next = { ...prev };
       delete next[selectedPlantId];
       return next;
@@ -208,7 +219,12 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     );
 
     // If plant summary indicates viewer_token is required but no cached token exists:
-    if (currentPlantSummary?.has_viewer_token && !cachedToken) {
+    // When signed out or when Clerk JWT previously returned 401 for this plant, show token prompt immediately.
+    if (
+      currentPlantSummary?.has_viewer_token &&
+      !cachedToken &&
+      ((isLoaded && !isSignedIn) || clerkAuthFailedRef.current[selectedPlantId])
+    ) {
       queueMicrotask(() => {
         if (!isCurrent) return;
         setStatus("token_required");
@@ -230,10 +246,32 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     });
     reconnectDelayRef.current = INITIAL_RECONNECT_DELAY_MS;
 
-    const handleAuthFailure = (errMsg: string) => {
+    const resolveEffectiveToken = async (): Promise<{
+      token: string | null;
+      isClerk: boolean;
+    }> => {
+      if (cachedToken) {
+        return { token: cachedToken, isClerk: false };
+      }
+      if (isSignedIn && !clerkAuthFailedRef.current[selectedPlantId]) {
+        try {
+          const jwt = await getToken();
+          if (jwt) return { token: jwt, isClerk: true };
+        } catch (err) {
+          console.warn("Failed to fetch Clerk JWT for plant auth:", err);
+        }
+      }
+      return { token: null, isClerk: false };
+    };
+
+    const handleAuthFailure = (errMsg: string, isClerk?: boolean) => {
       if (!isCurrent) return;
+      if (isClerk) {
+        clerkAuthFailedRef.current[selectedPlantId] = true;
+      }
       safeSessionStorageRemove(`plantpulse_viewer_token_${selectedPlantId}`);
       setTokenMap((prev) => {
+        if (!prev[selectedPlantId]) return prev;
         const next = { ...prev };
         delete next[selectedPlantId];
         return next;
@@ -250,13 +288,23 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
 
     // Load definition and initial machines
     const initPlant = async () => {
+      let isClerkAttempt = false;
       try {
+        const { token: tokenToUse, isClerk } = await resolveEffectiveToken();
+        isClerkAttempt = isClerk;
+        if (!isCurrent) return;
+
+        if (currentPlantSummary?.has_viewer_token && !tokenToUse) {
+          handleAuthFailure("Viewer token required for streaming access.", isClerk);
+          return;
+        }
+
         const [def, latest] = await Promise.all([
-          fetchPlantDefinition(selectedPlantId, cachedToken).catch((err) => {
+          fetchPlantDefinition(selectedPlantId, tokenToUse).catch((err) => {
             if (err instanceof ApiError && err.status === 401) throw err;
             return null;
           }),
-          fetchPlantMachinesLatest(selectedPlantId, cachedToken).catch((err) => {
+          fetchPlantMachinesLatest(selectedPlantId, tokenToUse).catch((err) => {
             if (err instanceof ApiError && err.status === 401) throw err;
             return [];
           }),
@@ -298,7 +346,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         }
 
         if (def && def.enabled_modules?.includes("product_traceability")) {
-          fetchPlantQueueDepths(selectedPlantId, cachedToken)
+          fetchPlantQueueDepths(selectedPlantId, tokenToUse)
             .then((depths) => {
               if (isCurrent && depths) {
                 setHandoffs(mapBackendQueueDepths(depths));
@@ -316,7 +364,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         }
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
-          handleAuthFailure("Invalid or expired viewer token. Please re-enter.");
+          handleAuthFailure("Invalid or expired viewer token. Please re-enter.", isClerkAttempt);
           return;
         }
         console.warn("Failed to initialize plant definition:", err);
@@ -330,18 +378,23 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
       if (typeof window === "undefined" || isCleanedUpRef.current || !isCurrent) return;
 
       let wsTicket: string | null = null;
-      if (currentPlantSummary?.has_viewer_token || cachedToken) {
-        if (!cachedToken) {
-          handleAuthFailure("Viewer token required for streaming access.");
+      let isClerkAttempt = false;
+      const { token: tokenToUse, isClerk } = await resolveEffectiveToken();
+      isClerkAttempt = isClerk;
+      if (!isCurrent) return;
+
+      if (currentPlantSummary?.has_viewer_token || tokenToUse) {
+        if (!tokenToUse) {
+          handleAuthFailure("Viewer token required for streaming access.", isClerkAttempt);
           return;
         }
         try {
-          const res = await createWsTicket(selectedPlantId, cachedToken);
+          const res = await createWsTicket(selectedPlantId, tokenToUse);
           if (isCleanedUpRef.current || !isCurrent) return;
           wsTicket = res.ticket;
         } catch (err) {
           if (err instanceof ApiError && err.status === 401) {
-            handleAuthFailure("Invalid or expired viewer token. Please re-enter.");
+            handleAuthFailure("Invalid or expired viewer token. Please re-enter.", isClerkAttempt);
             return;
           }
           scheduleReconnect();
@@ -549,7 +602,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
           if (isCleanedUpRef.current || !isCurrent) return;
 
           if (event.code === 4401) {
-            handleAuthFailure("Viewer authentication failed (4401). Please re-enter token.");
+            handleAuthFailure("Viewer authentication failed (4401). Please re-enter token.", isClerkAttempt);
             return;
           }
 
@@ -598,7 +651,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         wsRef.current = null;
       }
     };
-  }, [selectedPlantId, tokenMap, plantsList]);
+  }, [selectedPlantId, tokenMap, plantsList, isSignedIn, isLoaded, getToken]);
 
   return (
     <WebSocketContext.Provider

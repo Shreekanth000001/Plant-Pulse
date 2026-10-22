@@ -5,8 +5,9 @@ import type { OneTimeDeviceCredential } from "../../lib/admin-api";
 
 interface AdminCredentialsModalProps {
   isOpen: boolean;
-  source: "create" | "rotate" | null;
-  credentials: OneTimeDeviceCredential[] | null;
+  source: "create" | "rotate" | "viewer-token-rotate" | null;
+  credentials?: OneTimeDeviceCredential[] | null;
+  viewerToken?: string | null;
   brokerReloaded?: boolean;
   onClose: () => void;
 }
@@ -15,24 +16,34 @@ export function AdminCredentialsModal({
   isOpen,
   source,
   credentials,
+  viewerToken,
   brokerReloaded,
   onClose,
 }: AdminCredentialsModalProps) {
   const [copied, setCopied] = useState(false);
   const [showPassword, setShowPassword] = useState(true);
 
-  if (!isOpen || !credentials || credentials.length === 0) {
+  if (!isOpen || ((!credentials || credentials.length === 0) && !viewerToken)) {
     return null;
   }
 
   const handleCopy = async () => {
     try {
-      const formatted = credentials
-        .map(
-          (c, idx) =>
-            `# Credential ${idx + 1}\nMQTT_USER=${c.username}\nMQTT_PASSWORD=${c.password || ""}\nMQTT_CLIENT_ID=${c.client_id}`
-        )
-        .join("\n\n");
+      const parts: string[] = [];
+      if (credentials && credentials.length > 0) {
+        parts.push(
+          credentials
+            .map(
+              (c, idx) =>
+                `# Credential ${idx + 1}\nMQTT_USER=${c.username}\nMQTT_PASSWORD=${c.password || ""}\nMQTT_CLIENT_ID=${c.client_id}`
+            )
+            .join("\n\n")
+        );
+      }
+      if (viewerToken) {
+        parts.push(`# Viewer Token\nVIEWER_TOKEN=${viewerToken}`);
+      }
+      const formatted = parts.join("\n\n");
 
       if (typeof navigator !== "undefined" && navigator.clipboard) {
         await navigator.clipboard.writeText(formatted);
@@ -45,9 +56,11 @@ export function AdminCredentialsModal({
   };
 
   const title =
-    source === "rotate"
+    source === "viewer-token-rotate"
+      ? "Rotated Viewer Token"
+      : source === "rotate"
       ? "Rotated Device Credentials"
-      : "One-Time Initial Device Credentials";
+      : "One-Time Initial Device Credentials & Viewer Token";
 
   return (
     <div
@@ -98,7 +111,7 @@ export function AdminCredentialsModal({
         )}
 
         <div className="flex flex-col gap-4 max-h-[45vh] overflow-y-auto pr-1">
-          {credentials.map((cred, idx) => (
+          {credentials && credentials.map((cred, idx) => (
             <div
               key={cred.username + idx}
               className="bg-slate-50 border border-slate-200 rounded-2xl p-4 flex flex-col gap-2.5 font-mono text-xs"

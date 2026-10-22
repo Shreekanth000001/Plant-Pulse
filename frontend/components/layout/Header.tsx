@@ -291,6 +291,16 @@ export function Header({ onToggleSidebar }: HeaderProps) {
               </SignUpButton>
             </Show>
             <Show when="signed-in">
+              <Link
+                href="/my-plants"
+                className={`px-2.5 py-1 text-xs font-semibold rounded-lg border transition-colors ${
+                  pathname.startsWith("/my-plants")
+                    ? "bg-blue-50 text-blue-700 border-blue-200"
+                    : "text-slate-700 bg-slate-100 hover:bg-slate-200 border-slate-200"
+                }`}
+              >
+                My plants
+              </Link>
               <UserButton />
             </Show>
           </div>
