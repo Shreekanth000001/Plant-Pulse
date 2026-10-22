@@ -1,11 +1,5 @@
 # PlantPulse
 
-<!-- ===================================================================== -->
-<!-- INTRO BLOCK (User to write)                                           -->
-<!-- Write your one-sentence project definition and 2-sentence rationale   -->
-<!-- here. Plain words, no umbrella terms like "backend".                  -->
-<!-- ===================================================================== -->
-
 PlantPulse is a telemetry platform for simulated industrial plants. I built it to gain hands-on experience with MQTT, FastAPI, SQLite, WebSockets, Next.js, Docker Compose, pytest, and GitHub Actions. A Python simulator publishes machine data over MQTT, and a FastAPI service stores it and serves it to a Next.js dashboard. It models an 8040 membrane plant with four stages (housing, casting, assembly, and quality control) and extensible multi-plant definitions like municipal water booster stations. The devices are simulated because I don't have access to real industrial equipment.
 
 ## Dashboard & System Views
