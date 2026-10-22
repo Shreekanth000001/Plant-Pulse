@@ -122,6 +122,17 @@ GitHub Issue #102 was updated via `gh issue edit 102` with this verified root ca
 | **Signals Per Machine (Schema)** | 100 signals | `MAX_SIGNALS_PER_MACHINE` ([`plant_definitions.py#L18`](file:///home/critic-coder/project/PlantPulse/plant_definitions.py#L18)) | 100 | Enforced at plant definition validation |
 | **Signals Per Plant (Schema)** | 500 signals | `MAX_SIGNALS_PER_PLANT` ([`plant_definitions.py#L19`](file:///home/critic-coder/project/PlantPulse/plant_definitions.py#L19)) | 500 | Enforced at plant registration / import |
 
+### 2.1 Target Enforced Limits Specification
+
+| Enforcement Layer | Parameter | Proposed Cap | Implementation Location | Failure Action |
+| :--- | :--- | :--- | :--- | :--- |
+| **MQTT Broker** | `max_packet_size` | 65,536 bytes (64 KB) | [`docker/mosquitto.conf`](file:///home/critic-coder/project/PlantPulse/docker/mosquitto.conf) | Broker drops packet / disconnects client exceeding 64 KB |
+| **FastAPI Admin API** | Request Body Size | 1,048,576 bytes (1 MB) | `AdminBodyLimitMiddleware` ([`main.py`](file:///home/critic-coder/project/PlantPulse/main.py)) | HTTP 413 Payload Too Large (Stream aborted) |
+| **Ingest Raw Payload** | `MAX_INGEST_PAYLOAD_BYTES` | 65,536 bytes (64 KB) | `IngestEngine.process_message()` ([`ingest.py`](file:///home/critic-coder/project/PlantPulse/ingest.py)) | Message discarded before JSON parse; log warning |
+| **Ingest Envelope** | `MAX_METRICS_PER_ENVELOPE`| 100 metrics | `_validate_envelope()` ([`ingest.py`](file:///home/critic-coder/project/PlantPulse/ingest.py)) | Reject envelope (`TOO_MANY_METRICS`); 0 rows inserted |
+| **Plant Catalog** | Machine Signal Cap | 100 signals | `MAX_SIGNALS_PER_MACHINE` ([`plant_definitions.py`](file:///home/critic-coder/project/PlantPulse/plant_definitions.py)) | Pydantic ValidationError (422 Unprocessable) |
+| **Plant Catalog** | Plant Signal Cap | 500 signals | `MAX_SIGNALS_PER_PLANT` ([`plant_definitions.py`](file:///home/critic-coder/project/PlantPulse/plant_definitions.py)) | Pydantic ValidationError (422 Unprocessable) |
+
 ---
 
 ## 3. Architecture Options & Trade-offs
@@ -183,8 +194,16 @@ flowchart TD
   ```
 
 ### 3.6 Packet & Metric Size Safeguards
-1. **Mosquitto Packet Cap:** Add `max_packet_size 65536` (64 KB) to [`docker/mosquitto.conf`](file:///home/critic-coder/project/PlantPulse/docker/mosquitto.conf). Telemetry envelopes are ~1–2 KB; 64 KB provides 30x headroom while preventing memory exhaustion.
-2. **Metrics Count Cap:** In `ingest.py`, enforce `MAX_METRICS_PER_ENVELOPE = 100`. If `len(metrics) > 100`, reject the message (`TOO_MANY_METRICS`).
+1. **Mosquitto Packet Cap (`max_packet_size`):**
+   - In [`docker/mosquitto.conf`](file:///home/critic-coder/project/PlantPulse/docker/mosquitto.conf), `max_packet_size` is currently **unset**, leaving Mosquitto to accept messages up to the MQTT protocol maximum of 268,435,455 bytes (~256 MB).
+   - **Fix:** Add `max_packet_size 65536` (64 KB). Normal telemetry envelopes are ~1–2 KB; 64 KB provides 30x headroom for batch metrics while preventing edge buffer exhaustion and memory exhaustion DoS attacks on the broker.
+2. **Ingest Raw Payload Byte Cap (`MAX_INGEST_PAYLOAD_BYTES`):**
+   - In `ingest.py`, enforce `MAX_INGEST_PAYLOAD_BYTES = 65536` (64 KB).
+   - If an MQTT payload exceeds 64 KB, `IngestEngine.process_message()` drops the payload immediately prior to `json.loads()` deserialization, mitigating parser memory pressure even if the broker limit is misconfigured or bypassed.
+3. **Metrics Count Cap (`MAX_METRICS_PER_ENVELOPE`):**
+   - In `ingest.py`, enforce `MAX_METRICS_PER_ENVELOPE = 100`.
+   - In `_validate_envelope()`, check `metrics = payload_body.get("metrics") or {}`. If `len(metrics) > MAX_METRICS_PER_ENVELOPE`, reject the entire envelope (`is_valid = False`, `reason = "TOO_MANY_METRICS"`).
+   - Prevents high-cardinality row amplification attacks where an adversary sends thousands of dict keys in a single message to bloat `telemetry_values`.
 
 ---
 
