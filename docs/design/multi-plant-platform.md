@@ -917,7 +917,7 @@ class PlantDefinition(BaseModel):
   "mqtt_credentials": [
     {
       "username": "device_plant_demo_membrane",
-      "password": "demo_membrane_secure_token_123",
+      "password": "demo_membrane_secure_token_123",  // public demo value
       "client_id": "client_demo_membrane_sim"
     }
   ],
@@ -1186,12 +1186,12 @@ class PlantDefinition(BaseModel):
   "plant_id": "plant_water_district_9",
   "name": "District 9 Water Booster Station",
   "timezone": "America/New_York",
-  "viewer_token": "district9_read_secret_token_889",
+  "viewer_token": "district9_read_secret_token_889",  // public demo value
   "enabled_modules": ["core", "alarms"],
   "mqtt_credentials": [
     {
       "username": "device_plant_water_district_9",
-      "password": "water_district_edge_key_771",
+      "password": "water_district_edge_key_771",  // public demo value
       "client_id": "gateway_district9_cellular"
     }
   ],

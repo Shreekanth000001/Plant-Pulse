@@ -130,7 +130,7 @@ if not hmac.compare_digest(token_hash, expected_hash):
     viewer_rate_limiter.record_failure(ip)
     raise HTTPException(status_code=401, detail="Unauthorized")
 ```
-It computes `hashlib.sha256(token)` against `plant.viewer_token_hash`. It **does not inspect Clerk JWT claims** or verify whether the caller holds administrative privileges. Consequently, a `platform_admin` possessing global authority to mutate, rotate credentials, or delete `plant_water_district_9` is locked out from viewing its dashboard unless they separately supply the raw viewer token string (`district9_read_secret_token_889`).
+It computes `hashlib.sha256(token)` against `plant.viewer_token_hash`. It **does not inspect Clerk JWT claims** or verify whether the caller holds administrative privileges. Consequently, a `platform_admin` possessing global authority to mutate, rotate credentials, or delete `plant_water_district_9` is locked out from viewing its dashboard unless they separately supply the raw viewer token string (`district9_read_secret_token_889` [public demo value]).
 
 #### Planned Unified RBAC Resolution
 In Clerk PR 3 / unified RBAC:
@@ -173,7 +173,7 @@ In Clerk PR 3 / unified RBAC:
   *Status:* Exists ([`components/layout/Header.tsx`](file:///home/critic-coder/project/PlantPulse/frontend/components/layout/Header.tsx)).
 - **Step 2:** Dashboard checks `sessionStorage` for viewer token. None found $\rightarrow$ renders `TokenEntryCard`.  
   *Status:* Exists ([`components/telemetry/TokenEntryCard.tsx`](file:///home/critic-coder/project/PlantPulse/frontend/components/telemetry/TokenEntryCard.tsx)).
-- **Step 3:** Operator enters token (`district9_read_secret_token_889`). Card validates token against `POST /api/plants/plant_water_district_9/ws-ticket`. Saves token to `sessionStorage` (`plantpulse_viewer_token_plant_water_district_9`).  
+- **Step 3:** Operator enters token (`district9_read_secret_token_889` [public demo value]). Card validates token against `POST /api/plants/plant_water_district_9/ws-ticket`. Saves token to `sessionStorage` (`plantpulse_viewer_token_plant_water_district_9`).  
   *Status:* Exists.
 - **Step 4:** WebSocket connects using minted ticket. Pump cards (Pumps 01–03) stream live flow rates and discharge pressures.  
   *Status:* Exists.
@@ -243,7 +243,7 @@ A live end-to-end journey test was executed against the running Docker Compose s
    - Admin API returned HTTP `201 Created` with `broker_reloaded: true`.
    - Captured one-time device credentials:
      - Username: `device_plant_test_journey`
-     - Password: `U-RK6LrvFPEnCjK28_Z5deAkuMIpjWoTe1OPlsf2R0c`
+     - Password: `<one-time-password>`
    - Broker `/mosquitto/auth/acl.conf` was dynamically written with `user device_plant_test_journey` / `topic readwrite plants/plant_test_journey/#` and reloaded via `SIGHUP`.
 
 2. **Step (a): Valid Telemetry Publication:**

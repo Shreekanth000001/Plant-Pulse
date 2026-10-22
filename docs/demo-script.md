@@ -15,7 +15,7 @@ In [`.env.example`](file:///home/critic-coder/project/PlantPulse/.env.example#L3
 ```bash
 # Required for Shot 5 (Admin Portal):
 MOUNT_ADMIN_ENDPOINTS=true
-ADMIN_TOKEN=demo_admin_secret_token_2026_32char_len
+ADMIN_TOKEN=demo_admin_secret_token_2026_32char_len  # public demo value
 DEMO_HINTS=true
 NEXT_PUBLIC_DEMO_HINTS=true
 ```
@@ -72,7 +72,7 @@ Have two windows arranged on screen:
   2. Select **`District 9 Water Booster Station 🔒`** (the exact registered display name in [`plants/plant_water_district_9.json`](file:///home/critic-coder/project/PlantPulse/plants/plant_water_district_9.json)).
   3. The page transitions to display the `TokenEntryCard` with heading **"Viewer Authentication Required"**.
   4. Point to the demo hint card: `Evaluation Hint: Use demo token district9_read_secret_token_889`.
-  5. Click the **"Fill Demo Token"** shortcut button (or paste `district9_read_secret_token_889`).
+  5. Click the **"Fill Demo Token"** shortcut button (or paste `district9_read_secret_token_889` [public demo value]).
   6. Click the amber **"Authenticate & View →"** button.
 - **Visual:** The token card resolves, the plant status changes to authenticated, and live municipal water pump telemetry begins streaming in real time.
 - **Spoken Sentence:**  
@@ -124,7 +124,7 @@ Have two windows arranged on screen:
 *(Note: If testing manual injection with `mosquitto_pub`, the simulator process must first be stopped with `docker compose stop simulator` so it does not overwrite the injected state on the next 1-second tick):*
 
 ```bash
-# Optional manual injection test (requires simulator stopped):
+# Optional manual injection test (requires simulator stopped; password is a public demo value):
 docker compose exec broker mosquitto_pub \
   -u device_plant_demo_membrane \
   -P membrane_device_secret_token_456 \
@@ -137,7 +137,7 @@ docker compose exec broker mosquitto_pub \
 ### Shot 5: Admin Portal & Dynamic Plant Provisioning (1:35 – 2:00)
 - **URL:** Navigate browser to [`http://localhost:3000/admin`](http://localhost:3000/admin)
 - **Action:**
-  1. In the `AdminTokenEntryCard`, enter the administrative key configured in your `.env` (`demo_admin_secret_token_2026_32char_len`) and click **"Authenticate as Admin →"**.
+  1. In the `AdminTokenEntryCard`, enter the administrative key configured in your `.env` (`demo_admin_secret_token_2026_32char_len` [public demo value]) and click **"Authenticate as Admin →"**.
   2. The registered plant inventory appears. Click the blue **`+ Register New Plant`** button in the header (navigates to [`/admin/plants/new`](http://localhost:3000/admin/plants/new)).
   3. Fill in basic details:
      - **Plant ID:** `plant_solar_battery`
@@ -159,4 +159,4 @@ docker compose exec broker mosquitto_pub \
 | **0:25–0:45** | Protected Water Plant Unlock | `http://localhost:3000` | `#plant-selector`: `District 9 Water Booster Station 🔒`<br>Card: `TokenEntryCard`<br>Button: `"Fill Demo Token"` & `"Authenticate & View →"` | *(None)* |
 | **0:45–1:05** | Downsampled History Graph | `http://localhost:3000` | Card: `hm_01`<br>Modal: `StationInspectorModal`<br>Buttons: `1h`, `6h`, `12h`, `24h`<br>Contract: `?start=...&end=...&points=300` (no `?range=1h`) | *(None)* |
 | **1:05–1:35** | Natural Fault & Automatic Recovery | `http://localhost:3000` | Card: `hm_01` flips to red `"FAULT"` badge with `"HIGH_VIBRATION"`, then automatically recovers to `"RUNNING"` | *(Hands-free; pre-warmed stack drifts naturally)* |
-| **1:35–2:00** | Admin Portal Plant Creation | `http://localhost:3000/admin`<br>`/admin/plants/new` | Button: `"+ Register New Plant"`<br>Button: `"Create Plant & Generate Credentials →"`<br>Modal: `"One-Time Initial Device Credentials"` | Pre-req: `MOUNT_ADMIN_ENDPOINTS=true` and `ADMIN_TOKEN=demo_admin_secret_token_2026_32char_len` |
+| **1:35–2:00** | Admin Portal Plant Creation | `http://localhost:3000/admin`<br>`/admin/plants/new` | Button: `"+ Register New Plant"`<br>Button: `"Create Plant & Generate Credentials →"`<br>Modal: `"One-Time Initial Device Credentials"` | Pre-req: `MOUNT_ADMIN_ENDPOINTS=true` and `ADMIN_TOKEN=demo_admin_secret_token_2026_32char_len` (public demo value) |

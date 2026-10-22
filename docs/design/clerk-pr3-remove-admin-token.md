@@ -42,7 +42,7 @@ Every occurrence of `ADMIN_TOKEN` and the admin brute-force throttle across the 
 - [`docker-compose.yml#L89`](file:///home/critic-coder/project/PlantPulse/docker-compose.yml#L89): `ADMIN_TOKEN: ${ADMIN_TOKEN:-}` under `api` service environment.
 - [`.env.example#L34`](file:///home/critic-coder/project/PlantPulse/.env.example#L34): `ADMIN_TOKEN=` template variable.
 - [`README.md#L122, L150, L291`](file:///home/critic-coder/project/PlantPulse/README.md): Architecture documentation detailing `ADMIN_TOKEN` fallback, non-empty requirement, and 32+ character recommendation.
-- [`docs/demo-script.md#L18, L23-L27, L140, L162`](file:///home/critic-coder/project/PlantPulse/docs/demo-script.md): Demonstration script instructions for entering `demo_admin_secret_token_2026_32char_len` into Shot 5.
+- [`docs/demo-script.md#L18, L23-L27, L140, L162`](file:///home/critic-coder/project/PlantPulse/docs/demo-script.md): Demonstration script instructions for entering `demo_admin_secret_token_2026_32char_len` (public demo value) into Shot 5.
 - [`docs/design/hosting-feasibility.md#L293, L325`](file:///home/critic-coder/project/PlantPulse/docs/design/hosting-feasibility.md): Hosting security section requiring `MOUNT_ADMIN_ENDPOINTS=false` until `ADMIN_TOKEN` is removed.
 
 ### 1.4 Test Suite References
