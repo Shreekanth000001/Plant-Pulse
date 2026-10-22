@@ -297,7 +297,7 @@ def test_sync_plant_definitions_preserves_existing_hashes():
         conn.execute(
             """
             INSERT INTO plant_credentials (plant_id, username, client_id, password_hash)
-            VALUES ('test_p1', 'u1', 'c1', %s)
+            VALUES ('test_p1', 'user_1', 'c1', %s)
             ON CONFLICT (plant_id, username) DO UPDATE SET password_hash = excluded.password_hash;
             """,
             (original_pwd_hash,),
@@ -310,7 +310,9 @@ def test_sync_plant_definitions_preserves_existing_hashes():
             timezone="UTC",
             viewer_token=None,
             viewer_token_hash=None,
-            mqtt_credentials=[MQTTCredential(username="u1", client_id="c1", password=None)],
+            mqtt_credentials=[
+                MQTTCredential(username="user_1", client_id="c1", password=None)
+            ],
             areas=[],
         )
 
@@ -325,7 +327,7 @@ def test_sync_plant_definitions_preserves_existing_hashes():
         )
 
         cur.execute(
-            "SELECT password_hash FROM plant_credentials WHERE plant_id = 'test_p1' AND username = 'u1'"
+            "SELECT password_hash FROM plant_credentials WHERE plant_id = 'test_p1' AND username = 'user_1'"
         )
         c_row = cur.fetchone()
         assert c_row["password_hash"] == original_pwd_hash

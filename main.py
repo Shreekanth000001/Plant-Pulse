@@ -45,6 +45,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.types import Message, Receive, Scope, Send
 
 from admin_auth import (
     AdminUser,
@@ -852,6 +853,74 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
+MAX_ADMIN_BODY_BYTES = 1_048_576  # 1 MB
+
+
+class AdminPayloadTooLarge(BaseException):
+    pass
+
+
+class AdminBodyLimitMiddleware:
+    """Pure ASGI middleware enforcing a strict 1 MB body limit on POST/PUT requests under /api/admin.
+
+    Wraps the ASGI receive() callable and counts bytes as they arrive. If the bytes read exceed 1 MB,
+    it returns 413 Payload Too Large immediately without buffering the rest of the payload, without
+    touching request._body, and without executing the route handler or validation.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            path = scope.get("path", "")
+            method = scope.get("method", "").upper()
+            if method in ("POST", "PUT") and path.startswith("/api/admin"):
+                bytes_read = 0
+
+                async def limited_receive() -> Message:
+                    nonlocal bytes_read
+                    message = await receive()
+                    if message["type"] == "http.request":
+                        body = message.get("body", b"")
+                        bytes_read += len(body)
+                        if bytes_read > MAX_ADMIN_BODY_BYTES:
+                            raise AdminPayloadTooLarge()
+                    return message
+
+                try:
+                    await self.app(scope, limited_receive, send)
+                except AdminPayloadTooLarge:
+                    await self._send_413(send)
+                return
+
+        await self.app(scope, receive, send)
+
+    @staticmethod
+    async def _send_413(send: Send) -> None:
+        payload = b'{"detail":"Payload Too Large: request body exceeds 1 MB limit"}'
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 413,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(payload)).encode("ascii")),
+                    (b"connection", b"close"),
+                ],
+            }
+        )
+        await send(
+            {
+                "type": "http.response.body",
+                "body": payload,
+                "more_body": False,
+            }
+        )
+
+
+app.add_middleware(AdminBodyLimitMiddleware)
 
 
 @app.middleware("http")
