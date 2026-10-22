@@ -1073,9 +1073,35 @@ def get_latest_plant_machines(plant_id: str) -> list[dict]:
                 "device_timestamp": tr["device_timestamp"],
             }
 
+        # Fetch latest in-progress units for machines if any
+        latest_unit_rows = conn.execute(
+            """
+            WITH ranked_stages AS (
+                SELECT se.machine_code, se.unit_id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY se.machine_code
+                           ORDER BY se.entered_at DESC
+                       ) as rn
+                FROM stage_events se
+                JOIN units u ON se.plant_id = u.plant_id AND se.unit_id = u.unit_id
+                WHERE se.plant_id = %s AND u.status = 'in_progress'
+            )
+            SELECT machine_code, unit_id
+            FROM ranked_stages
+            WHERE rn = 1
+            """,
+            (plant_id,),
+        ).fetchall()
+        db_unit_by_machine = {
+            r["machine_code"]: r["unit_id"] for r in latest_unit_rows
+        }
+
         result = []
         for mr in machines_rows:
             m_code = mr["machine_code"]
+            curr_unit = active_machine_units.get(
+                (plant_id, m_code)
+            ) or db_unit_by_machine.get(m_code)
             result.append(
                 {
                     "machine_code": m_code,
@@ -1086,6 +1112,7 @@ def get_latest_plant_machines(plant_id: str) -> list[dict]:
                     "sub_state": mr["sub_state"],
                     "last_seen_at": mr["last_seen_at"],
                     "signals": signals_by_machine.get(m_code, {}),
+                    "current_unit_id": curr_unit,
                 }
             )
         return result
