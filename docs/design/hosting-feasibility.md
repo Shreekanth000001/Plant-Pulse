@@ -26,37 +26,38 @@ All provider specifications cited in this document were retrieved directly from 
 
 | Category | Provider & Tier | Official Source & URL | Retrieval Date | Exact Quote (< 15 words) |
 | :--- | :--- | :--- | :--- | :--- |
-| **Python Host** | Oracle Cloud (OCI Always Free) | [OCI Free Tier Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm) | 2026-10-22 | *"Idle Always Free compute instances may be reclaimed by Oracle."* |
-| **Python Host** | Koyeb (Eco-Nano Free) | [Koyeb Pricing](https://www.koyeb.com/pricing) <br> [Koyeb Scale to Zero](https://www.koyeb.com/docs/run-and-scale/scale-to-zero) | 2026-10-22 | *"Koyeb requires a credit card during sign-up to prevent fraud and abuse."* <br> *"held connection (e.g., a WebSocket or HTTP/2 stream) from the Internet"* |
+| **Python Host** | Oracle Cloud (OCI Always Free) | [OCI Free Tier Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm) | 2026-10-22 (page dated 2026-06-12) | *"All tenancies get the first 1,500 OCPU hours and 9,000 GB hours"* <br> *"Idle Always Free compute instances may be reclaimed by Oracle."* |
+| **Python Host** | Koyeb (Free Instance) | [Koyeb Pricing](https://www.koyeb.com/pricing) <br> [Koyeb Scale to Zero](https://www.koyeb.com/docs/run-and-scale/scale-to-zero) | 2026-10-22 | *"The Koyeb Free Instance automatically scales down to zero"* <br> *"held connection (e.g. websocket or HTTP/2 stream) from the Internet"* |
 | **Python Host** | Render (Free Web Service) | [Render Free Plans](https://render.com/docs/free) | 2026-10-22 | *"spin down after 15 minutes of inactivity"* |
 | **Python Host** | PythonAnywhere (Beginner) | [PythonAnywhere Account Types](https://help.pythonanywhere.com/pages/AccountTypes/) <br> [PythonAnywhere Allowlist](https://help.pythonanywhere.com/pages/API-allowlist/) | 2026-10-22 | *"Free accounts have restricted outbound internet access"* |
-| **Hosted MQTT** | HiveMQ Cloud (Serverless) | [HiveMQ Serverless Retirement](https://www.hivemq.com/docs/cloud/serverless-retirement.html) | 2026-10-22 | *"HiveMQ is retiring HiveMQ Cloud Serverless on December 31, 2026."* |
+| **Hosted MQTT** | HiveMQ Cloud (Serverless) | [HiveMQ Cloud Serverless End of Life](https://docs.hivemq.com/hivemq-cloud/serverless-end-of-life.html) | 2026-10-22 | *"HiveMQ retires the HiveMQ Cloud Serverless plan on 2026-12-31."* |
 | **Hosted MQTT** | EMQX Cloud (Serverless) | [EMQX Serverless Quotas](https://docs.emqx.com/en/cloud/latest/deployments/serverless.html) | 2026-10-22 | *"up to 1,000 concurrent connections, 1 GB data transfer per month"* |
 | **Hosted Postgres** | Supabase (Free Plan) | [Supabase Free Plan & Billing](https://supabase.com/docs/guides/platform/org-based-billing#free-plan) <br> [Supabase Pausing](https://supabase.com/docs/guides/platform/pausing) | 2026-10-22 | *"500 MB database size limit per project"* <br> *"Projects are paused after 7 days of inactivity"* |
-| **Hosted Postgres** | Neon (Free Plan) | [Neon Free Plan Documentation](https://neon.tech/docs/introduction/plans#free-plan) | 2026-10-22 | *"0.5 GiB per project"* <br> *"100 Compute Unit hours per month"* |
+| **Hosted Postgres** | Neon (Free Plan) | [Neon Free Plan Documentation](https://neon.tech/docs/introduction/plans) | 2026-10-22 | *"Free plan users get 1 GB of Postgres storage per project"* <br> *"100 CU-hours/project/month"* |
 
 ---
 
 ## 3. Provider Reconciliations & Analysis
 
-### 3.1 Neon Storage Limit Reconciliation (0.5 GiB vs Legacy 1 GB)
-- **Current Documentation (2026-10-22):** The official Neon documentation ([Neon Free Plan](https://neon.tech/docs/introduction/plans#free-plan)) specifies: *"0.5 GiB per project"* (512 MiB) and *"100 Compute Unit hours per month"*.
-- **Historical Context:** Neon accounts created prior to mid-2024 were provisioned with 1 GB or 3 GiB of storage on the initial free tier. Newly created free tier projects in 2026 are strictly capped at **0.5 GiB (512 MiB)**, with compute auto-suspending after 5 minutes of inactivity. Calculations in this document evaluate both the current 0.5 GiB limit and legacy 1 GB thresholds.
+### 3.1 Neon Storage Limit Reconciliation (0.5 GiB vs Official 1 GB)
+- **Current Official Documentation (retrieved 2026-10-22):** The official Neon documentation ([Neon Plans](https://neon.tech/docs/introduction/plans)) specifies: *"Free plan users get 1 GB of Postgres storage per project, up to 20 GB total across all projects"*, with compute allowances of *"100 CU-hours/project/month"* and compute scale-down after *"5 min inactivity; cannot disable"*.
+- **Legacy / Conservative Context:** Earlier documentation and community benchmarks cited a 0.5 GiB (512 MiB) cap. Because some free projects or previous tiers operated under 0.5 GiB, calculations in this document evaluate both the conservative 0.5 GiB threshold and the official 1 GB quota.
 
-### 3.2 Oracle Cloud Always Free Reconciliation (Official Entitlement vs Reported Cuts & Idle Reclamation)
-- **Official Specification (2026-10-22):** The official OCI documentation ([OCI Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)) entitles users to:
-  - 4 Arm Ampere A1 Compute OCPUs and 24 GB of RAM (usable as 1 VM or split across up to 4 VMs).
+### 3.2 Oracle Cloud Always Free Reconciliation (Official Entitlement vs Conflicting Evidence & Idle Reclamation)
+- **Official Specification (retrieved 2026-10-22, page updated 2026-06-12):** The official OCI documentation ([OCI Always Free Resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)) entitles users to:
+  - *"All tenancies get the first 1,500 OCPU hours and 9,000 GB hours per month for free for VM instances using the VM.Standard.A1.Flex shape (Arm processor). For Always Free tenancies, this is equivalent to 2 OCPUs and 12 GB of memory."*
   - 2 AMD-based Compute VMs (1 GB RAM each).
   - 200 GB total Block Volume storage.
-- **Reported "Cuts" Explained:** During late 2023 and 2024, widespread developer reports indicated that Oracle "cut" or revoked free tier instances. In reality, Oracle implemented two strict operational constraints:
+- **Conflicting Evidence & Reported Cuts:** In 2026, widespread developer reports cited a reduction from the historical 4 OCPUs and 24 GB of RAM. The official documentation dated 2026-06-12 provides conflicting evidence against those older 4 OCPU / 24 GB claims, confirming the current free entitlement is officially 1,500 OCPU-hours and 9,000 GB-hours (2 OCPUs and 12 GB of memory).
+- **Operational Constraints & Reclamation:**
   1. **Regional Capacity Exhaustion:** Popular data centers frequently encounter `Out of capacity for shape VM.Standard.A1.Flex` during VM provisioning.
   2. **Idle Instance Reclamation:** Oracle enforces an automated reclamation policy: *"Idle Always Free compute instances may be reclaimed by Oracle."* If over a 7-day window, the 95th percentile CPU utilization is $<20\%$, memory utilization is $<20\%$, and network transfer is $<20\%$, the VM is automatically reclaimed.
 - **Verdict:** Oracle does **not** sleep on short idles, but requires active utilization or an upgraded Pay-As-You-Go account ($0 charged if staying within free tier allowances) to prevent 7-day idle reclamation.
 
 ### 3.3 HiveMQ Cloud Serverless Retirement
-- **Official Source:** [HiveMQ Cloud Serverless Retirement Documentation](https://www.hivemq.com/docs/cloud/serverless-retirement.html) (retrieved 2026-10-22).
-- **Exact Quotation:** *"HiveMQ is retiring HiveMQ Cloud Serverless on December 31, 2026."*
-- **Operational Impact:** *"Starting March 4, 2026, new cluster creation for HiveMQ Cloud Serverless is disabled."* Existing clusters will be permanently terminated on December 31, 2026. Therefore, HiveMQ Serverless is excluded from PlantPulse's future hosting roadmap.
+- **Official Source:** [HiveMQ Cloud Serverless End of Life Documentation](https://docs.hivemq.com/hivemq-cloud/serverless-end-of-life.html) (retrieved 2026-10-22).
+- **Exact Quotation:** *"HiveMQ retires the HiveMQ Cloud Serverless plan on 2026-12-31."*
+- **Operational Impact:** *"You can no longer create a Serverless cluster or upgrade a Serverless cluster to Pay As You Go."* In addition, *"After 2026-12-31, MQTT clients can no longer connect to your Serverless clusters."* and *"After the end-of-life date, HiveMQ permanently deletes all Serverless clusters and the data on the clusters."* Therefore, HiveMQ Serverless is excluded from PlantPulse's future hosting roadmap.
 
 ---
 
@@ -66,8 +67,8 @@ All provider specifications cited in this document were retrieved directly from 
 
 | Provider & Tier | RAM / CPU | Sleep & Idle Rules | Inbound WebSockets | Outbound MQTT Client | Bandwidth & Request Limits | Official Documentation URL | Verdict |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Oracle Cloud**<br>*(OCI Always Free)* | 4 Arm OCPUs<br>24 GB RAM | Reclaims if 95th percentile CPU/RAM/net < 20% over 7 days. Does NOT sleep on short idle. | Supported natively. Standard Linux socket handling. | Supported. Full unrestricted outbound TCP networking. | 10 TB egress/mo.<br>200 GB block storage. | [OCI Always Free](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm) | **Best Match.** Runs full Docker Compose stack unchanged. |
-| **Koyeb**<br>*(Eco-Nano Free)* | 512 MB RAM<br>0.1 vCPU<br>2 GB SSD | Scales to zero after **1 hour** of inactivity. Active WebSocket held connection prevents scale-down. | Supported. Persistent WebSocket prevents scale-to-zero while browser is open. | Allowed on standard ports (1883/8883). Drops on sleep. | 100 GB outbound egress/mo.<br>No request caps. | [Koyeb Pricing](https://www.koyeb.com/pricing) <br> [Koyeb Scale to Zero](https://www.koyeb.com/docs/run-and-scale/scale-to-zero) | **Viable for Web/API.** Requires credit card with $29 temporary authorization hold. |
+| **Oracle Cloud**<br>*(OCI Always Free)* | 2 Arm OCPUs<br>12 GB RAM | Reclaims if 95th percentile CPU/RAM/net < 20% over 7 days. Does NOT sleep on short idle. | Supported natively. Standard Linux socket handling. | Supported. Full unrestricted outbound TCP networking. | 10 TB egress/mo.<br>200 GB block storage. | [OCI Always Free](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm) | **Best Match.** Runs full Docker Compose stack unchanged. |
+| **Koyeb**<br>*(Free Instance)* | 512 MB RAM<br>0.1 vCPU<br>2 GB SSD | Scales to zero after **1 hour** of inactivity. Active WebSocket held connection prevents scale-down. | Supported. Persistent WebSocket prevents scale-to-zero while browser is open. | Allowed on standard ports (1883/8883). Drops on sleep. | 100 GB outbound egress/mo.<br>No request caps. | [Koyeb Pricing](https://www.koyeb.com/pricing) <br> [Koyeb Scale to Zero](https://www.koyeb.com/docs/run-and-scale/scale-to-zero) | **Viable for Web/API.** Free Instance automatically scales down to zero after 1h idle. |
 | **Render**<br>*(Free Web Service)* | 512 MB RAM<br>0.1 vCPU | Spins down after **15 minutes** of no inbound traffic. Cold start ~50s. | Supported while active, but idle drops all connections. | Allowed while running; drops on spin down. | 750 free instance hours/month total across workspace.<br>5 GB egress/mo. | [Render Free Plans](https://render.com/docs/free) | **Fragile.** Sleep drops MQTT subscriber and resets in-memory caches. 1 continuous service max. |
 | **PythonAnywhere**<br>*(Beginner Free)* | 512 MB RAM<br>100s CPU/day | Does not sleep during day; apps expire if not renewed every 3 mos. | **Unsupported.** Only WSGI apps supported natively on free tier. | **Blocked.** Raw TCP sockets blocked. Only HTTP/HTTPS to whitelisted domains allowed. | 100 CPU-seconds/day (tarpitted afterwards). | [PythonAnywhere Accounts](https://help.pythonanywhere.com/pages/AccountTypes/) <br> [PythonAnywhere Allowlist](https://help.pythonanywhere.com/pages/API-allowlist/) | **Incompatible.** Cannot connect to MQTT broker and cannot serve ASGI WebSockets. |
 
@@ -77,7 +78,7 @@ All provider specifications cited in this document were retrieved directly from 
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Self-Hosted Mosquitto**<br>*(on VM)* | OS file descriptor limit (~65k) | Unlimited (bounded by VM bandwidth). | Configurable (TLS 8883, cleartext 1883, local socket). | Native `passwd` file and `acl.conf` reloaded via SIGHUP. | [Mosquitto.conf Manual](https://mosquitto.org/man/mosquitto-conf-5.html) | **Exact Match.** Matches existing PlantPulse production codebase identically. |
 | **EMQX Cloud**<br>*(Serverless)* | Up to **1,000** concurrent connections | 1M session-minutes/mo.<br>1 GB egress/mo.<br>1M rule actions/mo. | **Strict TLS Mandatory.** Port 8883 (MQTTS) or 8084 (WSS). Cleartext 1883 blocked. SNI required. | Up to 2,000 auth users & 2,000 ACL rules. Managed via REST API. | [EMQX Serverless Quotas](https://docs.emqx.com/en/cloud/latest/deployments/serverless.html) | **Best Cloud Broker.** Reliable if Spend Limit set to $0 and TLS certificates configured. |
-| **HiveMQ Cloud**<br>*(Serverless)* | 100 devices | 10 GB data traffic/mo.<br>3-day data retention. | Port 8883 (TLS), WebSockets. | Console credential management. | [HiveMQ Retirement](https://www.hivemq.com/docs/cloud/serverless-retirement.html) | **Do Not Use.** Scheduled for total retirement on Dec 31, 2026; new cluster creation disabled. |
+| **HiveMQ Cloud**<br>*(Serverless)* | 100 devices | 10 GB data traffic/mo.<br>3-day data retention. | Port 8883 (TLS), WebSockets. | Console credential management. | [HiveMQ End of Life](https://docs.hivemq.com/hivemq-cloud/serverless-end-of-life.html) | **Do Not Use.** Scheduled for total retirement on Dec 31, 2026; new cluster creation disabled. |
 
 ### 4.3 Hosted PostgreSQL Free Tiers
 
@@ -85,7 +86,7 @@ All provider specifications cited in this document were retrieved directly from 
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Self-Hosted PostgreSQL**<br>*(on VM)* | Bounded only by disk (e.g. 50–200 GB) | Continuous 24/7 compute. Never scales to zero or pauses. | Configurable `max_connections` (e.g. 100–500). | Unlimited local network transfer between containers. | [PostgreSQL 16 Docs](https://www.postgresql.org/docs/16/) | **Best Match.** Zero risk of monthly quota cutoff or table-size read-only locks. |
 | **Supabase**<br>*(Free Plan)* | **500 MB** table & index data (read-only mode if exceeded) | Nano compute.<br>Pauses after **7 days of inactivity** (lack of database queries). | Direct: **60**.<br>Supavisor Pooler: **200** clients (port 6543 / 5432). | 5 GB uncached + 5 GB cached (10 GB/mo). | [Supabase Free Plan](https://supabase.com/docs/guides/platform/org-based-billing#free-plan) <br> [Supabase Pausing](https://supabase.com/docs/guides/platform/pausing) | **Viable.** Regular telemetry queries prevent pause. Aggressive retention needed for 500 MB. |
-| **Neon**<br>*(Free Tier)* | **0.5 GiB** (512 MiB) per project | 100 Compute Unit (CU)-hours/mo.<br>Scales to zero after **5 min** of inactivity. | Pooled & direct connections. Suspends when 100 CU-hrs expire. | 5 GB egress/mo. | [Neon Free Plan](https://neon.tech/docs/introduction/plans#free-plan) | **High Risk.** 100 CU-hours equals only ~4.1 days of continuous execution. Hard suspends. |
+| **Neon**<br>*(Free Tier)* | **1 GB** (up to 20 GB across 100 projects; 0.5 GiB conservative) | 100 Compute Unit (CU)-hours/mo.<br>Scales to zero after **5 min** of inactivity. | Pooled & direct connections. Suspends when 100 CU-hrs expire. | 5 GB egress/mo. | [Neon Plans](https://neon.tech/docs/introduction/plans) | **High Risk.** 100 CU-hours equals only ~4.1 days of continuous execution. Hard suspends. |
 
 ---
 
@@ -201,14 +202,14 @@ However, supporting fine-grained sub-day retention (e.g. `RETENTION_HOURS = 6` t
 
 ### 8.1 Account & Credit Card Requirements
 - **Oracle Cloud (OCI):** Requires a valid credit card during sign-up for identity verification. Places a $1 temporary hold. Does not bill for Always Free resources. ([OCI Free Tier](https://www.oracle.com/cloud/free/))
-- **Koyeb:** Requires a credit card during sign-up to prevent fraud. Places a **$29 temporary pre-authorization hold** on registration. ([Koyeb Pricing](https://www.koyeb.com/pricing))
+- **Koyeb:** Requires a credit card during sign-up to prevent fraud ([Koyeb Pricing](https://www.koyeb.com/pricing)). (Note: Community reports of a specific $29 temporary pre-authorization hold are unverified in official documentation).
 - **Supabase & Neon:** Free tiers do NOT require a credit card for initial registration. ([Supabase Pricing](https://supabase.com/pricing), [Neon Pricing](https://neon.tech/pricing))
 - **Render:** Free tier does not require a credit card, but free hours are limited to 750 hours/month shared across all services. ([Render Free Plans](https://render.com/docs/free))
 
 ### 8.2 Billing Risk & Spend Limits
 - **EMQX Cloud Serverless:** Must configure the account **Spend Limit to exactly $0** to prevent unexpected overage billing if device traffic or session-minutes spike. ([EMQX Serverless Quotas](https://docs.emqx.com/en/cloud/latest/deployments/serverless.html))
 - **Supabase:** Free projects automatically pause after 7 days of inactivity; if database exceeds 500 MB, it enters read-only mode rather than auto-charging. ([Supabase Billing](https://supabase.com/docs/guides/platform/org-based-billing#free-plan))
-- **Neon:** Suspends compute automatically when 100 CU-hours are exhausted rather than billing overages on the Free plan. ([Neon Free Plan](https://neon.tech/docs/introduction/plans#free-plan))
+- **Neon:** Suspends compute automatically when 100 CU-hours are exhausted rather than billing overages on the Free plan. ([Neon Plans](https://neon.tech/docs/introduction/plans))
 
 ### 8.3 Public VM Security Hardening (for OCI / VPS Deployment)
 If deploying to a public VM:
@@ -250,3 +251,10 @@ In `admin_auth.py`, the backend maintains fallback authentication via a static `
 1. **Portfolio Demo vs Industrial Testbed:** Is the hosted instance intended as an interactive web portfolio demo (where viewer-gated simulation and short idle pauses are acceptable), or an edge testbed requiring continuous telemetry ingestion?
 2. **Single VM vs Multi-Service Serverless:** Given that an OCI Always Free VM or a $4/month VPS runs the entire tested Docker Compose stack without code modifications, does adapting to multi-provider serverless limits (EMQX + Supabase + Koyeb + Vercel) justify the ongoing maintenance overhead?
 3. **Admin Token Deprecation:** What is the timeline for removing `ADMIN_TOKEN` entirely from `admin_auth.py` so that admin endpoints can safely be mounted in cloud deployments?
+ 
+---
+
+## 11. Unverified Claims List
+
+1. **Koyeb $29 Pre-Authorization Hold:** Third-party community reports state that Koyeb charges a temporary $29 pre-authorization hold upon adding a payment card. Official documentation at `https://www.koyeb.com/pricing` confirms payment card verification to prevent fraud, but does not state the specific $29 amount. This claim is categorized as **Unverified**.
+2. **Neon 0.5 GiB Quota:** Historical developer posts and earlier tier benchmarks cited a 0.5 GiB (512 MiB) project quota. Official documentation at `https://neon.tech/docs/introduction/plans` explicitly documents 1 GB per project (up to 20 GB across 100 projects). The 0.5 GiB figure is retained strictly as an unverified legacy threshold or conservative baseline scenario.
