@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useMemo, useSyncExternalStore } from "react";
 import Link from "next/link";
+import { useAuth } from "@clerk/nextjs";
 import {
   ResponsiveContainer,
   AreaChart,
@@ -37,6 +38,7 @@ export function StationInspectorModal({
   onClose,
 }: StationInspectorModalProps) {
   const modalRef = useRef<HTMLDivElement>(null);
+  const { isSignedIn, getToken } = useAuth();
 
   useEffect(() => {
     const previousActiveElement = document.activeElement as HTMLElement | null;
@@ -157,10 +159,17 @@ export function StationInspectorModal({
       setHistoryLoading(true);
       setHistoryError(null);
       try {
-        const token = safeSessionStorageGet(
+        let token = safeSessionStorageGet<string | null>(
           `plantpulse_viewer_token_${effectivePlantId}`,
           null
         );
+        if (!token && isSignedIn) {
+          try {
+            token = await getToken();
+          } catch (e) {
+            console.warn("Failed to get Clerk token for history:", e);
+          }
+        }
         const params = buildHistoryQueryParams({ rangePreset, points: 300 });
         const res = await fetchSignalHistory(
           effectivePlantId,
@@ -225,7 +234,7 @@ export function StationInspectorModal({
     return () => {
       isMounted = false;
     };
-  }, [effectivePlantId, machineId, selectedSignalCode, rangePreset]);
+  }, [effectivePlantId, machineId, selectedSignalCode, rangePreset, getToken, isSignedIn]);
 
   if (!machineId || !machine) return null;
 
@@ -271,24 +280,29 @@ export function StationInspectorModal({
       >
         {/* Modal Top Bar */}
         <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/80">
-          <div className="flex items-center gap-3.5">
-            <div className="w-11 h-11 rounded-2xl bg-blue-100/70 border border-blue-200 flex items-center justify-center text-blue-700 font-mono font-bold text-sm shadow-xs">
-              {(machineId || "").toUpperCase()}
+          <div className="flex items-center gap-3.5 min-w-0">
+            <div className="w-11 h-11 rounded-2xl bg-blue-100/70 border border-blue-200 flex items-center justify-center text-blue-700 shadow-xs shrink-0">
+              <svg className="w-5 h-5 text-blue-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+              </svg>
             </div>
-            <div>
-              <div className="flex items-center gap-2.5">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-xs font-bold px-2 py-0.5 rounded-lg bg-slate-100 border border-slate-300 text-slate-700 shrink-0">
+                  {(machineId || "").toUpperCase()}
+                </span>
                 <h3
                   id="station-inspector-title"
-                  className="text-lg font-bold text-slate-900 tracking-tight"
+                  className="text-lg font-bold text-slate-900 tracking-tight truncate max-w-[280px]"
                 >
                   {displayName}
                 </h3>
-                <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border capitalize ${stateColor}`}>
+                <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border capitalize shrink-0 ${stateColor}`}>
                   {isStarved ? "Starved" : state.toLowerCase()}
                 </span>
               </div>
-              <p className="text-xs text-slate-500 mt-0.5 capitalize">
-                Sub-facility: {machine.sub_facility} Station • Live Telemetry Stream
+              <p className="text-xs text-slate-500 mt-0.5 capitalize truncate">
+                Area: {machine.sub_facility || machine.area_code || "Process Area"} • Live Telemetry Stream
               </p>
             </div>
           </div>

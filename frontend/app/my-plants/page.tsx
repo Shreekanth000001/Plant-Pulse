@@ -22,6 +22,7 @@ import { AdminCredentialsModal } from "../../components/admin/AdminCredentialsMo
 import { AdminDeleteModal } from "../../components/admin/AdminDeleteModal";
 import { PlantCreateForm } from "../../components/admin/PlantCreateForm";
 import { safeLocalStorageSet } from "../../lib/plant-utils";
+import { useMounted } from "../../lib/useMounted";
 
 export default function MyPlantsPage() {
   const router = useRouter();
@@ -33,12 +34,8 @@ export default function MyPlantsPage() {
   const [isLoadingPlants, setIsLoadingPlants] = useState(true);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const mounted = useMounted();
   const [showCreateForm, setShowCreateForm] = useState(false);
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
 
   // Credential Modal State
   const [credModalOpen, setCredModalOpen] = useState(false);

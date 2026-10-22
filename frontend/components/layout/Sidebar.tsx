@@ -1,11 +1,12 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
 import { useFactoryWebSocket } from "../../context/WebSocketContext";
 import { isModuleEnabled } from "../../lib/plant-utils";
+import { useMounted } from "../../lib/useMounted";
 
 interface SidebarProps {
   isOpen?: boolean;
@@ -30,11 +31,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const { status, machines, plantDefinition, selectedPlantId } =
     useFactoryWebSocket();
   const { isSignedIn, user } = useUser();
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
+  const mounted = useMounted();
 
   const machineList = Object.values(machines);
   const runningCount = machineList.filter(

@@ -19,10 +19,12 @@ interface EventItem {
 export function LiveEventTicker() {
   const { subscribeToTelemetry, selectedPlantId } = useFactoryWebSocket();
   const [events, setEvents] = useState<EventItem[]>([]);
+  const [prevPlantId, setPrevPlantId] = useState(selectedPlantId);
 
-  useEffect(() => {
+  if (prevPlantId !== selectedPlantId) {
+    setPrevPlantId(selectedPlantId);
     setEvents([]);
-  }, [selectedPlantId]);
+  }
 
   useEffect(() => {
     const unsubscribe = subscribeToTelemetry((msg) => {

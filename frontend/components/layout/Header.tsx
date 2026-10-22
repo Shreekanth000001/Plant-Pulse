@@ -9,6 +9,7 @@ import {
   formatLastUpdated,
   getConnectionModeLabel,
 } from "../../lib/plant-utils";
+import { useMounted } from "../../lib/useMounted";
 import { SignInButton, SignUpButton, Show, UserButton } from "@clerk/nextjs";
 
 interface HeaderProps {
@@ -32,10 +33,9 @@ export function Header({ onToggleSidebar }: HeaderProps) {
   const [unitSearch, setUnitSearch] = useState("");
   const [currentTime, setCurrentTime] = useState<string>("");
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
-  const [mounted, setMounted] = useState(false);
+  const mounted = useMounted();
 
   useEffect(() => {
-    setMounted(true);
     const updateTime = () => {
       const now = new Date();
       setNowMs(now.getTime());
