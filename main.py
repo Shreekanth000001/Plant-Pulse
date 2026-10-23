@@ -82,6 +82,7 @@ from plant_definitions import (
 from retention import (
     RetentionWorker,
     get_retention_days,
+    get_retention_initial_delay_seconds,
     get_retention_interval_seconds,
     is_retention_worker_enabled,
 )
@@ -971,6 +972,7 @@ async def lifespan(app: FastAPI):
         retention_worker = RetentionWorker(
             retention_days=get_retention_days(),
             interval_seconds=get_retention_interval_seconds(),
+            initial_delay_seconds=get_retention_initial_delay_seconds(),
         )
         retention_worker.start()
 

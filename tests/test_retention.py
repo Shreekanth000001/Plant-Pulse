@@ -264,6 +264,7 @@ async def test_retention_worker_loop_survives_exception(test_db):
                 retention_days=30,
                 interval_seconds=0.05,
                 stop_event=stop_event,
+                initial_delay_seconds=0.0,
             )
         )
 
@@ -327,22 +328,32 @@ def test_retention_deletes_expired_traceability_and_keeps_recent(test_db):
     conn = get_db_connection(str(test_db))
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*) as cnt FROM units WHERE unit_id = 'unit_old_ret_1'")
-    assert cur.fetchone()["cnt"] == 0, "Expired unit was not deleted by retention cleanup"
+    assert cur.fetchone()["cnt"] == 0, (
+        "Expired unit was not deleted by retention cleanup"
+    )
     cur.execute("SELECT COUNT(*) as cnt FROM units WHERE unit_id = 'unit_recent_ret_1'")
     assert cur.fetchone()["cnt"] == 1, "Recent unit was incorrectly deleted"
 
-    cur.execute("SELECT COUNT(*) as cnt FROM stage_events WHERE unit_id = 'unit_old_ret_1'")
+    cur.execute(
+        "SELECT COUNT(*) as cnt FROM stage_events WHERE unit_id = 'unit_old_ret_1'"
+    )
     assert cur.fetchone()["cnt"] == 0, (
         "Expired stage event was not deleted by retention cleanup"
     )
-    cur.execute("SELECT COUNT(*) as cnt FROM stage_events WHERE unit_id = 'unit_recent_ret_1'")
+    cur.execute(
+        "SELECT COUNT(*) as cnt FROM stage_events WHERE unit_id = 'unit_recent_ret_1'"
+    )
     assert cur.fetchone()["cnt"] == 1, "Recent stage event was incorrectly deleted"
 
-    cur.execute("SELECT COUNT(*) as cnt FROM qc_results WHERE unit_id = 'unit_old_ret_1'")
+    cur.execute(
+        "SELECT COUNT(*) as cnt FROM qc_results WHERE unit_id = 'unit_old_ret_1'"
+    )
     assert cur.fetchone()["cnt"] == 0, (
         "Expired qc result was not deleted by retention cleanup"
     )
-    cur.execute("SELECT COUNT(*) as cnt FROM qc_results WHERE unit_id = 'unit_recent_ret_1'")
+    cur.execute(
+        "SELECT COUNT(*) as cnt FROM qc_results WHERE unit_id = 'unit_recent_ret_1'"
+    )
     assert cur.fetchone()["cnt"] == 1, "Recent qc result was incorrectly deleted"
     conn.close()
 
@@ -399,7 +410,9 @@ def test_retention_drops_expired_partitions_and_keeps_recent(test_db):
     )
 
     # Verify dropped list and partition presence in database
-    assert expired_part in dropped, f"Expected {expired_part} to be dropped, got: {dropped}"
+    assert expired_part in dropped, (
+        f"Expected {expired_part} to be dropped, got: {dropped}"
+    )
     assert recent_part not in dropped, f"Recent partition {recent_part} was dropped!"
 
     conn = get_db_connection(str(test_db))
@@ -408,16 +421,22 @@ def test_retention_drops_expired_partitions_and_keeps_recent(test_db):
         "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = %s;",
         (expired_part,),
     )
-    assert cur.fetchone() is None, f"Expired partition table {expired_part} still exists!"
+    assert cur.fetchone() is None, (
+        f"Expired partition table {expired_part} still exists!"
+    )
 
     cur.execute(
         "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = %s;",
         (recent_part,),
     )
-    assert cur.fetchone() is not None, f"Recent partition table {recent_part} was dropped!"
+    assert cur.fetchone() is not None, (
+        f"Recent partition table {recent_part} was dropped!"
+    )
 
     # Recent data is still queryable
-    cur.execute("SELECT COUNT(*) as cnt FROM telemetry_values WHERE message_id = 'rec_msg';")
+    cur.execute(
+        "SELECT COUNT(*) as cnt FROM telemetry_values WHERE message_id = 'rec_msg';"
+    )
     assert cur.fetchone()["cnt"] == 1
     conn.close()
 
@@ -452,7 +471,9 @@ def test_retention_leaves_non_matching_tables_untouched(test_db):
             "SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = %s;",
             (tbl,),
         )
-        assert cur.fetchone() is not None, f"Non-matching table {tbl} was unexpectedly dropped!"
+        assert cur.fetchone() is not None, (
+            f"Non-matching table {tbl} was unexpectedly dropped!"
+        )
 
     # Parent table telemetry_values itself must never be dropped
     cur.execute(
@@ -496,3 +517,40 @@ def test_retention_precreates_upcoming_partitions_daily(test_db):
     for part in expected_partitions:
         assert part in existing_parts, f"Partition {part} was not pre-created!"
 
+
+@pytest.mark.anyio
+async def test_retention_worker_first_run_timing(test_db):
+    """Prove first run happens after initial delay (~60s) without waiting a full interval (86400s)."""
+    calls = []
+
+    def mock_cleanup(*args, **kwargs):
+        calls.append(time.monotonic())
+        return (0, False)
+
+    stop_event = asyncio.Event()
+
+    with patch("retention.run_retention_cleanup", side_effect=mock_cleanup):
+        task = asyncio.create_task(
+            retention_worker_loop(
+                db_path=test_db,
+                retention_days=30,
+                interval_seconds=86400.0,
+                initial_delay_seconds=0.05,
+                stop_event=stop_event,
+            )
+        )
+
+        # Before initial delay has elapsed (t=0.01s), first run should NOT have occurred yet
+        await asyncio.sleep(0.01)
+        assert len(calls) == 0, (
+            f"Expected 0 calls immediately at startup, but found {len(calls)}"
+        )
+
+        # After initial delay has elapsed (t=0.07s), first run should have occurred once without waiting 86400s
+        await asyncio.sleep(0.06)
+        assert len(calls) == 1, (
+            f"Expected 1 call after initial delay, but found {len(calls)}"
+        )
+
+        stop_event.set()
+        await task
