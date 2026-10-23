@@ -11,7 +11,8 @@ ENV PYTHONUNBUFFERED=1 \
     MQTT_HOST=127.0.0.1 \
     MQTT_PORT=1883 \
     MOSQUITTO_AUTH_DIR=/mosquitto/auth \
-    RETENTION_DAYS=2
+    RETENTION_DAYS=2 \
+    HOME=/home/app
 
 WORKDIR /app
 
@@ -32,9 +33,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Create unprivileged application user
 RUN useradd -m -u 1000 -s /bin/bash app
 
-# Setup Mosquitto & Supervisor directories and configurations
-RUN mkdir -p /etc/mosquitto /etc/supervisor /mosquitto/auth /mosquitto/data /app \
-    && chown -R app:app /mosquitto /etc/mosquitto /app
+# Setup Mosquitto, Supervisor & App directories and configurations
+RUN mkdir -p /etc/mosquitto /etc/supervisor /mosquitto/auth /mosquitto/data /app /home/app \
+    && chown -R app:app /mosquitto /etc/mosquitto /app /home/app
 COPY docker/mosquitto.hosted.conf /etc/mosquitto/mosquitto.hosted.conf
 COPY docker/supervisord.hosted.conf /etc/supervisor/supervisord.conf
 
