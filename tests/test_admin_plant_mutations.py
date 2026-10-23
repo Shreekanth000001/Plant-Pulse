@@ -458,13 +458,15 @@ def test_admin_update_plant_put_with_confirm_removals_returns_200(admin_mutation
 
     # Insert some telemetry for mach_02 to verify it gets cleaned up
     conn = get_db_connection(str(db_file))
+    now_iso = datetime.now(UTC).isoformat()
     conn.execute(
         """
         INSERT INTO telemetry_values (
             plant_id, machine_code, signal_code, device_timestamp,
             message_id, value_num
-        ) VALUES ('plant_confirm_test', 'mach_02', 'speed', '2026-10-21T00:00:00Z', 'm1', 100.0);
-        """
+        ) VALUES ('plant_confirm_test', 'mach_02', 'speed', %s, 'm1', 100.0);
+        """,
+        (now_iso,),
     )
     conn.commit()
     conn.close()
@@ -665,13 +667,14 @@ async def test_admin_delete_concurrent_ingest_with_real_engine(tmp_path):
     )
 
     # Insert 10,000 rows for plant_del_concurrent
+    now_iso = datetime.now(UTC).isoformat()
     rows = [
         (
             "plant_del_concurrent",
             "m1",
             "s1",
-            f"2026-10-21T00:00:{i % 60:02d}Z",
-            f"2026-10-21T00:00:{i % 60:02d}Z",
+            now_iso,
+            now_iso,
             f"msg_{i}",
             float(i),
             None,
