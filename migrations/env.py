@@ -1,6 +1,13 @@
 import os
 from logging.config import fileConfig
 
+# Fix HOME if running as non-root with HOME=/root to prevent libpq SSL certificate permission errors
+if os.getenv("HOME") in (None, "/root") and hasattr(os, "getuid") and os.getuid() != 0:
+    for _candidate in ("/home/app", "/tmp"):
+        if os.path.exists(_candidate) and os.access(_candidate, os.W_OK):
+            os.environ["HOME"] = _candidate
+            break
+
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 

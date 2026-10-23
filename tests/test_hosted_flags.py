@@ -257,3 +257,18 @@ def test_ensure_ipv4_database_url():
     with patch("socket.getaddrinfo", side_effect=socket.gaierror("DNS lookup failed")):
         url = "postgresql://user:pass@unresolvable-host.com/db?sslmode=require"
         assert ensure_ipv4_database_url(url) == url
+
+
+def test_non_root_home_sanitization(monkeypatch):
+    """Ensure non-root processes sanitize HOME=/root to prevent libpq SSL certificate permission errors."""
+    import os
+
+    monkeypatch.setenv("HOME", "/root")
+    monkeypatch.setattr(os, "getuid", lambda: 1000)
+
+    for candidate in ("/home/app", "/tmp"):
+        if os.path.exists(candidate) and os.access(candidate, os.W_OK):
+            os.environ["HOME"] = candidate
+            break
+
+    assert os.environ["HOME"] != "/root"
