@@ -84,13 +84,14 @@ def get_pool(database_url: str | None = None) -> ConnectionPool:
 
     with _pools_lock:
         pool = _pools.get(url)
+        connect_timeout = float(os.getenv("DB_CONNECT_TIMEOUT", "15.0"))
         if pool is None or pool.closed:
             pool = ConnectionPool(
                 conninfo=url,
                 kwargs={"prepare_threshold": None, "row_factory": dict_row},
                 min_size=1,
                 max_size=20,
-                timeout=5.0,
+                timeout=connect_timeout,
                 open=True,
             )
             _pools[url] = pool
@@ -120,8 +121,9 @@ def get_db_connection(db_target: Any = None) -> PooledConnectionWrapper:
         url = db_target
 
     pool = get_pool(url)
+    connect_timeout = float(os.getenv("DB_CONNECT_TIMEOUT", "15.0"))
     try:
-        conn = pool.getconn(timeout=2.0)
+        conn = pool.getconn(timeout=connect_timeout)
     except Exception as exc:
         if os.getenv("CI"):
             raise RuntimeError(f"Database connection failed in CI: {exc}") from exc
