@@ -444,3 +444,56 @@ test("Viewer Auth: fetchUnitHistory throws ApiError(401) on 401 response", async
   }
 });
 
+test("Viewer Auth: Shareable direct link builds valid 1-click URL with encoded query params", () => {
+  const origin = "https://plantpulse.example.com";
+  const plantId = "plant_citrus_grove_juice";
+  const token = "viewer_abc-123+xyz==";
+
+  const shareableUrl = `${origin}/?plant=${encodeURIComponent(plantId)}&token=${encodeURIComponent(token)}`;
+  assert.equal(
+    shareableUrl,
+    "https://plantpulse.example.com/?plant=plant_citrus_grove_juice&token=viewer_abc-123%2Bxyz%3D%3D"
+  );
+
+  const url = new URL(shareableUrl);
+  assert.equal(url.searchParams.get("plant"), "plant_citrus_grove_juice");
+  assert.equal(url.searchParams.get("token"), "viewer_abc-123+xyz==");
+});
+
+test("Viewer Auth: Query param token can be safely saved to sessionStorage and retrieved", () => {
+  const mockStorage: Record<string, string> = {};
+  const storageShim = {
+    getItem: (key: string) => mockStorage[key] ?? null,
+    setItem: (key: string, val: string) => {
+      mockStorage[key] = val;
+    },
+    removeItem: (key: string) => {
+      delete mockStorage[key];
+    },
+    clear: () => {
+      for (const k of Object.keys(mockStorage)) delete mockStorage[k];
+    },
+    length: 0,
+    key: () => null,
+  } as unknown as Storage;
+
+  const url = new URL("https://app.plantpulse.io/?plant=plant_solar_pack&token=viewer_987654321");
+  const urlPlant = url.searchParams.get("plant");
+  const urlToken = url.searchParams.get("token");
+
+  assert.equal(urlPlant, "plant_solar_pack");
+  assert.equal(urlToken, "viewer_987654321");
+
+  if (urlPlant && urlToken) {
+    safeSessionStorageSet(`plantpulse_viewer_token_${urlPlant}`, urlToken, storageShim);
+  }
+
+  const retrieved = safeSessionStorageGet<string | null>(
+    "plantpulse_viewer_token_plant_solar_pack",
+    null,
+    storageShim
+  );
+  assert.equal(retrieved, "viewer_987654321");
+});
+
+

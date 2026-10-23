@@ -1,6 +1,7 @@
 import os
 import urllib.parse
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import psycopg
@@ -211,7 +212,7 @@ def test_unique_constraints_for_idempotency(test_pg_db):
             )
             conn.commit()
 
-            now_str = "2026-10-21T12:00:00Z"
+            now_str = datetime.now(UTC).isoformat()
             cur.execute(
                 "INSERT INTO telemetry_values (plant_id, machine_code, signal_code, device_timestamp, message_id, value_num) "
                 "VALUES ('p1', 'm1', 's1', %s, 'msg_1', 10.5)",
