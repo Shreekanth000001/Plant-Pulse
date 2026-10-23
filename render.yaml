@@ -1,0 +1,40 @@
+# Render Blueprint Specification for PlantPulse Single-Container Hosted Deployment
+# Docs Reference: https://render.com/docs/blueprint-spec (Verified: 2026-10-23)
+services:
+  - type: web
+    name: plantpulse-api
+    runtime: docker
+    dockerContext: .
+    dockerfilePath: ./Dockerfile.hosted
+    plan: free
+    region: oregon
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_URL_UNPOOLED
+        sync: false
+      - key: BACKEND_MQTT_PASSWORD
+        sync: false
+      - key: MQTT_PASSWORD
+        sync: false
+      - key: WATER_MQTT_PASSWORD
+        sync: false
+      - key: PLANT_WATER_DISTRICT_9_VIEWER_TOKEN
+        sync: false
+      - key: CLERK_PUBLISHABLE_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: ENABLE_SELF_SERVICE
+        value: "false"
+      - key: RETENTION_DAYS
+        value: "2"
+      - key: ENABLE_RETENTION_WORKER
+        value: "true"
+      - key: DEMO_MAX_SECONDS_PER_DAY
+        value: "1800"
+      - key: MOUNT_ADMIN_ENDPOINTS
+        value: "false"

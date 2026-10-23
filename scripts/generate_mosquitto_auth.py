@@ -51,9 +51,15 @@ def _write_auth_file_atomic(dest_path: Path, content: str) -> None:
     tmp_path.write_text(content, encoding="utf-8")
 
     try:
-        os.chown(tmp_path, 1883, 1883)
-    except (PermissionError, OSError):
-        pass
+        import pwd
+
+        m_entry = pwd.getpwnam("mosquitto")
+        os.chown(tmp_path, m_entry.pw_uid, m_entry.pw_gid)
+    except (KeyError, PermissionError, OSError):
+        try:
+            os.chown(tmp_path, 1883, 1883)
+        except (PermissionError, OSError):
+            pass
 
     try:
         os.chmod(tmp_path, 0o600)
@@ -405,6 +411,11 @@ def main() -> None:
         action="store_true",
         help="Trigger SIGHUP reload of running mosquitto process",
     )
+    parser.add_argument(
+        "--from-db",
+        action="store_true",
+        help="Generate Mosquitto password and ACL files from database",
+    )
 
     args = parser.parse_args()
 
@@ -412,6 +423,27 @@ def main() -> None:
         parser.error(
             "Backend MQTT password is required (set BACKEND_MQTT_PASSWORD in environment or provide --backend-password). Refusing to proceed with missing secret."
         )
+
+    if args.from_db:
+        from db import get_db_connection
+        from main import seed_plants_if_empty
+
+        conn = get_db_connection()
+        try:
+            if args.plants_dir.exists():
+                seed_plants_if_empty(conn, args.plants_dir)
+            auth_dir = args.passwd_path.parent
+            sync_broker_auth_from_db(
+                conn,
+                auth_dir=auth_dir,
+                backend_user=args.backend_user,
+                backend_password=args.backend_password,
+                reload=args.reload,
+            )
+            print(f"Generated Mosquitto auth from DB in: {auth_dir}")
+            return
+        finally:
+            conn.close()
 
     passwd_out, acl_out = generate_auth_files(
         plants_dir=args.plants_dir,

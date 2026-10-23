@@ -36,7 +36,10 @@ def check_http_endpoint(
 
 
 async def run_smoke_test(
-    api_url: str, ws_url: str, timeout_seconds: float = 90.0
+    api_url: str,
+    ws_url: str,
+    timeout_seconds: float = 90.0,
+    hold_seconds: float = 0.0,
 ) -> None:
     print(f"[smoke] Checking health at {api_url}/health ...")
     health = check_http_endpoint(f"{api_url}/health", "Health endpoint")
@@ -122,6 +125,18 @@ async def run_smoke_test(
                     f"  - Machine '{m.get('machine_code')}' ({m.get('state')}): signals={sig_summary}"
                 )
 
+            if hold_seconds > 0:
+                print(
+                    f"[smoke] Holding viewer WebSocket connected for {hold_seconds}s..."
+                )
+                end_hold = time.time() + hold_seconds
+                while time.time() < end_hold:
+                    await asyncio.sleep(5.0)
+                    rem = int(max(0, end_hold - time.time()))
+                    print(
+                        f"[smoke] Viewer connected... ({received_frames} ws frames received, {rem}s remaining)"
+                    )
+
         finally:
             listener_task.cancel()
             await asyncio.gather(listener_task, return_exceptions=True)
@@ -143,6 +158,12 @@ def main() -> None:
         default=90.0,
         help="Max seconds to wait for telemetry to appear",
     )
+    parser.add_argument(
+        "--hold-seconds",
+        type=float,
+        default=0.0,
+        help="Hold viewer WebSocket connected for N seconds after telemetry verified",
+    )
     args = parser.parse_args()
 
     try:
@@ -151,6 +172,7 @@ def main() -> None:
                 api_url=args.api_url.rstrip("/"),
                 ws_url=args.ws_url,
                 timeout_seconds=args.timeout,
+                hold_seconds=args.hold_seconds,
             )
         )
     except Exception as exc:  # noqa: BLE001

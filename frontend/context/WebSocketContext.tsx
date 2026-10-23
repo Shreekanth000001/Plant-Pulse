@@ -80,6 +80,9 @@ interface WebSocketContextType {
   submitViewerToken: (token: string) => void;
   clearViewerToken: () => void;
   pollingActive: boolean;
+  isServerWaking: boolean;
+  wakeupAttempt: number;
+  retryInitialFetch: () => void;
 }
 
 const WebSocketContext = createContext<WebSocketContextType | null>(null);
@@ -110,6 +113,9 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const [tokenError, setTokenError] = useState<string | null>(null);
   const [isTokenRequired, setIsTokenRequired] = useState(false);
   const [pollingActive, setPollingActive] = useState(false);
+  const [isServerWaking, setIsServerWaking] = useState(false);
+  const [wakeupAttempt, setWakeupAttempt] = useState(0);
+  const wakeupRetryTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const { isSignedIn, isLoaded, getToken } = useAuth();
   const clerkAuthFailedRef = useRef<Record<string, boolean>>({});
@@ -171,16 +177,46 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     setStatus("token_required");
   }, [selectedPlantId]);
 
-  // 1. Fetch plants list on mount and check URL query parameters for direct plant/token sharing
-  useEffect(() => {
-    let active = true;
+  const loadPlantsListRef = useRef<(attemptNumber: number) => void>(() => {});
+
+  const loadPlantsList = useCallback((attemptNumber = 0) => {
+    const slowTimer = setTimeout(() => {
+      setIsServerWaking(true);
+    }, 2500);
+
     fetchPlants()
       .then((data) => {
-        if (active) setPlantsList(data);
+        clearTimeout(slowTimer);
+        setIsServerWaking(false);
+        setWakeupAttempt(0);
+        setPlantsList(data);
       })
       .catch((err) => {
-        console.warn("Failed to fetch plants list:", err);
+        clearTimeout(slowTimer);
+        setIsServerWaking(true);
+        setWakeupAttempt(attemptNumber + 1);
+        console.warn("Failed to fetch plants list (server may be waking up):", err);
+        const backoffMs = Math.min(2000 * Math.pow(1.5, attemptNumber), 15000);
+        if (wakeupRetryTimerRef.current) clearTimeout(wakeupRetryTimerRef.current);
+        wakeupRetryTimerRef.current = setTimeout(() => {
+          loadPlantsListRef.current(attemptNumber + 1);
+        }, backoffMs);
       });
+  }, []);
+
+  useEffect(() => {
+    loadPlantsListRef.current = loadPlantsList;
+  }, [loadPlantsList]);
+
+  const retryInitialFetch = useCallback(() => {
+    if (wakeupRetryTimerRef.current) clearTimeout(wakeupRetryTimerRef.current);
+    loadPlantsList(wakeupAttempt + 1);
+  }, [loadPlantsList, wakeupAttempt]);
+
+  // 1. Fetch plants list on mount with wakeup handling and check URL query parameters
+  useEffect(() => {
+    let active = true;
+    loadPlantsList(0);
 
     if (typeof window !== "undefined") {
       try {
@@ -223,7 +259,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     return () => {
       active = false;
     };
-  }, []);
+  }, [loadPlantsList]);
 
   // 2. Main plant sync effect (runs whenever selectedPlantId, tokenMap, or plantsList changes)
   useEffect(() => {
@@ -775,6 +811,9 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         submitViewerToken,
         clearViewerToken,
         pollingActive,
+        isServerWaking,
+        wakeupAttempt,
+        retryInitialFetch,
       }}
     >
       {children}

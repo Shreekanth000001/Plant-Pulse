@@ -89,9 +89,12 @@ def get_pool(database_url: str | None = None) -> ConnectionPool:
             pool = ConnectionPool(
                 conninfo=url,
                 kwargs={"prepare_threshold": None, "row_factory": dict_row},
+                check=ConnectionPool.check_connection,
                 min_size=1,
                 max_size=20,
                 timeout=connect_timeout,
+                max_idle=float(os.getenv("DB_MAX_IDLE", "300.0")),
+                max_lifetime=float(os.getenv("DB_MAX_LIFETIME", "1800.0")),
                 open=True,
             )
             _pools[url] = pool
