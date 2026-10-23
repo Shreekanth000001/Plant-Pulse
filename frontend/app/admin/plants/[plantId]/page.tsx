@@ -158,6 +158,7 @@ export default function AdminPlantDetailPage() {
         isOpen={modalState.isOpen}
         source={modalState.source}
         credentials={modalState.credentials}
+        plantId={plantId}
         brokerReloaded={modalState.brokerReloaded}
         onClose={handleModalClose}
       />

@@ -8,6 +8,7 @@ interface AdminCredentialsModalProps {
   source: "create" | "rotate" | "viewer-token-rotate" | null;
   credentials?: OneTimeDeviceCredential[] | null;
   viewerToken?: string | null;
+  plantId?: string | null;
   brokerReloaded?: boolean;
   onClose: () => void;
 }
@@ -17,15 +18,26 @@ export function AdminCredentialsModal({
   source,
   credentials,
   viewerToken,
+  plantId,
   brokerReloaded,
   onClose,
 }: AdminCredentialsModalProps) {
   const [copied, setCopied] = useState(false);
+  const [copiedToken, setCopiedToken] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
   const [showPassword, setShowPassword] = useState(true);
 
   if (!isOpen || ((!credentials || credentials.length === 0) && !viewerToken)) {
     return null;
   }
+
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const shareableUrl =
+    plantId && viewerToken
+      ? `${origin}/?plant=${encodeURIComponent(plantId)}&token=${encodeURIComponent(viewerToken)}`
+      : viewerToken
+      ? `${origin}/?token=${encodeURIComponent(viewerToken)}`
+      : "";
 
   const handleCopy = async () => {
     try {
@@ -42,6 +54,9 @@ export function AdminCredentialsModal({
       }
       if (viewerToken) {
         parts.push(`# Viewer Token\nVIEWER_TOKEN=${viewerToken}`);
+        if (shareableUrl) {
+          parts.push(`# Direct Shareable URL\nSHAREABLE_URL=${shareableUrl}`);
+        }
       }
       const formatted = parts.join("\n\n");
 
@@ -55,12 +70,45 @@ export function AdminCredentialsModal({
     }
   };
 
+  const handleCopyToken = async () => {
+    if (!viewerToken) return;
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard) {
+        await navigator.clipboard.writeText(viewerToken);
+        setCopiedToken(true);
+        setTimeout(() => setCopiedToken(false), 2000);
+      }
+    } catch {
+      // ignore clipboard failures in headless environments
+    }
+  };
+
+  const handleCopyLink = async () => {
+    if (!shareableUrl) return;
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard) {
+        await navigator.clipboard.writeText(shareableUrl);
+        setCopiedLink(true);
+        setTimeout(() => setCopiedLink(false), 2000);
+      }
+    } catch {
+      // ignore clipboard failures in headless environments
+    }
+  };
+
   const title =
     source === "viewer-token-rotate"
       ? "Rotated Viewer Token"
       : source === "rotate"
       ? "Rotated Device Credentials"
+      : !credentials || credentials.length === 0
+      ? "Viewer Access Token & Share Link"
       : "One-Time Initial Device Credentials & Viewer Token";
+
+  const subtitle =
+    source === "viewer-token-rotate"
+      ? "Save or share this new viewer token now. Previous viewer tokens for this facility are revoked."
+      : "Save these credentials now. Plain-text passwords cannot be displayed again.";
 
   return (
     <div
@@ -83,7 +131,7 @@ export function AdminCredentialsModal({
                 {title}
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                Save these credentials now. Plain-text passwords cannot be displayed again.
+                {subtitle}
               </p>
             </div>
           </div>
@@ -99,7 +147,7 @@ export function AdminCredentialsModal({
         <div className="p-3.5 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-2.5">
           <span className="font-bold text-base leading-none text-amber-700">⚠️</span>
           <p className="leading-relaxed">
-            <strong className="font-semibold">Copy and store securely:</strong> Once you dismiss this dialog, the plain-text password is permanently purged from memory and cannot be recovered.
+            <strong className="font-semibold">Copy and store securely:</strong> Once you dismiss this dialog, plain-text credentials and tokens cannot be displayed again.
           </p>
         </div>
 
@@ -111,6 +159,61 @@ export function AdminCredentialsModal({
         )}
 
         <div className="flex flex-col gap-4 max-h-[45vh] overflow-y-auto pr-1">
+          {/* Read-Only Viewer Token Card */}
+          {viewerToken && (
+            <div className="bg-slate-50 border border-blue-200 rounded-2xl p-4 flex flex-col gap-3 font-sans text-xs">
+              <div className="flex items-center justify-between text-slate-500 text-[11px] font-semibold border-b border-slate-200 pb-1.5">
+                <span className="flex items-center gap-1.5 text-blue-900 font-bold">
+                  <span>🔗</span> Read-Only Viewer Access Token
+                </span>
+                <span className="px-2 py-0.5 rounded-md bg-blue-100 text-blue-800 text-[10px] font-semibold">
+                  SHARABLE
+                </span>
+              </div>
+
+              <p className="text-slate-600 text-xs leading-relaxed">
+                Share this token or 1-click link with shift managers, operators, or executives to grant instant read-only telemetry dashboard access without requiring an account.
+              </p>
+
+              {/* Raw Token */}
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-semibold text-slate-600">Token:</span>
+                  <button
+                    type="button"
+                    onClick={handleCopyToken}
+                    className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 transition-colors cursor-pointer"
+                  >
+                    {copiedToken ? "✓ Copied Token" : "Copy Token"}
+                  </button>
+                </div>
+                <div className="p-2.5 rounded-xl bg-white border border-slate-200 font-mono text-[11px] text-slate-900 select-all break-all">
+                  {viewerToken}
+                </div>
+              </div>
+
+              {/* Direct Shareable URL */}
+              {shareableUrl && (
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-semibold text-slate-600">Direct Share Link (1-Click Access):</span>
+                    <button
+                      type="button"
+                      onClick={handleCopyLink}
+                      className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 transition-colors cursor-pointer"
+                    >
+                      {copiedLink ? "✓ Copied Link" : "Copy Share Link"}
+                    </button>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-blue-50/70 border border-blue-200 font-mono text-[11px] text-blue-900 select-all break-all">
+                    {shareableUrl}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* MQTT Device Credentials */}
           {credentials && credentials.map((cred, idx) => (
             <div
               key={cred.username + idx}
@@ -167,7 +270,7 @@ export function AdminCredentialsModal({
             onClick={onClose}
             className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition-colors shadow-xs"
           >
-            I have saved credentials & Close
+            {source === "viewer-token-rotate" ? "Close" : "I have saved credentials & Close"}
           </button>
         </div>
       </div>

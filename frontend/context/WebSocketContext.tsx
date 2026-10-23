@@ -171,7 +171,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     setStatus("token_required");
   }, [selectedPlantId]);
 
-  // 1. Fetch plants list on mount
+  // 1. Fetch plants list on mount and check URL query parameters for direct plant/token sharing
   useEffect(() => {
     let active = true;
     fetchPlants()
@@ -181,6 +181,45 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
       .catch((err) => {
         console.warn("Failed to fetch plants list:", err);
       });
+
+    if (typeof window !== "undefined") {
+      try {
+        const searchParams = new URLSearchParams(window.location.search);
+        const urlPlant = searchParams.get("plant");
+        const urlToken = searchParams.get("token");
+
+        if (urlPlant) {
+          safeLocalStorageSet("plantpulse_active_plant", urlPlant);
+          if (urlToken) {
+            safeSessionStorageSet(`plantpulse_viewer_token_${urlPlant}`, urlToken);
+          }
+          queueMicrotask(() => {
+            if (!active) return;
+            setSelectedPlantId(urlPlant);
+            if (urlToken) {
+              setTokenMap((prev) => ({ ...prev, [urlPlant]: urlToken }));
+              setIsTokenRequired(false);
+              setTokenError(null);
+            }
+          });
+        } else if (urlToken) {
+          const currentPlant = safeLocalStorageGet(
+            "plantpulse_active_plant",
+            DEFAULT_PLANT_ID
+          );
+          safeSessionStorageSet(`plantpulse_viewer_token_${currentPlant}`, urlToken);
+          queueMicrotask(() => {
+            if (!active) return;
+            setTokenMap((prev) => ({ ...prev, [currentPlant]: urlToken }));
+            setIsTokenRequired(false);
+            setTokenError(null);
+          });
+        }
+      } catch {
+        // ignore URL parsing errors
+      }
+    }
+
     return () => {
       active = false;
     };

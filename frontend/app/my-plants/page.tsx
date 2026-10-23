@@ -44,6 +44,7 @@ export default function MyPlantsPage() {
   >(null);
   const [modalCredentials, setModalCredentials] = useState<OneTimeDeviceCredential[] | null>(null);
   const [modalViewerToken, setModalViewerToken] = useState<string | null>(null);
+  const [modalPlantId, setModalPlantId] = useState<string | null>(null);
   const [modalBrokerReloaded, setModalBrokerReloaded] = useState<boolean | undefined>(undefined);
 
   // Delete Modal State
@@ -172,6 +173,7 @@ export default function MyPlantsPage() {
         },
       ]);
       setModalViewerToken(null);
+      setModalPlantId(selectedPlantId);
       setModalBrokerReloaded(res.broker_reloaded);
       setCredModalSource("rotate");
       setCredModalOpen(true);
@@ -188,6 +190,7 @@ export default function MyPlantsPage() {
       const res = await rotateMyPlantViewerToken(selectedPlantId, token);
       setModalCredentials(null);
       setModalViewerToken(res.viewer_token);
+      setModalPlantId(selectedPlantId);
       setModalBrokerReloaded(undefined);
       setCredModalSource("viewer-token-rotate");
       setCredModalOpen(true);
@@ -236,6 +239,7 @@ export default function MyPlantsPage() {
     ) {
       setModalCredentials(created.one_time_device_credentials || null);
       setModalViewerToken(created.viewer_token || null);
+      setModalPlantId(created.plant_id);
       setModalBrokerReloaded(created.broker_reloaded);
       setCredModalSource("create");
       setCredModalOpen(true);
@@ -289,6 +293,7 @@ export default function MyPlantsPage() {
         source={credModalSource}
         credentials={modalCredentials}
         viewerToken={modalViewerToken}
+        plantId={modalPlantId || selectedPlantId || undefined}
         brokerReloaded={modalBrokerReloaded}
         onClose={() => setCredModalOpen(false)}
       />
