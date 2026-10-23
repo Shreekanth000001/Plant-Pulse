@@ -75,12 +75,50 @@ def get_database_url() -> str:
     )
 
 
+def ensure_ipv4_database_url(url: str) -> str:
+    """Ensure PostgreSQL URL uses an IPv4 destination to prevent ENETUNREACH in IPv4-only cloud runtimes."""
+    if not isinstance(url, str):
+        return url
+    try:
+        import ipaddress
+        import socket
+        from urllib.parse import parse_qs, urlparse
+
+        parsed = urlparse(url)
+        if not parsed.hostname or parsed.hostname in ("localhost", "127.0.0.1", "::1"):
+            return url
+        try:
+            ipaddress.ip_address(parsed.hostname)
+            return url
+        except ValueError:
+            pass
+
+        query_params = parse_qs(parsed.query, keep_blank_values=True)
+        if "hostaddr" in query_params:
+            return url
+
+        infos = socket.getaddrinfo(
+            parsed.hostname,
+            parsed.port or 5432,
+            family=socket.AF_INET,
+            type=socket.SOCK_STREAM,
+        )
+        if infos:
+            ipv4 = infos[0][4][0]
+            delimiter = "&" if parsed.query else "?"
+            return f"{url}{delimiter}hostaddr={ipv4}"
+    except Exception:  # noqa: BLE001, S110
+        pass
+    return url
+
+
 def get_pool(database_url: str | None = None) -> ConnectionPool:
     """Get or create a ConnectionPool for the specified database URL."""
     url = database_url or get_database_url()
     # Normalize if a file path or non-postgres URL was passed for legacy compatibility
     if not url.startswith(("postgresql://", "postgres://")):
         url = get_database_url()
+    url = ensure_ipv4_database_url(url)
 
     with _pools_lock:
         pool = _pools.get(url)
