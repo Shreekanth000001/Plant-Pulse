@@ -5,6 +5,11 @@ log() {
     echo "[$(date -u +'%Y-%m-%dT%H:%M:%S.%3NZ')] $1"
 }
 
+# Ensure glibc prefers IPv4 over IPv6 in IPv4-only cloud container environments (e.g. Render)
+if [ -w /etc/gai.conf ] || [ ! -f /etc/gai.conf ]; then
+    echo "precedence ::ffff:0:0/96 100" >> /etc/gai.conf 2>/dev/null || true
+fi
+
 log "==> Validating required secrets..."
 if [ -z "$DATABASE_URL" ]; then
     log "ERROR: Missing required secret: DATABASE_URL is not set. Exiting."

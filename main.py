@@ -60,7 +60,12 @@ from admin_auth import (
     verify_clerk_user,
     viewer_rate_limiter,
 )
-from db import ensure_partitions, get_database_url, get_db_connection
+from db import (
+    ensure_ipv4_database_url,
+    ensure_partitions,
+    get_database_url,
+    get_db_connection,
+)
 from ingest import IngestEngine, sync_plant_definitions
 from plant_definitions import (
     AdminCredentialRotateResponse,
@@ -891,6 +896,7 @@ def init_platform_db(database_url: str | None = None) -> None:
         "postgresql+psycopg://"
     ):
         alembic_url = alembic_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    alembic_url = ensure_ipv4_database_url(alembic_url)
 
     alembic_cfg = Config(str(ini_path))
     alembic_cfg.set_main_option("script_location", str(repo_root / "migrations"))

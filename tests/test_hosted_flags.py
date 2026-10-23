@@ -218,3 +218,42 @@ def test_hosted_entrypoint_unsets_admin_tokens():
     assert "RESULT_ADMIN_TOKEN=" in proc.stdout
     assert "accidental_admin_token" not in proc.stdout
     assert "accidental_secret_token" not in proc.stdout
+
+
+def test_ensure_ipv4_database_url():
+    """Ensure PostgreSQL URLs automatically resolve and append hostaddr for dual-stack hosts."""
+    from unittest.mock import patch
+
+    from db import ensure_ipv4_database_url
+
+    # 1. Localhost and 127.0.0.1 should not be modified
+    assert (
+        ensure_ipv4_database_url("postgresql://postgres:postgres@localhost:5432/test")
+        == "postgresql://postgres:postgres@localhost:5432/test"
+    )
+    assert (
+        ensure_ipv4_database_url("postgresql://postgres:postgres@127.0.0.1:5432/test")
+        == "postgresql://postgres:postgres@127.0.0.1:5432/test"
+    )
+
+    # 2. Existing hostaddr parameter should not be overwritten
+    already_ipv4 = (
+        "postgresql://user:pass@ep-test.neon.tech/db?sslmode=require&hostaddr=1.2.3.4"
+    )
+    assert ensure_ipv4_database_url(already_ipv4) == already_ipv4
+
+    # 3. Domain resolution should append hostaddr with IPv4
+    fake_info = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("52.76.212.156", 5432))]
+    with patch("socket.getaddrinfo", return_value=fake_info):
+        resolved = ensure_ipv4_database_url(
+            "postgresql://user:pass@ep-ancient-term-b3n7ldhe.c-4.ap-southeast-1.aws.neon.tech/neondb?sslmode=require"
+        )
+        assert (
+            resolved
+            == "postgresql://user:pass@ep-ancient-term-b3n7ldhe.c-4.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&hostaddr=52.76.212.156"
+        )
+
+    # 4. Graceful handling of resolution exceptions
+    with patch("socket.getaddrinfo", side_effect=socket.gaierror("DNS lookup failed")):
+        url = "postgresql://user:pass@unresolvable-host.com/db?sslmode=require"
+        assert ensure_ipv4_database_url(url) == url

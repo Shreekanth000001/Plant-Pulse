@@ -16,9 +16,20 @@ if config.config_file_name is not None:
 # Override sqlalchemy.url from DATABASE_URL_UNPOOLED or DATABASE_URL env var
 current_url = config.get_main_option("sqlalchemy.url")
 db_url = os.environ.get("DATABASE_URL_UNPOOLED") or os.environ.get("DATABASE_URL")
-if db_url and (not current_url or current_url == "postgresql+psycopg://postgres:postgres@localhost:5432/plantpulse"):
-    if db_url.startswith("postgresql://") and not db_url.startswith("postgresql+psycopg://"):
+if db_url and (
+    not current_url
+    or current_url == "postgresql+psycopg://postgres:postgres@localhost:5432/plantpulse"
+):
+    if db_url.startswith("postgresql://") and not db_url.startswith(
+        "postgresql+psycopg://"
+    ):
         db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    try:
+        from db import ensure_ipv4_database_url
+
+        db_url = ensure_ipv4_database_url(db_url)
+    except ImportError:
+        pass
     config.set_main_option("sqlalchemy.url", db_url)
 
 target_metadata = None
