@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { getApiBaseUrl } from "../../lib/api";
 import {
   DemoBudgetState,
   getDemoBudgetBannerProps,
@@ -17,7 +18,10 @@ export function DemoBudgetBanner() {
 
     async function checkBudget() {
       try {
-        const res = await fetch("/api/demo-budget", { cache: "no-store" });
+        const baseUrl = getApiBaseUrl();
+        const res = await fetch(`${baseUrl}/api/demo-budget`, {
+          cache: "no-store",
+        });
         if (res.ok) {
           const data = await res.json();
           if (mounted) {
