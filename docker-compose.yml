@@ -22,6 +22,7 @@ services:
       WATER_MQTT_PASSWORD: ${WATER_MQTT_PASSWORD:?WATER_MQTT_PASSWORD is required in .env}
 
   broker:
+    # Local compose pins official eclipse-mosquitto:2.0.20; hosted single-container (Dockerfile.hosted) uses Debian bookworm's mosquitto 2.0.11.
     image: eclipse-mosquitto:2.0.20
     depends_on:
       auth-init:

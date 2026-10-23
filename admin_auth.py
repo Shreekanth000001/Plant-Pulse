@@ -131,7 +131,9 @@ def _decode_clerk_jwt(token: str) -> dict[str, Any]:
                 if not expected_issuer:
                     expected_issuer = f"https://{domain}"
             except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
-                log.debug("Could not derive Clerk JWKS URL from publishable key: %s", exc)
+                log.debug(
+                    "Could not derive Clerk JWKS URL from publishable key: %s", exc
+                )
 
     if not public_key_pem and not jwks_url:
         # Clerk auth is not configured; fail closed
@@ -194,7 +196,7 @@ def verify_admin_user(
         )
 
     # Server configuration check: fail closed if no auth is configured
-    admin_token = os.getenv("ADMIN_TOKEN")
+    admin_token = os.getenv("ADMIN_TOKEN") or os.getenv("ADMIN_SECRET_TOKEN")
     clerk_configured = bool(
         os.getenv("CLERK_PEM_PUBLIC_KEY")
         or os.getenv("CLERK_JWKS_URL")

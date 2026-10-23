@@ -112,7 +112,7 @@ PlantPulse provides time-series trend analysis for machine sensor readings via a
 
 To prevent unbounded database growth during extended runs, a scheduled background worker continuously enforces a configurable retention window:
 
-- **Configuration:** Controlled by `RETENTION_DAYS` (default `30` days) and `ENABLE_RETENTION_WORKER` (default `true`, disabled in test environments). Upcoming partitions are pre-created across range `[today-1 .. today+7]` at startup and daily.
+- **Configuration:** Controlled by `RETENTION_DAYS` (default `30` days, hosted sets `2`) and `ENABLE_RETENTION_WORKER` (default `false` in code, set to `true` on hosted and production deployments). Upcoming partitions are pre-created across range `[today-1 .. today+7]` at startup and daily.
 - **Partition Drops & Batched Purges:** Telemetry data is purged by dropping expired daily partitions (`DROP TABLE telemetry_values_pYYYY_MM_DD`) older than `RETENTION_DAYS`, immediately reclaiming physical disk space without vacuum locking. Associated operational data in `units`, `stage_events`, and `qc_results` are cleaned using non-blocking composite-key batched deletes in chunks of 50,000 rows off the main event loop.
 
 ---
@@ -301,6 +301,40 @@ python scripts/smoke_stack.py
 
 ---
 
+## Hosted Single-Container Deployment (PR H1)
+
+PlantPulse can be deployed as a single, low-memory container to free-tier cloud platforms (such as Render Free Web Service, 512 MB RAM, 0.1 CPU) backed by a managed PostgreSQL database (such as Neon PostgreSQL with `sslmode=require`).
+
+In single-container mode, `Dockerfile.hosted` uses a process supervisor (`supervisord`) to manage:
+1. **Mosquitto MQTT Broker**: Bound strictly to `127.0.0.1:1883` loopback (never exposed publicly).
+2. **FastAPI Application**: Running Uvicorn on `0.0.0.0:$PORT` (dynamic port assigned by the host).
+3. **Demo Simulator**: Running the manufacturing simulation connected to local MQTT loopback (`127.0.0.1:1883`).
+
+### Environment Variables & Flags
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DATABASE_URL` | *(required)* | PostgreSQL connection string (supports `sslmode=require` with pool health-checks). |
+| `PORT` | `8000` | Port for Uvicorn HTTP/WebSocket server. |
+| `RETENTION_DAYS` | `2` | Number of days of telemetry partitions to retain. Defaults to **`2`** for hosted single-container mode to keep disk and database storage within free-tier quotas. |
+| `ENABLE_SELF_SERVICE` | `true` | When set to `false`, disables `/api/me` routes (returns 404) and hides the "My plants" link on the dashboard (built with `NEXT_PUBLIC_ENABLE_SELF_SERVICE=false`). |
+| `CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Comma-separated list of allowed frontend origins (whitespace-trimmed). |
+
+### Building and Running the Hosted Container
+
+```bash
+docker build -f Dockerfile.hosted -t plantpulse-hosted .
+
+docker run -d --name plantpulse-app \
+  -p 8000:8000 \
+  -e DATABASE_URL="postgresql://user:pass@ep-host.neon.tech/neondb?sslmode=require" \
+  -e RETENTION_DAYS=2 \
+  -e CORS_ORIGINS="https://your-frontend.vercel.app" \
+  plantpulse-hosted
+```
+
+---
+
 ## Running Locally (Without Docker)
 
 Prerequisites: Python 3.12, Node 22+, a local Mosquitto broker, and a running PostgreSQL 16 instance.
@@ -367,7 +401,7 @@ cd frontend && npm test
 # 4. Linting & code formatting
 ruff check .
 cd frontend && npm run lint
-codespell --skip="*.db*,*.wal,*.shm,./venv,./frontend/node_modules,./frontend/.next,./.git,./docs/*.png"
+codespell --skip="*.db*,*.wal,*.shm,./venv,./node_modules,./frontend/node_modules,./frontend/.next,./.git,./docs/*.png"
 ```
 
 ---

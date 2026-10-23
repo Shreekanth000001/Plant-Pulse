@@ -287,7 +287,7 @@ def verify_plant_viewer(
         return
 
     # 4. Static ADMIN_TOKEN verification (platform_admin)
-    admin_token = os.getenv("ADMIN_TOKEN")
+    admin_token = os.getenv("ADMIN_TOKEN") or os.getenv("ADMIN_SECRET_TOKEN")
     if admin_token and secrets.compare_digest(
         token.encode("utf-8"), admin_token.encode("utf-8")
     ):
@@ -663,6 +663,102 @@ async def handle_plant_heartbeat(payload: dict, plant_id: str) -> None:
 
 DEMO_PLANT_ID = "plant_demo_membrane"
 active_mqtt_client: aiomqtt.Client | None = None
+DEMO_MAX_SECONDS_PER_DAY_ENV = "DEMO_MAX_SECONDS_PER_DAY"
+
+_demo_budget_cache: dict[str, Any] = {
+    "cached_at": 0.0,
+    "date_utc": None,
+    "used_seconds": 0,
+}
+_demo_budget_lock = threading.Lock()
+
+
+def get_demo_max_seconds_per_day() -> int:
+    try:
+        return int(os.getenv(DEMO_MAX_SECONDS_PER_DAY_ENV, "0"))
+    except ValueError:
+        return 0
+
+
+def get_demo_budget_usage(
+    conn: Any,
+    now: datetime | None = None,
+    force_refresh: bool = False,
+) -> tuple[int, int, int | None, str, bool]:
+    """Calculate demo budget used across all plants for today (since 00:00 UTC).
+
+    Partition-pruned query:
+    Explicit device_timestamp bounds >= start_of_day AND < next_day guarantees
+    PostgreSQL range partition pruning touches only today's partition.
+    Result is cached in-memory for 30 seconds.
+
+    Returns:
+        (max_seconds, used_seconds, remaining_seconds, resets_at_iso, is_exhausted)
+    """
+    if now is None:
+        now = datetime.now(UTC)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+
+    max_seconds = get_demo_max_seconds_per_day()
+    today_utc = now.date()
+    start_of_day = datetime(now.year, now.month, now.day, 0, 0, 0, tzinfo=UTC)
+    next_day = start_of_day + timedelta(days=1)
+    resets_at_iso = next_day.isoformat()
+
+    if max_seconds <= 0:
+        return max_seconds, 0, None, resets_at_iso, False
+
+    current_monotonic = time.monotonic()
+    with _demo_budget_lock:
+        if (
+            not force_refresh
+            and _demo_budget_cache["date_utc"] == today_utc
+            and current_monotonic - _demo_budget_cache["cached_at"] < 30.0
+        ):
+            used_seconds = _demo_budget_cache["used_seconds"]
+            remaining = max(0, max_seconds - used_seconds)
+            return max_seconds, used_seconds, remaining, resets_at_iso, remaining <= 0
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT COUNT(DISTINCT date_trunc('second', device_timestamp)) AS used_seconds
+        FROM telemetry_values
+        WHERE device_timestamp >= %s
+          AND device_timestamp < %s;
+        """,
+        (start_of_day, next_day),
+    )
+    row = cur.fetchone()
+    used_seconds = int(row["used_seconds"] if isinstance(row, dict) else row[0])
+
+    with _demo_budget_lock:
+        _demo_budget_cache["cached_at"] = current_monotonic
+        _demo_budget_cache["date_utc"] = today_utc
+        _demo_budget_cache["used_seconds"] = used_seconds
+
+    remaining = max(0, max_seconds - used_seconds)
+    is_exhausted = remaining <= 0
+    return max_seconds, used_seconds, remaining, resets_at_iso, is_exhausted
+
+
+def is_demo_budget_exhausted(conn: Any = None, now: datetime | None = None) -> bool:
+    """Return True if DEMO_MAX_SECONDS_PER_DAY is configured and exceeded for today."""
+    max_seconds = get_demo_max_seconds_per_day()
+    if max_seconds <= 0:
+        return False
+
+    should_close = False
+    if conn is None:
+        conn = get_db_connection()
+        should_close = True
+    try:
+        _, _, _, _, exhausted = get_demo_budget_usage(conn, now=now)
+        return exhausted
+    finally:
+        if should_close:
+            conn.close()
 
 
 async def emit_heartbeat_tick(
@@ -680,6 +776,13 @@ async def emit_heartbeat_tick(
     has_rest_viewers = trk.has_recent_poll()
 
     if not has_ws_viewers and not has_rest_viewers:
+        return False
+
+    if is_demo_budget_exhausted():
+        log.info(
+            "Demo budget exhausted for today across plants; withholding heartbeat for %s",
+            plant_id,
+        )
         return False
 
     payload = json.dumps({"timestamp": datetime.now(UTC).isoformat()})
@@ -891,15 +994,33 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Factory Telemetry API", lifespan=lifespan)
 
+
 # Browsers block a page on one origin (localhost:3000, the Next.js dev
-# server) from calling an API on another (localhost:8000) unless the API
-# explicitly allows it. Add your deployed frontend's URL here later.
-# (WebSockets aren't subject to this check, only fetch/XHR requests.)
+class DynamicCORSMiddleware(CORSMiddleware):
+    def is_allowed_origin(self, origin: str) -> bool:
+        if self.allow_all_origins:
+            return True
+        if self.allow_origin_regex is not None and self.allow_origin_regex.fullmatch(
+            origin
+        ):
+            return True
+        allowed = [
+            o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()
+        ]
+        if origin in allowed:
+            return True
+        return origin in self.allow_origins
+
+
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=os.getenv(
-        "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
-    ).split(","),
+    DynamicCORSMiddleware,
+    allow_origins=[
+        o.strip()
+        for o in os.getenv(
+            "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+        ).split(",")
+        if o.strip()
+    ],
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
@@ -986,7 +1107,37 @@ async def track_viewer_activity(request: Request, call_next):
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok"}
+    conn = get_db_connection()
+    try:
+        max_sec, used_sec, rem_sec, resets_at, exhausted = get_demo_budget_usage(conn)
+        return {
+            "status": "ok",
+            "demo_budget": {
+                "max_seconds_per_day": max_sec,
+                "used_seconds": used_sec,
+                "remaining_seconds": rem_sec,
+                "resets_at": resets_at,
+                "exhausted": exhausted,
+            },
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/demo-budget")
+def get_demo_budget() -> dict:
+    conn = get_db_connection()
+    try:
+        max_sec, used_sec, rem_sec, resets_at, exhausted = get_demo_budget_usage(conn)
+        return {
+            "max_seconds_per_day": max_sec,
+            "used_seconds": used_sec,
+            "remaining_seconds": rem_sec,
+            "resets_at": resets_at,
+            "exhausted": exhausted,
+        }
+    finally:
+        conn.close()
 
 
 @app.get("/api/plants", response_model=list[PlantSummary])
@@ -1093,9 +1244,7 @@ def get_latest_plant_machines(plant_id: str) -> list[dict]:
             """,
             (plant_id,),
         ).fetchall()
-        db_unit_by_machine = {
-            r["machine_code"]: r["unit_id"] for r in latest_unit_rows
-        }
+        db_unit_by_machine = {r["machine_code"]: r["unit_id"] for r in latest_unit_rows}
 
         result = []
         for mr in machines_rows:
@@ -2583,13 +2732,22 @@ async def me_rotate_viewer_token(
 app.include_router(me_router)
 
 
-def build_app(mount_admin: bool | None = None) -> FastAPI:
+def is_self_service_enabled() -> bool:
+    return os.getenv("ENABLE_SELF_SERVICE", "true").lower() in ("true", "1", "yes")
+
+
+def build_app(
+    mount_admin: bool | None = None,
+    enable_self_service: bool | None = None,
+) -> FastAPI:
     if mount_admin is None:
         mount_admin = os.getenv("MOUNT_ADMIN_ENDPOINTS", "false").lower() in (
             "true",
             "1",
             "yes",
         )
+    if enable_self_service is None:
+        enable_self_service = is_self_service_enabled()
 
     has_admin = any(
         getattr(r, "original_router", None) is admin_router for r in app.router.routes
@@ -2602,6 +2760,19 @@ def build_app(mount_admin: bool | None = None) -> FastAPI:
             for r in app.router.routes
             if getattr(r, "original_router", None) is not admin_router
         ]
+
+    has_me = any(
+        getattr(r, "original_router", None) is me_router for r in app.router.routes
+    )
+    if enable_self_service and not has_me:
+        app.include_router(me_router)
+    elif not enable_self_service and has_me:
+        app.router.routes = [
+            r
+            for r in app.router.routes
+            if getattr(r, "original_router", None) is not me_router
+        ]
+
     return app
 
 

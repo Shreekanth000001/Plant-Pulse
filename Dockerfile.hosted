@@ -1,0 +1,55 @@
+FROM python:3.12.7-slim-bookworm
+
+# Hosted single-container mode (PR H1):
+# - Supervises Mosquitto (listener bound strictly to 127.0.0.1:1883),
+#   Uvicorn on 0.0.0.0:$PORT, and simulator (MQTT host 127.0.0.1).
+# - RETENTION_DAYS=2 keeps storage footprint minimal on free/ephemeral tiers.
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app \
+    PORT=8000 \
+    MQTT_HOST=127.0.0.1 \
+    MQTT_PORT=1883 \
+    MOSQUITTO_AUTH_DIR=/mosquitto/auth \
+    RETENTION_DAYS=2
+
+WORKDIR /app
+
+# Install system dependencies: mosquitto broker, mosquitto client, supervisor, curl, procps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    mosquitto \
+    mosquitto-clients \
+    procps \
+    supervisor \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Create unprivileged application user
+RUN useradd -m -u 1000 -s /bin/bash app
+
+# Setup Mosquitto & Supervisor directories and configurations
+RUN mkdir -p /etc/mosquitto /etc/supervisor /mosquitto/auth /mosquitto/data /app \
+    && chown -R app:app /mosquitto /etc/mosquitto /app
+COPY docker/mosquitto.hosted.conf /etc/mosquitto/mosquitto.hosted.conf
+COPY docker/supervisord.hosted.conf /etc/supervisor/supervisord.conf
+
+# Copy application codebase
+COPY alembic.ini .
+COPY migrations ./migrations
+COPY plants ./plants
+COPY scripts ./scripts
+COPY demo ./demo
+COPY *.py ./
+RUN chown -R app:app /app
+
+# Copy entrypoint script
+COPY docker/entrypoint.hosted.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 8000
+
+ENTRYPOINT ["/entrypoint.sh"]

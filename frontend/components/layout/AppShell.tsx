@@ -3,6 +3,8 @@
 import React, { useState, Suspense } from "react";
 import { Sidebar } from "./Sidebar";
 import { Header } from "./Header";
+import { ServerWakeupBanner } from "./ServerWakeupBanner";
+import { DemoBudgetBanner } from "./DemoBudgetBanner";
 
 interface AppShellProps {
   children: React.ReactNode;
@@ -27,6 +29,12 @@ export function AppShell({ children }: AppShellProps) {
         <Suspense fallback={<header className="sticky top-0 z-30 w-full h-16 border-b border-slate-200 bg-white/90" />}>
           <Header onToggleSidebar={() => setSidebarOpen((prev) => !prev)} />
         </Suspense>
+
+        {/* Cold Start Server Wakeup Banner */}
+        <ServerWakeupBanner />
+
+        {/* Daily Demo Budget Exhausted Banner */}
+        <DemoBudgetBanner />
 
         {/* Page Body */}
         <main className="flex-1 p-4 lg:p-8 max-w-7xl w-full mx-auto">
