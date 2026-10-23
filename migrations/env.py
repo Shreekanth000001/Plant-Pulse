@@ -13,9 +13,9 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
-# Override sqlalchemy.url from DATABASE_URL env var if default or not provided
+# Override sqlalchemy.url from DATABASE_URL_UNPOOLED or DATABASE_URL env var
 current_url = config.get_main_option("sqlalchemy.url")
-db_url = os.environ.get("DATABASE_URL")
+db_url = os.environ.get("DATABASE_URL_UNPOOLED") or os.environ.get("DATABASE_URL")
 if db_url and (not current_url or current_url == "postgresql+psycopg://postgres:postgres@localhost:5432/plantpulse"):
     if db_url.startswith("postgresql://") and not db_url.startswith("postgresql+psycopg://"):
         db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)

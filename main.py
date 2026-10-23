@@ -781,7 +781,8 @@ def init_platform_db(database_url: str | None = None) -> None:
 
     repo_root = Path(__file__).resolve().parent
     ini_path = repo_root / "alembic.ini"
-    alembic_url = url
+    unpooled = os.getenv("DATABASE_URL_UNPOOLED")
+    alembic_url = unpooled if unpooled else url
     if alembic_url.startswith("postgresql://") and not alembic_url.startswith(
         "postgresql+psycopg://"
     ):
