@@ -30,7 +30,7 @@ openssl rand -hex 16
 | `WATER_MQTT_PASSWORD` | Render | **Secret** | Ingestion password for `plant_water_district_9` device. | `openssl rand -hex 16` |
 | `PLANT_WATER_DISTRICT_9_VIEWER_TOKEN` | Render | **Secret** | Viewer bearer token for gated Water District 9 plant (required). | `openssl rand -hex 16` |
 | `ADMIN_TOKEN` / `ADMIN_SECRET_TOKEN` | *None* | **Hardened** | Must stay UNSET on hosted deployment. If set, entrypoint warns and unsets them. | Keep unset |
-| `CLERK_PUBLISHABLE_KEY` | Render | **Public** | Clerk frontend publishable API key identifier. | From Clerk Dashboard |
+| `CLERK_PUBLISHABLE_KEY` | Render | **Public** | Clerk frontend publishable API key identifier (used in `admin_auth.py:120,203` to derive JWKS endpoint and verify auth config). | From Clerk Dashboard |
 | `CORS_ORIGINS` | Render | **Public** | Allowed browser origin (must match your Vercel URL). | e.g. `https://plantpulse.vercel.app` |
 | `ENABLE_SELF_SERVICE` | Render | **Flag** | Disable self-service endpoints on public hosted tier (`false`). | Explicitly set `"false"` |
 | `RETENTION_DAYS` | Render | **Flag** | Telemetry retention horizon in days (`2` on free tier). | Explicitly set `"2"` |
@@ -45,6 +45,8 @@ openssl rand -hex 16
 | `NEXT_PUBLIC_DEMO_VIDEO_URL` | Vercel | **Build Var** | Optional video walkthrough link on budget exhaustion banner. | e.g. `https://youtu.be/...` |
 | `NEXT_PUBLIC_DEMO_HINTS` | Vercel | **Build Flag** | Optional inline hints for demo viewer tokens (`false` or `true`). | Explicitly set `"false"` |
 
+> [!NOTE]
+> **Demo Gate Token:** The water plant viewer token (`PLANT_WATER_DISTRICT_9_VIEWER_TOKEN`) is the demo gate; the owner may publish it in the README next to the live link because it only protects demo data.
 
 ---
 
@@ -72,6 +74,9 @@ openssl rand -hex 16
    - Sign up: `/`
 
 ### Step 3: Deploy Backend on Render
+> [!IMPORTANT]
+> **Deployment Order:** Deploy the Render backend first, then deploy Vercel to obtain the live production domain, then set `CORS_ORIGINS` to the Vercel URL and redeploy. Render redeploys when environment variables change, with a cold start, so this is not zero-downtime.
+
 1. In Render, select **New > Blueprint** and link your Git repository containing `render.yaml`.
 2. When prompted for environment secrets (marked `sync: false`):
    - `DATABASE_URL`: Your pooled Neon connection string.
@@ -80,8 +85,8 @@ openssl rand -hex 16
    - `MQTT_PASSWORD`: Generated token (`openssl rand -hex 16`).
    - `WATER_MQTT_PASSWORD`: Generated token (`openssl rand -hex 16`).
    - `PLANT_WATER_DISTRICT_9_VIEWER_TOKEN`: Generated token (`openssl rand -hex 16`, required).
-   - `CLERK_PUBLISHABLE_KEY`: `pk_test_...`
-   - `CORS_ORIGINS`: `https://[your-app-name].vercel.app` (or temporary `*` during initial bootstrap, then lock down to Vercel domain).
+   - `CLERK_PUBLISHABLE_KEY`: `pk_test_...` (backend reads this at `admin_auth.py:120,203` to derive JWKS endpoint and check auth config).
+   - `CORS_ORIGINS`: Expected Vercel domain (e.g. `https://plantpulse.vercel.app`).
    *(Note: `ADMIN_TOKEN` and `ADMIN_SECRET_TOKEN` stay UNSET on hosted deployment. If set, the entrypoint warns and unsets them).*
 3. Confirm fixed flags:
    - `ENABLE_SELF_SERVICE="false"`
@@ -100,12 +105,12 @@ openssl rand -hex 16
    - `NEXT_PUBLIC_WS_URL="wss://[your-render-service].onrender.com"`
    - `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="pk_test_..."`
    - `CLERK_SECRET_KEY="sk_test_..."`
-4. Trigger the deployment (`npm run build`).
+4. Trigger the deployment (`npm run build`). Note the assigned live production URL (e.g., `https://plantpulse.vercel.app`).
 
 ### Step 5: Finalize CORS Configuration
 Once your Vercel deployment URL is live (e.g., `https://plantpulse.vercel.app`):
-1. In Render Dashboard, update `CORS_ORIGINS` to `https://plantpulse.vercel.app`.
-2. Save changes (triggers zero-downtime rolling restart).
+1. In the Render Dashboard under **Environment**, set `CORS_ORIGINS` to the exact Vercel URL: `https://plantpulse.vercel.app`.
+2. Save changes and redeploy. Render redeploys when environment variables change, with a cold start (about 1 minute), so this is not zero-downtime.
 
 ---
 
@@ -135,10 +140,10 @@ Once both services are deployed, perform the following verification steps:
   Allow the Render instance to idle for 15+ minutes until spun down.
   Refresh the Vercel dashboard. Verify the amber banner **"Waking up the demo, this can take about a minute"** appears with exponential retry countdown until the backend wakes.
 - [ ] **4. Water Plant Viewer Token**:
-  Select the gated **Water District 9** plant in the plant picker.
+  Select the gated **Water District 9** plant (`District 9 Water Booster Station`) in the plant picker.
   Verify the token prompt modal appears. Enter `PLANT_WATER_DISTRICT_9_VIEWER_TOKEN` and confirm access unlocks live telemetry.
 - [ ] **5. Historical Telemetry Graph**:
-  Click on any machine on the demo plant (e.g. `RO_UNIT_01`) and inspect the signal history graph. Verify data points load seamlessly via the partition-pruned REST endpoint.
+  Click on any machine on the demo plant (e.g. `hm_01` — Housing Molder 1) and inspect the signal history graph (`/api/plants/plant_demo_membrane/machines/hm_01/signals/mold_temperature_actual/history`). Verify data points load seamlessly via the partition-pruned REST endpoint.
 - [ ] **6. Self-Service Gating**:
   Confirm the navigation bar does NOT show the "My plants" link when `NEXT_PUBLIC_ENABLE_SELF_SERVICE=false`.
   Verify direct browser navigation to `/api/me/plants` on the backend returns `404 Not Found`.

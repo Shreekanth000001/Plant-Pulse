@@ -24,6 +24,7 @@ DEFAULT_RETENTION_DAYS = 30
 DEFAULT_BATCH_SIZE = 50000
 DEFAULT_FREE_PAGE_THRESHOLD = 0.20  # 20% free pages triggers maintenance
 DEFAULT_INTERVAL_SECONDS = 86400.0  # Daily
+DEFAULT_INITIAL_DELAY_SECONDS = 60.0  # Initial run delay after startup
 
 
 def get_retention_days() -> int:
@@ -51,6 +52,21 @@ def get_retention_interval_seconds() -> float:
         )
     except ValueError:
         return DEFAULT_INTERVAL_SECONDS
+
+
+def get_retention_initial_delay_seconds() -> float:
+    try:
+        return max(
+            0.0,
+            float(
+                os.getenv(
+                    "RETENTION_INITIAL_DELAY_SECONDS",
+                    str(DEFAULT_INITIAL_DELAY_SECONDS),
+                )
+            ),
+        )
+    except ValueError:
+        return DEFAULT_INITIAL_DELAY_SECONDS
 
 
 def check_free_page_ratio(conn: Any) -> tuple[int, int, float]:
@@ -258,14 +274,28 @@ async def retention_worker_loop(
     batch_size: int = DEFAULT_BATCH_SIZE,
     free_page_threshold: float = DEFAULT_FREE_PAGE_THRESHOLD,
     stop_event: asyncio.Event | None = None,
+    initial_delay_seconds: float = DEFAULT_INITIAL_DELAY_SECONDS,
 ) -> None:
     """Async background worker loop that periodically runs retention cleanup off the event loop."""
     logger.info(
-        "Retention worker started (days=%d, interval=%.1fs, batch_size=%d)",
+        "Retention worker started (days=%d, interval=%.1fs, batch_size=%d, initial_delay=%.1fs)",
         retention_days,
         interval_seconds,
         batch_size,
+        initial_delay_seconds,
     )
+
+    if initial_delay_seconds > 0:
+        try:
+            if stop_event:
+                await asyncio.wait_for(stop_event.wait(), timeout=initial_delay_seconds)
+            else:
+                await asyncio.sleep(initial_delay_seconds)
+        except TimeoutError:
+            pass
+        except asyncio.CancelledError:
+            logger.info("Retention worker loop cancelled during initial delay.")
+            return
 
     while not (stop_event and stop_event.is_set()):
         try:
@@ -313,12 +343,14 @@ class RetentionWorker:
         interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
         batch_size: int = DEFAULT_BATCH_SIZE,
         free_page_threshold: float = DEFAULT_FREE_PAGE_THRESHOLD,
+        initial_delay_seconds: float = DEFAULT_INITIAL_DELAY_SECONDS,
     ) -> None:
         self.db_path = db_path
         self.retention_days = retention_days
         self.interval_seconds = interval_seconds
         self.batch_size = batch_size
         self.free_page_threshold = free_page_threshold
+        self.initial_delay_seconds = initial_delay_seconds
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task | None = None
 
@@ -333,6 +365,7 @@ class RetentionWorker:
                     batch_size=self.batch_size,
                     free_page_threshold=self.free_page_threshold,
                     stop_event=self._stop_event,
+                    initial_delay_seconds=self.initial_delay_seconds,
                 ),
                 name="retention-worker",
             )
